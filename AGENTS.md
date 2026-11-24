@@ -186,6 +186,8 @@ vocorum discord import all --kimaki --detach --json
 vocorum discord status --json
 ```
 
+- `--channels <id,id>` limits it to some channels, for example to try it on
+  one channel first.
 - It runs outside the hub, in small batches, and slows down when the hub is
   busy.
 - It keeps Discord's ids, copies files, avatars and icons, and marks old
@@ -241,7 +243,10 @@ their bot's older than 7 days (`--older-than`, `--authors me,bot`). Threads in
 use are left whole. `--threads` also deletes threads nobody else wrote in.
 `--kimaki-keep` keeps threads with scheduled Kimaki work.
 
-Show the person the summary, including what is not touched and why. Get a clear
+`--channels <id,id>` limits the plan to some channels. Show the person the
+summary, including what is not touched and why. Messages from other bots and
+webhooks are left alone; the plan names them and gives the `--authors` line
+that would include them. Get a clear
 yes. Then:
 
 ```bash

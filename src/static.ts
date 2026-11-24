@@ -2,6 +2,8 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { promisify } from 'node:util'
+import zlib from 'node:zlib'
 import type http from 'node:http'
 
 const TYPES: Record<string, string> = {
@@ -48,15 +50,37 @@ export async function serveStatic(req: http.IncomingMessage, res: http.ServerRes
   }
   const ext = path.extname(file)
   const immutable = file.includes(`${path.sep}assets${path.sep}`)
-  res.writeHead(200, {
-    ...SECURITY_HEADERS,
-    'content-type': TYPES[ext] ?? 'application/octet-stream',
-    'content-length': stat.size,
-    'cache-control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
-  })
+  const headers = { ...SECURITY_HEADERS, 'content-type': TYPES[ext] ?? 'application/octet-stream', 'cache-control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache' }
+  // Text assets (the app bundle is ~500 KB) go out compressed, made once per file version.
+  const accepts = String(req.headers['accept-encoding'] ?? '')
+  const encoding = COMPRESSIBLE.has(ext) && stat.size > 1400 ? (/\bbr\b/.test(accepts) ? 'br' : /\bgzip\b/.test(accepts) ? 'gzip' : null) : null
+  if (encoding) {
+    const body = await compressedFile(file, stat.mtimeMs, encoding)
+    res.writeHead(200, { ...headers, 'content-encoding': encoding, vary: 'Accept-Encoding', 'content-length': body.length })
+    res.end(req.method === 'HEAD' ? undefined : body)
+    return
+  }
+  res.writeHead(200, { ...headers, ...(COMPRESSIBLE.has(ext) && { vary: 'Accept-Encoding' }), 'content-length': stat.size })
   if (req.method === 'HEAD') {
     res.end()
     return
   }
   fs.createReadStream(file).pipe(res)
+}
+
+const COMPRESSIBLE = new Set(['.js', '.css', '.html', '.svg', '.json', '.webmanifest', '.txt', '.map'])
+const compressedCache = new Map<string, Promise<Buffer>>()
+
+function compressedFile(file: string, mtime: number, encoding: 'br' | 'gzip'): Promise<Buffer> {
+  const key = `${encoding}:${mtime}:${file}`
+  let cached = compressedCache.get(key)
+  if (!cached) {
+    cached = fs.promises.readFile(file).then((data) =>
+      encoding === 'br' ? promisify(zlib.brotliCompress)(data, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 9 } }) : promisify(zlib.gzip)(data, { level: 9 }),
+    )
+    for (const old of compressedCache.keys()) if (old.endsWith(`:${file}`) && old.startsWith(`${encoding}:`)) compressedCache.delete(old)
+    compressedCache.set(key, cached)
+    cached.catch(() => compressedCache.delete(key))
+  }
+  return cached
 }

@@ -489,7 +489,7 @@ function ThreadCard({ id, name, thread }: { id: string; name: string; thread?: C
     >
       <span className="thread-card-name">
         <i className={`st ${session?.state ?? 'idle'}`} />
-        {name}
+        <span className="thread-card-title">{name}</span>
         <span className="thread-card-count num">
           {count ? `${count} ${count === 1 ? 'message' : 'messages'}` : 'Open'}
           <Icon name="chevron" size={12} />

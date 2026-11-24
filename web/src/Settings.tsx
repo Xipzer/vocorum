@@ -541,7 +541,7 @@ function CreateChannel({ guildId, categories, category, onDone }: { guildId: str
       <label className="settings-field">
         <span className="settings-label">{category ? 'Category name' : 'Channel name'}</span>
         <input className="settings-input" value={name} maxLength={100} autoFocus placeholder={category ? 'New category' : 'new-channel'} onChange={(e) => setName(e.target.value)} />
-        {!category && <span className="settings-item-note">Lower case with dashes, like Discord: “My Project” becomes my-project.</span>}
+        {!category && <span className="settings-item-note">Lower case with dashes: “My Project” becomes my-project.</span>}
       </label>
       {!category && (
         <div className="settings-two">
@@ -790,7 +790,7 @@ function ChannelOverview({ state, channel }: { state: HubState; channel: Channel
   return (
     <Page title="Overview">
       <Group note={editable ? undefined : `You need ${thread ? 'Manage threads' : 'Manage channels'} to change these.`}>
-        <TextSetting label={thread ? 'Thread name' : category ? 'Category name' : 'Channel name'} note={thread || category ? undefined : 'Lower case with dashes, like Discord.'} value={channel.name ?? ''} max={100} disabled={!editable} onSave={(v) => api.patchChannel(channel.id, { name: v }).then(apply)} />
+        <TextSetting label={thread ? 'Thread name' : category ? 'Category name' : 'Channel name'} note={thread || category ? undefined : 'Lower case with dashes: “My Project” becomes my-project.'} value={channel.name ?? ''} max={100} disabled={!editable} onSave={(v) => api.patchChannel(channel.id, { name: v }).then(apply)} />
         {!thread && !category && (
           <TextSetting label="Topic" note="Shown in the channel header. For a project channel, its folder goes here." value={channel.topic ?? ''} max={1024} multiline allowEmpty disabled={!editable} placeholder="What this channel is for" onSave={(v) => api.patchChannel(channel.id, { topic: v || null }).then(apply)} />
         )}
@@ -815,7 +815,7 @@ function ChannelOverview({ state, channel }: { state: HubState; channel: Channel
         <Feedback text={feedback.text} />
       </Group>
       {shown.length > 0 && (
-        <Group title="Workspace" note={thread ? 'The agent session in this thread, from Kimaki.' : 'Read from the topic and the category. Editing comes with agent settings.'}>
+        <Group title="Workspace" note={thread ? 'The agent session in this thread, from Kimaki.' : 'Read from the topic and the category.'}>
           <dl className="settings-facts">
             {shown.map(([k, v]) => (
               <div key={k}>

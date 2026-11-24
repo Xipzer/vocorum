@@ -128,6 +128,12 @@ test('setup page: a pairing code opens the app on pairing, and each step shows a
   expect(page).toContain(`href="${app}/#pair=ABCDE12345"`)
   expect(page).toContain(`<img class="ok" src="${app}/setup/ok.svg"`)
   expect(withCode.headers.get('content-security-policy')).toBe(`default-src 'none'; style-src 'unsafe-inline'; img-src ${app}`)
+  // The device it is opened on comes first; the others fold away.
+  const iphone = await (await fetch(`http://127.0.0.1:${port}/`, { headers: { 'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)' } })).text()
+  expect(iphone.indexOf('/vocorum.mobileconfig')).toBeLessThan(iphone.indexOf('<details>'))
+  expect(iphone.indexOf('/vocorum-mac.mobileconfig')).toBeGreaterThan(iphone.indexOf('<details>'))
+  const mac = await (await fetch(`http://127.0.0.1:${port}/`, { headers: { 'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)' } })).text()
+  expect(mac.indexOf('/vocorum-mac.mobileconfig')).toBeLessThan(mac.indexOf('<details>'))
   // Anything but a 10-character code is ignored, never echoed.
   const bad = await (await fetch(`http://127.0.0.1:${port}/?code=%22%3E%3Cscript%3E`)).text()
   expect(bad).not.toContain('#pair=')

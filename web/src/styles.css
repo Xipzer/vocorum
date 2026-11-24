@@ -1332,17 +1332,39 @@ html[data-keyboard='open'] .footer {
   height: 7px;
   border-radius: 50%;
   background: var(--busy);
-  box-shadow: 0 0 0 3px rgb(var(--busy-rgb) / 0.22);
-  animation: breathe 2.4s ease-in-out infinite;
   flex: none;
+  position: relative;
+  isolation: isolate;
 }
 @keyframes breathe {
   50% {
     box-shadow: 0 0 0 5px rgb(var(--busy-rgb) / 0.08);
   }
 }
+/* The busy halo grows and fades with transform and opacity only, so the
+   compositor runs it without repainting the page on every frame. */
+.busy-dot::before,
+.st.busy::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  z-index: -1;
+  border-radius: 50%;
+  background: rgb(var(--busy-rgb) / 0.22);
+  animation: breathe-ring 2.4s ease-in-out infinite;
+}
+@keyframes breathe-ring {
+  50% {
+    transform: scale(1.3);
+    opacity: 0.36;
+  }
+}
+[data-lowfps] .busy-dot::before,
+[data-lowfps] .st.busy::before {
+  animation-timing-function: steps(6);
+}
 @media (prefers-reduced-motion: reduce) {
-  .busy-dot {
+  .busy-dot::before {
     animation: none;
   }
 }
@@ -1881,8 +1903,8 @@ html[data-keyboard='open'] .footer {
 }
 .st.busy {
   background: var(--busy);
-  box-shadow: 0 0 0 3px rgb(var(--busy-rgb) / 0.22);
-  animation: breathe 2.4s ease-in-out infinite;
+  position: relative;
+  isolation: isolate;
 }
 .st.done {
   background: var(--text-muted);
@@ -1891,7 +1913,7 @@ html[data-keyboard='open'] .footer {
   background: var(--spine);
 }
 @media (prefers-reduced-motion: reduce) {
-  .st.busy {
+  .st.busy::before {
     animation: none;
   }
 }
@@ -6196,4 +6218,101 @@ svg.flip {
   .sheet.confirm .sheet-sub {
     white-space: normal;
   }
+}
+.thread-card-meta {
+  padding-left: 16px;
+}
+/* Touch screens always show the dismiss button, so the age sits just left of it. */
+@media (hover: none) {
+  .ov-age {
+    margin-right: 30px;
+  }
+}
+
+/* Sign-in and pairing: Discord's auth card (480 wide, 32 in, 8 corners) on desktop, the
+   bare form on phones. Labels above fields; an error rides in its field's label. */
+.login {
+  background: var(--bg-1);
+}
+.login-card {
+  max-width: 480px;
+  padding: 32px;
+  text-align: left;
+  background: var(--bg-2);
+  border: 1px solid var(--line-raised);
+  border-radius: 8px;
+}
+.login-head {
+  margin-bottom: 20px;
+  text-align: center;
+}
+.login-card .login-head h1 {
+  font: 700 24px/30px var(--font);
+}
+.login-card .login-head p {
+  margin: 8px 0 0;
+  font: 400 16px/20px var(--font);
+  color: var(--text-muted);
+}
+.login-card .button.wide {
+  height: 44px;
+  font: 500 16px/20px var(--font);
+}
+.login-label {
+  display: block;
+  margin-bottom: 8px;
+  font: 700 12px/16px var(--font);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.login-label.bad {
+  color: var(--danger-text);
+}
+.login-label span {
+  font-weight: 500;
+  font-style: italic;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.login .code-input {
+  height: 44px;
+  margin-bottom: 20px;
+  padding: 0 12px;
+  text-align: left;
+  font: 500 16px/20px var(--mono);
+}
+.login-error {
+  margin: 8px 0 0;
+  font: 400 14px/18px var(--font);
+  color: var(--danger-text);
+}
+.login-card .login-divider {
+  margin: 24px 0 16px;
+}
+.login-card .login-help {
+  display: block;
+  margin: 16px auto 0;
+  font: 400 14px/18px var(--font);
+  color: var(--text-faint);
+  text-align: center;
+}
+.login-help code {
+  font: 13px/18px var(--mono);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.login-card button.login-help {
+  color: var(--accent);
+}
+@media (max-width: 767px) {
+  .login-card {
+    padding: 0;
+    background: none;
+    border: 0;
+  }
+}
+.login .code-input.link {
+  font: 400 13px/18px var(--mono);
+  letter-spacing: 0;
 }

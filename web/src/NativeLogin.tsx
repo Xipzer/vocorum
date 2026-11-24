@@ -3,6 +3,7 @@
 // and signs in with its own device key instead of a passkey.
 
 import { useEffect, useState } from 'react'
+import { loginError } from './login.ts'
 import { appInfo, pairApp, signInApp } from './native.ts'
 
 export function NativeLogin({ onDone }: { onDone: () => void }) {
@@ -29,7 +30,7 @@ export function NativeLogin({ onDone }: { onDone: () => void }) {
       await fn()
       onDone()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(loginError(e))
     } finally {
       setBusy(false)
     }
@@ -37,8 +38,10 @@ export function NativeLogin({ onDone }: { onDone: () => void }) {
   return (
     <div className="login">
       <div className="login-card">
-        <h1>Vocorum</h1>
-        <p className="muted">{paired ? new URL(paired).hostname : 'Private hub'}</p>
+        <div className="login-head">
+          <h1>{paired ? 'Vocorum' : 'Pair this app'}</h1>
+          <p>{paired ? new URL(paired).hostname : 'Paste the pairing link from your hub.'}</p>
+        </div>
         {paired !== null && (
           <>
             <button className="button primary wide" disabled={busy} onClick={() => void run(signInApp)}>
@@ -55,15 +58,18 @@ export function NativeLogin({ onDone }: { onDone: () => void }) {
             void run(() => pairApp(link))
           }}
         >
-          <input className="code-input" value={link} onChange={(e) => setLink(e.target.value.trim())} placeholder="Pairing link" style={{ letterSpacing: 0, fontSize: 13 }} autoComplete="off" autoCapitalize="none" spellCheck={false} />
+          <label className={`login-label${error ? ' bad' : ''}`} htmlFor="pairing-link">
+            Pairing link
+            {error && <span role="alert"> · {error}</span>}
+          </label>
+          <input id="pairing-link" className="code-input link" value={link} onChange={(e) => setLink(e.target.value.trim())} placeholder="vocorum://pair…" autoComplete="off" autoCapitalize="none" spellCheck={false} />
           <button className={`button wide${paired === null ? ' primary' : ''}`} disabled={busy || !link.startsWith('vocorum://pair')}>
-            Pair this device
+            Pair this app
           </button>
         </form>
-        <p className="help">
-          Get a link on the hub machine with <code>vocorum devices add &lt;name&gt;</code>
+        <p className="login-help">
+          No link? On the hub machine, run <code>vocorum pair &lt;device&gt; --app</code>
         </p>
-        {error && <div className="error">{error}</div>}
       </div>
     </div>
   )

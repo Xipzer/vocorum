@@ -275,6 +275,12 @@ export class HubStore {
     return Object.fromEntries((await this.rows('SELECT channel_id, message_id FROM user_read_state WHERE user_id = ?', [userId])).map((row) => [String(row['channel_id']), String(row['message_id'])]))
   }
 
+  // Sets the position as given, backwards too (mark unread).
+  async setRead(userId: string, entries: Array<[channelId: string, messageId: string]>) {
+    if (entries.length === 0) return
+    await this.db.batch(entries.map(([channelId, messageId]) => ({ sql: 'INSERT INTO user_read_state (user_id, channel_id, message_id) VALUES (?, ?, ?) ON CONFLICT(user_id, channel_id) DO UPDATE SET message_id = excluded.message_id', args: [userId, channelId, messageId] })), 'write')
+  }
+
   // Only moves forward: an older position from a stale device never unreads.
   async markRead(userId: string, entries: Array<[channelId: string, messageId: string]>) {
     if (entries.length === 0) return

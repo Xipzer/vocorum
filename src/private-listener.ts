@@ -9,11 +9,12 @@ import fs from 'node:fs'
 import http from 'node:http'
 import https from 'node:https'
 import net from 'node:net'
+import { createSecureContext } from 'node:tls'
 import { EventEmitter } from 'node:events'
 import type { Duplex } from 'node:stream'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { caFiles, certDer, ensureCa, ensureServerCert, fingerprint, type CaFiles } from './ca.ts'
+import { caFiles, certDer, ensureCa, ensureServerCert, fingerprint, hasLegacy, type CaFiles } from './ca.ts'
 import type { PrivateListenerConfig } from './config.ts'
 
 const WILDCARD = new Set(['0.0.0.0', '::', '', '*'])
@@ -171,35 +172,90 @@ export function mobileconfig({ caDer, address, port, zones, dns = true }: { caDe
 // shows once the hub's name resolves and its certificate is trusted.
 const OK_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" width="20" height="20"><circle cx="10" cy="10" r="10" fill="#23a55a"/><path d="M5.5 10.5l3 3 6-7" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
 
-function enrolPage({ appUrl, fingerprint: fp, hostsLine, code }: { appUrl: string; fingerprint: string; hostsLine: string; code: string | null }) {
+type Platform = 'ios' | 'mac' | 'other'
+// The device the page is opened on goes first; the others fold away below it.
+function platformOf(userAgent: string): Platform {
+  if (/iPhone|iPad|iPod/.test(userAgent)) return 'ios'
+  // iPadOS asks for desktop pages as a Mac; only a real Mac lacks touch, which a page
+  // without scripts cannot see, so both get the Mac steps, which also work on an iPad.
+  if (/Macintosh/.test(userAgent)) return 'mac'
+  return 'other'
+}
+
+// The app's own look, written out: near-black, one cyan accent, Discord's auth card.
+const ENROL_CSS = `
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:#060608;color:#e3e3e9;font:400 16px/22px -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;display:flex;justify-content:center;padding:32px 16px}
+main{width:100%;max-width:480px}
+.card{background:#0d0d10;border:1px solid #27272e;border-radius:8px;padding:32px}
+h1{margin:0;font-weight:700;font-size:24px;line-height:30px;color:#fff;text-align:center}
+.sub{margin:8px 0 24px;color:#a3a3ae;text-align:center}
+h2{margin:24px 0 12px;font-weight:600;font-size:12px;line-height:16px;letter-spacing:.02em;text-transform:uppercase;color:#a3a3ae}
+ol{list-style:none;margin:0;padding:0;counter-reset:step}
+li{counter-increment:step;position:relative;padding:0 0 16px 36px;min-height:40px}
+li::before{content:counter(step);position:absolute;left:0;top:0;width:24px;height:24px;border-radius:50%;background:#1a1a20;color:#fff;font-weight:600;font-size:13px;line-height:24px;text-align:center}
+b{color:#fff;font-weight:600}
+a{color:#00d2ff;text-decoration:none}
+.button{display:block;margin:0;padding:0 16px;height:44px;line-height:44px;border-radius:8px;background:#00d2ff;color:#0a0a0d;font-weight:600;text-align:center}
+.button.second{background:#1a1a20;color:#fff}
+code{font:13px/18px ui-monospace,SFMono-Regular,Menlo,monospace;color:#e3e3e9;background:#121216;border:1px solid #1d1d23;border-radius:4px;padding:1px 4px;word-break:break-all}
+.check{display:flex;align-items:center;gap:12px;margin:0 0 8px;padding:12px;border-radius:8px;background:#121216;color:#a3a3ae;font-size:14px;line-height:18px}
+.dot{flex:none;width:20px;height:20px;border-radius:50%;background:#27272e;position:relative}
+.dot .ok{position:absolute;inset:0}
+.code{font:600 20px/24px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.12em;color:#fff;text-align:center;margin:16px 0 0}
+details{margin-top:24px;border-top:1px solid #1d1d23;padding-top:16px}
+summary{cursor:pointer;color:#a3a3ae;font-size:14px}
+.fine{margin:24px 0 0;color:#82828e;font-size:13px;line-height:18px}
+.cmd{display:block;margin:8px 0 0;padding:8px;font:13px/18px ui-monospace,SFMono-Regular,Menlo,monospace;color:#e3e3e9;background:#121216;border:1px solid #1d1d23;border-radius:4px;white-space:pre-wrap;word-break:break-all;user-select:all}
+li:has(> .button)::before{top:10px}
+.fine .cmd{margin:8px 0}
+@media (max-width:520px){body{padding:24px 16px}.card{border:0;background:none;padding:0}}
+`
+
+export function enrolPage({ appUrl, fingerprint: fp, hostsLine, code, userAgent = '' }: { appUrl: string; fingerprint: string; hostsLine: string; code: string | null; userAgent?: string }) {
   const tick = `<img class="ok" src="${xml(appUrl)}/setup/ok.svg" alt="" width="20" height="20">`
-  const check = `<p class="check">${tick} A green tick here means this step works. No tick: check the step again.</p>`
+  const check = `<p class="check"><span class="dot">${tick}</span>A green tick here means this device now trusts the hub.</p>`
   const openApp = code ? `${appUrl}/#pair=${code}` : appUrl
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Set up Vocorum</title><style>.check{font-size:14px;color:#9aa3b5}.ok{vertical-align:middle}body{font:16px/1.5 -apple-system,system-ui,sans-serif;background:#0b0d12;color:#e6e8ef;max-width:560px;margin:0 auto;padding:24px}a.b{display:block;text-align:center;background:#22d3ee;color:#001018;padding:14px;border-radius:10px;text-decoration:none;font-weight:600;margin:12px 0}code{word-break:break-all;font-size:12px;color:#9aa3b5}li{margin:6px 0}</style></head><body>
-<h1>Set up this device</h1>
-<h2>iPhone and iPad</h2>
-<ol>
-<li><a class="b" href="/vocorum.mobileconfig">Download profile (iPhone, iPad)</a> Then open Settings, tap <b>Profile Downloaded</b>, and install it.</li>
-<li>Settings, General, About, <b>Certificate Trust Settings</b>: turn on full trust for <b>Vocorum CA</b>.</li>
+  const steps: Record<Platform, { title: string; body: string }> = {
+    ios: {
+      title: 'iPhone and iPad',
+      body: `<ol>
+<li><a class="button second" href="/vocorum.mobileconfig">Download the profile</a></li>
+<li>Open Settings, tap <b>Profile Downloaded</b>, then <b>Install</b>.</li>
+<li>Settings, General, About, <b>Certificate Trust Settings</b>: turn on <b>Vocorum CA</b>.</li>
 <li>Settings, General, VPN, DNS and Device Management, <b>DNS</b>: choose <b>Vocorum names</b>.</li>
-</ol>
-${check}
-<h2>Mac</h2>
-<ol>
-<li><a class="b" href="/vocorum-mac.mobileconfig">Download profile (Mac, certificate only)</a> Then open System Settings, General, Device Management (or the <b>Profile Downloaded</b> item), and install it. If Safari still warns, open Keychain Access, find <b>Vocorum CA</b>, and set Trust to <b>Always Trust</b>.</li>
-<li>Map the hub name in Terminal: <code>echo '${xml(hostsLine)}' | sudo tee -a /etc/hosts</code></li>
-</ol>
-${check}
-<h2>Windows, Linux, Android</h2>
-<ol>
-<li>Install <a href="/vocorum-ca.crt">vocorum-ca.crt</a> as a trusted root, and add <code>${xml(hostsLine)}</code> to the hosts file.</li>
-</ol>
+</ol>${check}`,
+    },
+    mac: {
+      title: 'Mac',
+      body: `<ol>
+<li><a class="button second" href="/vocorum-mac.mobileconfig">Download the profile</a></li>
+<li>Open System Settings, General, <b>Device Management</b>, and install it. If Safari still warns, open Keychain Access, find <b>Vocorum CA</b> and set it to <b>Always Trust</b>.</li>
+<li>In Terminal, map the hub's name:<code class="cmd">echo '${xml(hostsLine)}' | sudo tee -a /etc/hosts</code></li>
+</ol>${check}`,
+    },
+    other: {
+      title: 'Windows, Linux and Android',
+      body: `<ol>
+<li>Install <a href="/vocorum-ca.crt">vocorum-ca.crt</a> as a trusted root certificate.</li>
+<li>Add this line to the hosts file:<code class="cmd">${xml(hostsLine)}</code></li>
+</ol>${check}`,
+    },
+  }
+  const mine = platformOf(userAgent)
+  const others = (Object.keys(steps) as Platform[]).filter((p) => p !== mine)
+  const section = (p: Platform) => `<h2>${steps[p].title}</h2>${steps[p].body}`
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Set up Vocorum</title><style>${ENROL_CSS}</style></head><body><main><div class="card">
+<h1>Set up this device</h1>
+<p class="sub">Once per device. Then you sign in with a passkey.</p>
+${section(mine)}
 <h2>Then</h2>
-${code ? `<a class="b" href="${xml(openApp)}">Open the app</a><p>It opens on pairing with code <b>${code}</b> filled in: create the passkey.</p>` : `<p>Open <a href="${xml(appUrl)}">${xml(appUrl)}</a>, choose <b>Pair this device</b>, enter the code from the hub, and create the passkey.</p>`}
-<p>Check the CA fingerprint in the profile details matches the one the hub printed:</p><p><code>${xml(fp)}</code></p>
-<p>The CA can only sign this hub's own names, so it cannot be used to impersonate any other site.</p>
-</body></html>`
+${code ? `<a class="button" href="${xml(openApp)}">Open Vocorum</a><p class="code">${code}</p><p class="sub">Your pairing code is filled in. Create the passkey when asked.</p>` : `<a class="button" href="${xml(appUrl)}">Open Vocorum</a><p class="sub">Choose <b>Pair this device</b>, enter the code from the hub, and create the passkey.</p>`}
+<details><summary>Setting up a different kind of device</summary>${others.map(section).join('')}</details>
+<p class="fine">The profile's certificate fingerprint should match the one the hub printed:<code class="cmd">${xml(fp)}</code>This certificate can only vouch for this hub's own names, never for any other site.</p>
+</div></main></body></html>`
 }
 
 // --- the listener
@@ -235,9 +291,10 @@ export class PrivateListener {
     return address && typeof address === 'object' ? address.port : this.config.httpPort
   }
 
-  // The names the hub answers DNS for (and devices send to it): only its own.
+  // The names the hub answers DNS for (and devices send to it): only its own,
+  // and never a Tailscale name (*.ts.net), which Tailscale itself resolves.
   get zones() {
-    return [...new Set(this.config.names.map((name) => name.toLowerCase()))]
+    return [...new Set(this.config.names.map((name) => name.toLowerCase()).filter((name) => !name.endsWith('.ts.net')))]
   }
 
   // Requests that arrived on this listener (not loopback).
@@ -268,7 +325,18 @@ export class PrivateListener {
 
   async start() {
     await this.prepare()
-    const tls = https.createServer({ key: fs.readFileSync(this.files.key), cert: fs.readFileSync(this.files.cert), minVersion: 'TLSv1.2' })
+    const current = { key: fs.readFileSync(this.files.key), cert: fs.readFileSync(this.files.cert) }
+    // After a CA change the old certificate still answers for the names it had and
+    // for connections without a name (by address), so devices that trust only the
+    // old CA keep working; new names get the new certificate.
+    let options: https.ServerOptions = { ...current, minVersion: 'TLSv1.2' }
+    if (hasLegacy(this.files)) {
+      const legacy = { key: fs.readFileSync(this.files.legacy.key), cert: fs.readFileSync(this.files.legacy.cert) }
+      const legacyNames = new Set((new crypto.X509Certificate(legacy.cert).subjectAltName ?? '').split(', ').filter((s) => s.startsWith('DNS:')).map((s) => s.slice(4).toLowerCase()))
+      const contexts = { legacy: createSecureContext({ ...legacy, minVersion: 'TLSv1.2' }), current: createSecureContext({ ...current, minVersion: 'TLSv1.2' }) }
+      options = { ...legacy, minVersion: 'TLSv1.2', SNICallback: (name, done) => done(null, legacyNames.has(name.toLowerCase()) ? contexts.legacy : contexts.current) }
+    }
+    const tls = https.createServer(options)
     this.guard(tls)
     tls.on('secureConnection', (socket) => this.sockets.add(socket))
     // DoH here; everything else goes to the hub's normal handlers.
@@ -350,7 +418,7 @@ export class PrivateListener {
       // ?code= from vocorum pair: the final link opens the app with it filled in.
       const code = new URL(req.url ?? '/', 'http://x').searchParams.get('code')
       const appUrl = this.appOrigins[0] ?? ''
-      const body = enrolPage({ appUrl, fingerprint: fingerprint(this.files.caCert), hostsLine: `${this.config.address} ${this.config.names.join(' ')}`, code: code && /^[A-Z0-9]{10}$/.test(code) ? code : null })
+      const body = enrolPage({ appUrl, fingerprint: fingerprint(this.files.caCert), hostsLine: `${this.config.address} ${this.config.names.join(' ')}`, code: code && /^[A-Z0-9]{10}$/.test(code) ? code : null, userAgent: req.headers['user-agent'] ?? '' })
       return res.writeHead(200, { ...headers, 'content-type': 'text/html; charset=utf-8', 'content-security-policy': `default-src 'none'; style-src 'unsafe-inline'; img-src ${appUrl}` }).end(body)
     }
     res.writeHead(404, headers).end()

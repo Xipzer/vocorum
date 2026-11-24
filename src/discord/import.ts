@@ -88,7 +88,8 @@ export async function scan(rest: DiscordRest, guildIds: string[] | 'all') {
 
 // --- import
 
-export type ImportOptions = { guilds: string[] | 'all'; archive?: string; files?: boolean; log?: (line: string) => void }
+// channels: only these channels (and their threads); categories still come along for the layout.
+export type ImportOptions = { guilds: string[] | 'all'; channels?: string[]; archive?: string; files?: boolean; log?: (line: string) => void }
 
 export async function importDiscord(rest: DiscordRest, config: HubConfig, paths: HubPaths, options: ImportOptions): Promise<ImportReport> {
   const log = options.log ?? ((line: string) => console.log(line))
@@ -115,7 +116,10 @@ export async function importDiscord(rest: DiscordRest, config: HubConfig, paths:
         const icon = await download(`https://cdn.discordapp.com/icons/${guildId}/${guild.icon}.png?size=256`)
         if (icon) await hub.call('POST', `/admin/mirror/guilds/${guildId}/icon`, icon, { raw: true }).catch(() => {})
       }
-      const channels = await guildChannels(rest, guildId)
+      const only = options.channels?.length ? new Set(options.channels) : null
+      const listed = await guildChannels(rest, guildId)
+      const channels = only ? listed.filter((c) => only.has(c.id) || (c.type === 4 && listed.some((x) => only.has(x.id) && x.parent_id === c.id))) : listed
+      if (only && !channels.some((c) => only.has(c.id))) throw new Error(`None of ${[...only].join(', ')} is a text channel the bot can see in ${guild.name}`)
       await hub.call('POST', '/admin/mirror/channels', channels.map((c) => ({ ...c, guild_id: guildId })))
       const threads = await listThreads(rest, guildId, channels)
       await hub.call('POST', '/admin/mirror/channels', threads.map((t) => ({ ...t, guild_id: guildId })))

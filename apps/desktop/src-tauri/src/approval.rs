@@ -32,13 +32,11 @@ mod imp {
   }
 
   fn find(tag: &str) -> Result<SecKey, String> {
-    let results = ItemSearchOptions::new()
-      .class(ItemClass::key())
-      .label(&label(tag))
-      .ignore_legacy_keychains()
-      .load_refs(true)
-      .search()
-      .map_err(|e| e.to_string())?;
+    let mut search = ItemSearchOptions::new();
+    search.class(ItemClass::key()).label(&label(tag)).load_refs(true);
+    #[cfg(target_os = "macos")]
+    search.ignore_legacy_keychains();
+    let results = search.search().map_err(|e| e.to_string())?;
     results
       .into_iter()
       .find_map(|r| match r {

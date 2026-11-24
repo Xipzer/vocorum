@@ -14,12 +14,11 @@ import { generateSnowflake, withThreads } from 'discord-digital-twin/src'
 import { channelToAPI, messageToAPI, roleToAPI, userToAPI } from 'discord-digital-twin/src/serializers'
 import { toOggOpus } from './attachments.ts'
 import { HttpError } from './auth.ts'
-import { match, readBody, readJson, sendJson, UPLOAD_LIMIT } from './http.ts'
+import { endJson, match, readBody, readJson, sendJson, UPLOAD_LIMIT } from './http.ts'
 import type { Hub } from './hub.ts'
 import type { DeviceRow, NotificationSetting } from './store.ts'
 import { DEFAULT_LEVEL } from './notifications.ts'
 import { P } from './access.ts'
-import { machineName } from './sessions.ts'
 
 const THREAD_TYPES = [ChannelType.PublicThread, ChannelType.PrivateThread, ChannelType.AnnouncementThread]
 const INTERACTION_WAIT_MS = 3000
@@ -52,18 +51,22 @@ export class ClientApi {
     const device = await this.hub.auth.requireDevice(req)
     const v: Viewer = { userId: this.hub.userOf(device), device }
     this.hub.checkIdentity(req, v.userId)
-    const send = (status: number, value: unknown) => {
-      res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' })
-      res.end(value === undefined ? '' : this.hub.relativize(JSON.stringify(value)))
-    }
+    const send = (status: number, value: unknown) => endJson(res, status, value === undefined ? '' : this.hub.relativize(JSON.stringify(value)))
     let params: Record<string, string> | null
     if (method === 'GET' && pathname === '/client/state') return send(200, await this.state(v))
     if (method === 'GET' && pathname === '/client/overview') return send(200, await this.overview(v))
     if (method === 'PUT' && pathname === '/client/read') {
       const body = await readJson(req)
       const visible = await this.hub.access.visibleChannels(v.userId)
-      const entries = Object.entries((body['read'] ?? {}) as Record<string, unknown>).filter((e): e is [string, string] => /^\d+$/.test(e[0]) && visible.has(e[0]) && typeof e[1] === 'string' && /^\d+$/.test(e[1]))
-      await this.hub.store.markRead(v.userId, entries.slice(0, 5000))
+      const pick = (value: unknown) => Object.entries((value ?? {}) as Record<string, unknown>).filter((e): e is [string, string] => /^\d{1,20}$/.test(e[0]) && visible.has(e[0]) && typeof e[1] === 'string' && /^\d{1,20}$/.test(e[1])).slice(0, 5000)
+      const entries = pick(body['read'])
+      await this.hub.store.markRead(v.userId, entries)
+      // "Mark unread": read up to just before that message, even if that moves back.
+      const unread = pick(body['unread']).map(([channelId, messageId]): [string, string] => [channelId, String(BigInt(messageId) - 1n)])
+      await this.hub.store.setRead(v.userId, unread)
+      // The person's other devices follow (Discord's MESSAGE_ACK).
+      const position = await this.hub.store.readState(v.userId)
+      for (const [channelId] of [...entries, ...unread]) this.hub.events.send('MESSAGE_ACK', { channel_id: channelId, message_id: position[channelId] ?? null, manual: unread.some(([id]) => id === channelId) }, { userId: v.userId })
       return send(204, undefined)
     }
     if ((params = match('/client/channels/:id/output', pathname)) && (method === 'PUT' || method === 'DELETE')) {
@@ -227,7 +230,7 @@ export class ClientApi {
     const read = await this.hub.store.readState(v.userId)
     const withPerms = (c: (typeof channels)[number]) => ({ ...channelToAPI(c), permission_overwrites: overwrites.get(c.id) ?? [], permissions: String(view.channels.get(c.id) ?? 0n) })
     const machines = await this.hub.sessions.machines()
-    const categoryMachines = new Set(channels.filter((c) => c.type === ChannelType.GuildCategory).map((c) => machineName(c.name ?? '', machines.map((m) => m.name))?.toLowerCase()))
+    const categoryMachines = new Set(channels.filter((c) => c.type === ChannelType.GuildCategory).map((c) => this.hub.sessions.machineOf(c.name ?? '')?.toLowerCase()))
     return {
       device: { id: v.device.id, name: v.device.name },
       me: { id: v.userId },

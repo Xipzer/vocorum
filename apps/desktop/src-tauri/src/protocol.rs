@@ -176,3 +176,17 @@ async fn proxy(app: &AppHandle, request: Request<Vec<u8>>) -> Response<Cow<'stat
     Err(_) => json_error(StatusCode::BAD_GATEWAY, "The hub closed the connection."),
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::capped_range;
+
+  #[test]
+  fn open_ranges_are_capped() {
+    assert_eq!(capped_range("bytes=0-").as_deref(), Some("bytes=0-4194303"));
+    assert_eq!(capped_range("bytes=100-").as_deref(), Some("bytes=100-4194403"));
+    assert_eq!(capped_range("bytes=0-99"), None);
+    assert_eq!(capped_range("bytes=0-,5-"), None);
+    assert_eq!(capped_range("items=0-"), None);
+  }
+}

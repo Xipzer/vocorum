@@ -13,7 +13,7 @@
 //   devices list | devices revoke <id|name>
 //   private setup --address IP [--name hub.home.arpa] [--port 47443] [--http-port 47080|off] [--allow CIDR,...]
 //                 HTTPS on one private address with the hub's own CA (restart the hub after)
-//   private status | private off
+//   private status | private off | private retire-legacy   (stop serving the previous CA's certificate)
 //   setup | doctor | pair <device> | config get|set | discord scan|import|status|purge|report
 //                 getting started and moving from Discord: see src/onboard-cli.ts (all take --json)
 
@@ -114,9 +114,102 @@ async function adminBytes(config: HubConfig, path: string, body: Buffer) {
 
 const ago = (ms: number | null) => (ms ? new Date(ms).toISOString().replace('T', ' ').slice(0, 16) : '-')
 
+const HELP = `vocorum: your own hub for people, devices and agents. State lives in ~/.vocorum
+(set VOCORUM_DIR to keep it elsewhere).
+
+Get started
+  setup                    set up the hub on this machine (safe to run again)
+  doctor                   check everything, and say how to fix what is wrong
+  pair <device>            a link and QR code that signs a new device in
+  restart                  restart the hub
+
+Move from Discord
+  discord scan             what is there, and what the bot cannot read (read only)
+  discord import           copy servers, channels, threads and files into the hub
+  discord status           how far an import or a purge has got
+  discord purge            plan, then delete, what you moved off Discord
+  discord report           what moved, what was deleted, what Discord still keeps
+
+Bots and machines
+  kimaki setup <machine>   a Kimaki on this machine that lives on the hub
+  bots add|list|revoke|guilds
+  machines icon <machine> avatar|guild_icon <image file|none>
+
+People and devices
+  people invite|list|remove
+  devices add|list|revoke
+  requests [list]|deny|undo    changes agents asked for, which you approve in the app
+  request invite|role|channel|raw
+
+Servers and settings
+  guilds add|list|rename
+  config get|set
+  private setup|status|off|retire-legacy    HTTPS on one private address
+
+Add --help to a command for its options. Setup, doctor, pair, config and discord take --json.`
+
+const COMMAND_HELP: Record<string, string> = {
+  init: 'vocorum init [--public-url URL|none] [--tailscale-login LOGIN] [--port N]\n\nCreates ~/.vocorum, or updates it. vocorum setup does this and more.',
+  start: 'vocorum start\n\nRuns the hub in this terminal. The service does this for you after vocorum setup.',
+  bots: `vocorum bots add <machine> [--guild ID|NAME,...] [--out PATH] [--local]
+vocorum bots list
+vocorum bots revoke <machine>
+vocorum bots guilds <machine> <ID|NAME,...>
+
+add makes a bot login for a machine and prints it once (or writes it to --out).
+guilds sets which servers the bot is in (default: the first one).`,
+  people: `vocorum people invite <username> [--guild ID|NAME,...] [--tailscale-login LOGIN]
+vocorum people list
+vocorum people remove <username>
+
+invite makes an account with a pairing code that works for 24 hours. The hub must be running.`,
+  devices: `vocorum devices add <name> [--ttl 30m]
+vocorum devices list
+vocorum devices revoke <id|name>
+
+add makes a single-use pairing code (10 minutes unless --ttl). vocorum pair also prints a QR code.`,
+  guilds: 'vocorum guilds add <name>\nvocorum guilds list\nvocorum guilds rename <ID|NAME> <new name>',
+  machines: "vocorum machines icon <machine> avatar|guild_icon <image file|none>\n\nSets a machine's bot picture or its server icon.",
+  discord: `vocorum discord scan       what is there, and what the bot cannot read (read only)
+vocorum discord import     copy servers into the hub
+vocorum discord status     how far an import or a purge has got
+vocorum discord purge      plan, then delete, what you moved off Discord
+vocorum discord report     what moved, what was deleted, what Discord still keeps
+
+Add --help to each for its options, for example: vocorum discord import --help`,
+  kimaki: `vocorum kimaki setup <machine> [--guild ID|NAME,...] [--kimaki PATH] [--lock-port N] [--peer-data-dir DIR] [--no-service] [-- kimaki args]
+
+Runs a Kimaki on this machine that lives on the hub, beside any Kimaki on Discord.`,
+  requests: `vocorum requests [list]
+vocorum requests deny <id>
+vocorum requests undo <id>
+
+Changes agents asked for. You approve them in the app with your passkey; undo files the
+reversing change as a new request.`,
+  request: `vocorum request invite <username> [--guild ID|NAME] [--reason TEXT]
+vocorum request role <username> <role name> [--remove] [--guild ID|NAME]
+vocorum request channel <channel name|id> <username|role name> [--allow view,send,...] [--deny view,...]
+vocorum request raw <METHOD> <route> [json body]
+
+Asks the owner for a change. Nothing happens until they approve it in the app.`,
+  private: `vocorum private setup --address IP [--name hub.home.arpa] [--port 47443] [--http-port 47080|off] [--allow CIDR,...]
+vocorum private status
+vocorum private off
+vocorum private retire-legacy
+
+setup serves HTTPS on one private address with the hub's own certificate (restart the hub after).
+retire-legacy stops serving the previous certificate after a change of names.`,
+}
+
 async function main() {
   const { onboardCommand } = await import('./onboard-cli.ts')
   if (await onboardCommand(args)) return
+  // --help never runs a command: the command's own options, else the overview.
+  if (args.includes('--help') || args.includes('-h') || args[0] === 'help') {
+    const topic = args[0] === 'help' ? args[1] : args[0]
+    console.log((topic && COMMAND_HELP[topic]) || HELP)
+    return
+  }
   const publicUrl = flag('public-url')
   const tailscaleLogin = flag('tailscale-login')
   const port = flag('port')
@@ -329,7 +422,8 @@ async function main() {
       }
       const listener = new PrivateListener(privateListener, paths.ca, { attach: () => {}, tailscaleLogins: () => new Map() })
       const ca = await listener.prepare({ reissueBroad: true })
-      if (ca.reissued) console.log(`The old CA could sign any name under ${ca.broad.join(', ')}: replaced it with one limited to ${privateListener.names.join(', ')}. Remove the old Vocorum profile from every device and install the new one.`)
+      if (ca.rotated) console.log(`New CA for ${privateListener.names.join(', ')}. The previous certificate keeps serving its old names and connections by address, so current devices keep working. New names need the new profile; once every device has it, run: vocorum private retire-legacy`)
+      else if (ca.reissued) console.log(`The old CA could sign any name under ${ca.broad.join(', ')}: replaced it with one limited to ${privateListener.names.join(', ')}. Remove the old Vocorum profile from every device and install the new one.`)
       const { fingerprint } = await import('./ca.ts')
       initHub(paths, { privateListener })
       console.log(`Private listener: https://${privateListener.names[0]}:${privateListener.port} on ${address} (only from ${privateListener.allowedCidrs.join(', ')})`)
@@ -341,11 +435,20 @@ async function main() {
       const config = requireConfig()
       const listener = config.privateListener
       if (!listener) return console.log('Private listener: off (loopback only).')
-      const { caFiles, fingerprint } = await import('./ca.ts')
+      const { caFiles, fingerprint, hasLegacy } = await import('./ca.ts')
       const files = caFiles(paths.ca)
+      if (hasLegacy(files)) console.log(`Previous CA still served for its old names and for connections by address (fingerprint ${fingerprint(files.legacy.caCert)}). Once every device has the new CA: vocorum private retire-legacy`)
       console.log(`Private listener: https://${listener.names[0]}:${listener.port} on ${listener.address}, enrolment ${listener.httpPort === null ? 'off' : `http port ${listener.httpPort}`}`)
       console.log(`Allowed networks: ${listener.allowedCidrs.join(', ')}`)
       if (fs.existsSync(files.caCert)) console.log(`CA fingerprint (SHA-256): ${fingerprint(files.caCert)}`)
+      return
+    }
+    case 'private retire-legacy': {
+      const { caFiles, hasLegacy } = await import('./ca.ts')
+      const files = caFiles(paths.ca)
+      if (!hasLegacy(files)) return console.log('No previous CA in use.')
+      await fs.promises.rename(files.legacy.dir, `${files.legacy.dir}.retired-${new Date().toISOString().replace(/[:.]/g, '-')}`)
+      console.log('The previous CA is no longer served. Restart the hub to apply; devices that only trust it must install the new profile.')
       return
     }
     case 'private off': {
@@ -364,12 +467,13 @@ async function main() {
       const config = requireConfig()
       if (!name) throw new Error('usage: devices revoke <id|name>')
       const ids = await withStore((store) => store.revokeDevice(name))
-      console.log(ids.length ? `Revoked ${ids.length} device(s); their sessions are gone.` : `No active device "${name}".`)
+      console.log(ids.length ? `Revoked ${ids.length === 1 ? "1 device" : `${ids.length} devices`}; signed out.` : `No active device "${name}".`)
       await reload(config)
       return
     }
     default:
-      console.log(fs.readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(0, 19).map((line) => line.replace(/^\/\/ ?/, '')).join('\n'))
+      if (command) console.error(`Unknown command: ${args.join(' ')}\n`)
+      console.log(HELP)
       process.exit(command ? 1 : 0)
   }
 }

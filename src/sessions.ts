@@ -181,6 +181,7 @@ export class Sessions {
   private pending = new Map<string, Promise<void>>()
   private dirty = new Set<string>()
   private botMachines: string[] = []
+  private aliases: Record<string, string> = {}
   readonly links: Links
   readonly services: Services
 
@@ -198,6 +199,13 @@ export class Sessions {
 
   async reloadBots() {
     this.botMachines = (await this.hub.store.listBots()).filter((b) => !b.revokedAt).map((b) => b.machine)
+    this.aliases = Object.fromEntries(Object.entries(await this.hub.mirror.machineBots()).map(([machine, bot]) => [bot.name.toLowerCase(), machine]))
+  }
+
+  // The machine a category stands for. Its Discord bot's name counts too: a
+  // mirrored "Kimaki Laptop" category is the machine whose Discord bot is "Laptop".
+  machineOf(category: string): string | null {
+    return machineName(category, this.botMachines, this.aliases)
   }
 
   private stopped = false
@@ -294,7 +302,7 @@ export class Sessions {
       title: plainText(thread.name ?? '') || 'untitled',
       projectId: parent?.id ?? null,
       project: parent?.name ?? null,
-      machine: category ? machineName(category.name ?? '', this.botMachines) : null,
+      machine: category ? this.machineOf(category.name ?? '') : null,
       lastMessageId: thread.lastMessageId,
       ...derived,
     }
@@ -308,14 +316,14 @@ export class Sessions {
 
   async machines(): Promise<MachineSummary[]> {
     const categories = await this.prisma.channel.findMany({ where: { guildId: { in: [...this.hub.guildIds] }, type: 4 }, orderBy: { position: 'asc' } })
+    await this.reloadBots()
     const bots = (await this.hub.store.listBots()).filter((b) => !b.revokedAt)
-    this.botMachines = bots.map((b) => b.machine)
     const connected = this.hub.twin.connectedGatewayTokens()
     const sessions = this.list()
     // A machine in several guilds has a category in each: list it once.
     const seen = new Set<string>()
     return categories.flatMap((category) => {
-      const name = machineName(category.name ?? '', this.botMachines)
+      const name = this.machineOf(category.name ?? '')
       if (!name || seen.has(name.toLowerCase())) return []
       seen.add(name.toLowerCase())
       const bot = bots.find((b) => b.machine.toLowerCase() === name.toLowerCase())
@@ -344,12 +352,14 @@ export class Sessions {
 
 // Agent bots name a category after their machine: a category is a machine when
 // its name is a registered bot's machine, or starts with "Kimaki " (Kimaki's own naming).
-export function machineName(category: string, botMachines: string[] = []): string | null {
+// aliases: a machine's Discord bot name (lower case) -> the machine.
+export function machineName(category: string, botMachines: string[] = [], aliases: Record<string, string> = {}): string | null {
   const name = category.trim()
   const bot = botMachines.find((m) => m.toLowerCase() === name.toLowerCase() || name.toLowerCase() === `kimaki ${m.toLowerCase()}`)
   if (bot) return bot
   const kimaki = /^kimaki\s+(.+)$/i.exec(name)
-  return kimaki ? kimaki[1]!.trim() : null
+  if (!kimaki) return aliases[name.toLowerCase()] ?? null
+  return aliases[kimaki[1]!.trim().toLowerCase()] ?? kimaki[1]!.trim()
 }
 
 function safeJson(value: string) {

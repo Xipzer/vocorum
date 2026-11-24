@@ -107,7 +107,7 @@ beforeAll(async () => {
   await cdp.send('WebAuthn.addVirtualAuthenticator', { options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } })
   origin = `http://localhost:${hub.port}`
   await page.goto(origin)
-  await page.getByPlaceholder('Pairing code').fill(await hub.store.createPairing('chromium'))
+  await page.getByLabel('Pairing code').fill(await hub.store.createPairing('chromium'))
   await page.getByText('Pair this device').click()
   await page.locator('.sidebar .channel', { hasText: 'Fix footer on short turns' }).waitFor()
 }, 90_000)
@@ -730,7 +730,7 @@ test.skipIf(!ready)('media: embeds, attachment mosaics with a lightbox, spoilers
   await cdp.send('WebAuthn.enable')
   await cdp.send('WebAuthn.addVirtualAuthenticator', { options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } })
   await p.goto(origin)
-  await p.getByPlaceholder('Pairing code').fill(await hub.store.createPairing('media'))
+  await p.getByLabel('Pairing code').fill(await hub.store.createPairing('media'))
   await p.getByText('Pair this device').click()
   await p.goto(`${origin}/#/c/${media.id}`)
   await p.locator('.message', { hasText: 'Thanks, noted.' }).waitFor()
@@ -989,7 +989,7 @@ test.skipIf(!ready)('upload tiles: previews in the composer, spoiler, rename and
   await cdp.send('WebAuthn.enable')
   await cdp.send('WebAuthn.addVirtualAuthenticator', { options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } })
   await p.goto(origin)
-  await p.getByPlaceholder('Pairing code').fill(await hub.store.createPairing('uploads'))
+  await p.getByLabel('Pairing code').fill(await hub.store.createPairing('uploads'))
   await p.getByText('Pair this device').click()
   await p.goto(`${origin}/#/c/${demo.thread.id}`)
   await p.locator('.composer textarea').waitFor()
@@ -1114,7 +1114,7 @@ test.skipIf(!ready)('pairing link: #pair=CODE opens on Create passkey, signs the
   await p.goto(`${origin}/#pair=${code}`)
   await p.getByRole('button', { name: 'Create passkey' }).waitFor()
   expect(await p.evaluate(() => location.hash)).toBe('')
-  await expect(p.getByPlaceholder('Pairing code').inputValue()).resolves.toBe(code)
+  await expect(p.getByLabel('Pairing code').inputValue()).resolves.toBe(code)
   await expect(p.getByText('Sign in with passkey').count()).resolves.toBe(0)
   await p.getByRole('button', { name: 'Create passkey' }).click()
   await p.locator('.sidebar .channel', { hasText: 'Fix footer on short turns' }).waitFor()
@@ -1246,4 +1246,79 @@ test.skipIf(!ready)('deleting a message asks first, as in Discord', async () => 
   await page.locator('.sheet').screenshot({ path: path.join(shots, 'delete-confirm.png') })
   await page.locator('.sheet-item', { hasText: 'Delete' }).click()
   await msg.waitFor({ state: 'detached' })
+}, 60_000)
+
+test.skipIf(!ready)('thread cards: the meta line starts under the name, in the channel and in the Threads panel', async () => {
+  await page.goto(`${origin}/#/c/${demo.kimaki.id}`)
+  // Where an element's first piece of text starts on screen.
+  const textLeft = (l: import('playwright-core').Locator) =>
+    l.evaluate((e) => {
+      const walk = document.createTreeWalker(e, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (n.textContent!.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP) })
+      const r = document.createRange()
+      r.selectNodeContents(walk.nextNode()!)
+      return Math.round(r.getBoundingClientRect().left)
+    })
+  const card = page.locator('.thread-card').first()
+  await card.waitFor()
+  expect(await textLeft(card.locator('.thread-card-meta'))).toBe(await textLeft(card.locator('.thread-card-name')))
+  await page.locator('.chat-header button[aria-label="Threads"]').click()
+  const row = page.locator('.side-panel .thread-row').first()
+  await row.waitFor()
+  expect(await textLeft(row.locator('.result-where'))).toBe(await textLeft(row.locator('.link-title')))
+  await page.keyboard.press('Escape')
+}, 30_000)
+
+test.skipIf(!ready)('overview on a phone: the always-visible dismiss button never covers the age', async () => {
+  const { ownerUserId } = hub.options.config
+  const ask = await demo.kimaki.threads.create({ name: 'Pick the release train' })
+  await ask.send(`<@${ownerUserId}> **Question:** Beta first, or straight to stable?`)
+  const ctx = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, serviceWorkers: 'block', storageState: await page.context().storageState(), viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
+  const p = await ctx.newPage()
+  await p.goto(`${origin}/#/overview`)
+  const item = p.locator('.ov-item', { hasText: 'Pick the release train' })
+  await item.waitFor()
+  const age = (await item.locator('.ov-age').boundingBox())!
+  const dismiss = (await item.locator('.ov-dismiss').boundingBox())!
+  expect(await item.locator('.ov-dismiss').evaluate((e) => getComputedStyle(e).opacity)).toBe('1')
+  expect(dismiss.x - (age.x + age.width)).toBeGreaterThanOrEqual(4)
+  await ctx.close()
+}, 60_000)
+
+test.skipIf(!ready)('thread card on a phone: a long name gives way, the message count stays whole', async () => {
+  const ctx = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, serviceWorkers: 'block', storageState: await page.context().storageState(), viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
+  const p = await ctx.newPage()
+  await p.goto(`${origin}/#/c/${demo.kimaki.id}`)
+  const card = p.locator('.thread-card').first()
+  await card.waitFor()
+  const fits = await card.evaluate((c) => {
+    const box = c.getBoundingClientRect()
+    const count = c.querySelector('.thread-card-count')!.getBoundingClientRect()
+    return count.right <= box.right - 8 && c.querySelector('.thread-card-count svg') !== null
+  })
+  expect(fits).toBe(true)
+  await ctx.close()
+}, 60_000)
+
+test.skipIf(!ready)('sign-in: a bad pairing code shows in the field label, in plain words', async () => {
+  const ctx = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, serviceWorkers: 'block', viewport: { width: 1280, height: 800 } })
+  const p = await ctx.newPage()
+  await p.goto(`${origin}/`)
+  await p.getByLabel('Pairing code').fill('ZZZZZZZZZZ')
+  await p.getByRole('button', { name: 'Pair this device' }).click()
+  const label = p.locator('.login-label.bad')
+  await label.waitFor()
+  expect(await label.textContent()).toBe('Pairing code · Expired, used or not found. Ask for a new one.')
+  await ctx.close()
+}, 60_000)
+
+test.skipIf(!ready)("can't reach the hub: a plain card with Try again, and it recovers by itself", async () => {
+  const ctx = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, serviceWorkers: 'block', deviceScaleFactor: 2, viewport: { width: 1000, height: 700 } })
+  await ctx.route('**/client/auth/status', (r) => r.abort())
+  const p = await ctx.newPage()
+  await p.goto(`${origin}/`)
+  await p.getByRole('heading', { name: "Can't reach the hub" }).waitFor()
+  await p.screenshot({ path: path.join(shots, 'cant-reach.png') })
+  await ctx.unroute('**/client/auth/status')
+  await p.getByText('Sign in with passkey').waitFor({ timeout: 8000 })
+  await ctx.close()
 }, 60_000)

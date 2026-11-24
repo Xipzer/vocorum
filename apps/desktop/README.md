@@ -40,7 +40,7 @@ hub serves, so every screen looks the same as in the browser.
 On the hub machine:
 
 ```bash
-vocorum devices add laptop
+vocorum pair laptop --app
 ```
 
 It prints a `vocorum://pair?...` link and a QR code. Open the link on the device

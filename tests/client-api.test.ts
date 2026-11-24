@@ -1,5 +1,7 @@
 // The client API drives a real discord.js bot the way Discord would.
 
+import http from 'node:http'
+import zlib from 'node:zlib'
 import { afterAll, beforeAll, expect, test } from 'vitest'
 import WebSocket from 'ws'
 import {
@@ -225,4 +227,24 @@ test('revoking a bot disconnects it and its REST access', async () => {
   expect(await closed).toBe(4004)
   const status = (await fetch(`${t.hub.localUrl}/api/v10/guilds/${t.config.guildId}`, { headers: { authorization: `Bot ${bot.token}` } })).status
   expect(status).toBe(401)
+})
+
+test('large JSON goes out compressed when the client accepts it', async () => {
+  const plain = await phone.fetch('/client/state', { headers: { 'accept-encoding': 'identity' } })
+  expect(plain.headers.get('content-encoding')).toBeNull()
+  const text = await plain.text()
+  for (const encoding of ['br', 'gzip']) {
+    const raw = await new Promise<{ encoding: string | undefined; body: Buffer }>((resolve, reject) => {
+      const req = http.get(`${t.hub.localUrl}/client/state`, { headers: { 'accept-encoding': encoding, cookie: phone.cookie!, 'tailscale-user-login': LOGIN, origin: phone.origin } }, (res) => {
+        const chunks: Buffer[] = []
+        res.on('data', (c: Buffer) => chunks.push(c))
+        res.on('end', () => resolve({ encoding: res.headers['content-encoding'], body: Buffer.concat(chunks) }))
+      })
+      req.on('error', reject)
+    })
+    expect(raw.encoding).toBe(encoding)
+    const decoded = encoding === 'br' ? zlib.brotliDecompressSync(raw.body) : zlib.gunzipSync(raw.body)
+    expect(JSON.parse(decoded.toString()).me).toEqual(JSON.parse(text).me)
+    expect(raw.body.length).toBeLessThan(text.length)
+  }
 })

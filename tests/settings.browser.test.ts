@@ -55,7 +55,7 @@ beforeAll(async () => {
   await cdp.send('WebAuthn.addVirtualAuthenticator', { options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } })
   origin = `http://localhost:${hub.port}`
   await page.goto(origin)
-  await page.getByPlaceholder('Pairing code').fill(await hub.store.createPairing('chromium'))
+  await page.getByLabel('Pairing code').fill(await hub.store.createPairing('chromium'))
   await page.getByText('Pair this device').click()
   await page.locator('.sidebar .channel', { hasText: 'kimaki' }).first().waitFor()
 }, 90_000)

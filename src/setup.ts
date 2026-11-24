@@ -13,7 +13,7 @@ import readline from 'node:readline/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { initHub, loadConfig, type HubPaths, type PrivateListenerConfig } from './config.ts'
-import { doctor, hubLatency, type Check } from './doctor.ts'
+import { doctor, hubLatency, printLine, type Check } from './doctor.ts'
 
 const run = promisify(execFile)
 
@@ -35,7 +35,7 @@ async function out(cmd: string, args: string[]) {
   }
 }
 
-export type Network = { kind: 'tailscale' | 'wireguard' | 'loopback'; address: string | null; names: string[]; allow: string[]; login: string | null }
+export type Network = { kind: 'tailscale' | 'wireguard' | 'loopback' | 'your address'; address: string | null; names: string[]; allow: string[]; login: string | null }
 
 export async function detectNetwork(): Promise<Network> {
   const ip = (await out('tailscale', ['ip', '-4']))?.trim().split('\n')[0]
@@ -55,7 +55,7 @@ export async function detectNetwork(): Promise<Network> {
 }
 
 export type SetupOptions = { port?: number; address?: string; names?: string[]; allow?: string[]; service: boolean; yes: boolean; dryRun: boolean; json: boolean; repo: string }
-type Step = { step: string; status: 'done' | 'already' | 'planned' | 'skipped' | 'failed'; detail: string }
+type Step = { step: string; status: 'done' | 'already' | 'planned' | 'skipped' | 'failed'; detail: string; fix?: string }
 
 function unitFile(paths: HubPaths, repo: string) {
   return `[Unit]
@@ -97,7 +97,9 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
   const steps: Step[] = []
   const log = (s: Step) => {
     steps.push(s)
-    if (!options.json) console.log(`${s.status.padEnd(8)} ${s.step}: ${s.detail}`)
+    if (options.json) return
+    const status = s.status === 'failed' ? 'fail' : s.status === 'skipped' || s.status === 'planned' ? 'skip' : s.fix ? 'warn' : 'ok'
+    printLine(status, s.step[0]!.toUpperCase() + s.step.slice(1), s.status === 'already' ? `${s.detail} (already set up)` : s.detail, s.fix)
   }
 
   // 1. preflight
@@ -108,7 +110,7 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
 
   // 2. network and names
   const detected = await detectNetwork()
-  const network: Network = { ...detected, ...(options.address && { address: options.address, kind: detected.address === options.address ? detected.kind : 'wireguard' }), ...(options.names && { names: options.names }), ...(options.allow && { allow: options.allow }) }
+  const network: Network = { ...detected, ...(options.address && { address: options.address, kind: detected.address === options.address ? detected.kind : 'your address', login: detected.address === options.address ? detected.login : null }), ...(options.names && { names: options.names }), ...(options.allow && { allow: options.allow }) }
   if (options.address && !options.allow) network.allow = detected.address === options.address ? detected.allow : [`${options.address}/32`]
   const existing = loadConfig(paths)
   // A running hub keeps its listener unless told otherwise: a new first name means a new
@@ -188,7 +190,7 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
         await out('systemctl', ['--user', 'enable', '--now', serviceName(paths)])
       } else if (listenerChanged || (await hubLatency(config, paths)) === null) await out('systemctl', ['--user', 'restart', serviceName(paths)])
       const linger = (await out('loginctl', ['show-user', os.userInfo().username, '-p', 'Linger']))?.includes('yes')
-      log({ step: 'service', status: exists ? 'already' : 'done', detail: `${file}${exists && fs.readFileSync(file, 'utf8') !== body ? ' (kept your own unit)' : ''}${linger ? '' : '. To keep it running after you log out: loginctl enable-linger $USER'}` })
+      log({ step: 'service', status: exists ? 'already' : 'done', detail: `${file}${exists && fs.readFileSync(file, 'utf8') !== body ? ' (kept your own unit)' : ''}${linger ? '' : ', stops when you log out'}`, ...(!linger && { fix: 'loginctl enable-linger $USER' }) })
     }
     // 6. wait for it
     let latency: number | null | 'other' = null
@@ -197,8 +199,8 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
       if (latency === 'other') throw new Error(`Port ${config.port} is held by something else. Give this hub its own port: vocorum init --port <free port>`)
       if (latency === null) await new Promise((r) => setTimeout(r, 1000))
     }
-    log({ step: 'start', status: latency === null ? 'failed' : 'done', detail: latency === null ? `the hub did not answer within 30 s. journalctl --user -u ${serviceName(paths)} -n 50` : `answering in ${latency} ms` })
-  } else log({ step: 'start', status: 'skipped', detail: `no service: start it with vocorum start${listenerChanged ? ' (restart it if it runs, to apply the listener)' : ''}` })
+    log({ step: 'start', status: latency === null ? 'failed' : 'done', detail: latency === null ? 'the hub did not answer within 30 s' : `answering in ${latency} ms`, ...(latency === null && { fix: `journalctl --user -u ${serviceName(paths)} -n 50` }) })
+  } else log({ step: 'start', status: 'skipped', detail: `no service; start it with vocorum start${listenerChanged ? ' (restart it if it runs, to apply the listener)' : ''}` })
 
   // 7. a `vocorum` command on PATH, so people and their agents can just type it
   const onPath = (await out('sh', ['-c', 'command -v vocorum']))?.trim()
@@ -209,7 +211,7 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
     const link = path.join(dir, 'vocorum')
     if (!fs.existsSync(link)) fs.symlinkSync(path.join(options.repo, 'bin/vocorum.js'), link)
     const inPath = (process.env['PATH'] ?? '').split(':').includes(dir)
-    log({ step: 'command', status: 'done', detail: `${link}${inPath ? '' : ` (add ${dir} to your PATH)`}` })
+    log({ step: 'command', status: 'done', detail: `${link}${inPath ? '' : ', not on your PATH'}`, ...(!inPath && { fix: `add ${dir} to your PATH` }) })
   }
 
   // 8. checks, and a first device when there is none

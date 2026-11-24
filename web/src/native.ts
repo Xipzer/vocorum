@@ -10,6 +10,10 @@ export const native = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in 
 
 const core = () => import('@tauri-apps/api/core')
 
+// WebKitGTK paints in software (the app turns its GPU path off), so looping
+// animations step at a few frames a second there instead of sixty.
+if (native && /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent)) document.documentElement.dataset['lowfps'] = ''
+
 export async function invoke<T = void>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke } = await core()
   return invoke<T>(cmd, args)

@@ -84,4 +84,8 @@ test('machineName: registered bots and Kimaki categories are machines, others ar
   expect(machineName('desktop', ['desktop'])).toBe('desktop')
   expect(machineName('Kimaki Homelab')).toBe('Homelab')
   expect(machineName('Text Channels')).toBeNull()
+  // A mirrored Discord category is named after the machine's Discord bot.
+  expect(machineName('Kimaki Desk PC', ['desk-pc'], { 'desk pc': 'desk-pc' })).toBe('desk-pc')
+  expect(machineName('Desk PC', ['desk-pc'], { 'desk pc': 'desk-pc' })).toBe('desk-pc')
+  expect(machineName('Kimaki Laptop', ['desk-pc'], { 'desk pc': 'desk-pc' })).toBe('Laptop')
 })

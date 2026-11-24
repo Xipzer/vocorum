@@ -129,6 +129,7 @@ fn percent_decode(text: &str) -> String {
 
 pub fn show_main(app: &AppHandle) {
   if let Some(window) = app.get_webview_window(MAIN) {
+    #[cfg(desktop)]
     let _ = window.unminimize();
     let _ = window.show();
     let _ = window.set_focus();
@@ -188,11 +189,18 @@ fn build_main(app: &AppHandle) -> tauri::Result<()> {
 }
 
 // WebKitGTK keeps getUserMedia and MediaRecorder behind settings that wry leaves off.
+// It also composites on the GPU by default, and where the GPU path falls back to
+// software GL (VMs, WSL, some drivers) every animation frame costs whole cores; a
+// chat window needs none of it. VOCORUM_GPU=1 turns it back on.
 #[cfg(target_os = "linux")]
 fn linux_media(window: &tauri::WebviewWindow) {
-  let _ = window.with_webview(|webview| {
+  let gpu = std::env::var("VOCORUM_GPU").is_ok_and(|v| v == "1");
+  let _ = window.with_webview(move |webview| {
     use webkit2gtk::{SettingsExt, WebViewExt};
     if let Some(settings) = webview.inner().settings() {
+      if !gpu {
+        settings.set_hardware_acceleration_policy(webkit2gtk::HardwareAccelerationPolicy::Never);
+      }
       settings.set_enable_media_stream(true);
       settings.set_enable_mediasource(true);
       settings.set_enable_media_capabilities(true);
@@ -366,6 +374,31 @@ pub fn run() {
         if let Ok(Some(urls)) = app.deep_link().get_current() {
           take_link(&handle, urls);
         }
+      }
+      // `--pair <link>` from a terminal pairs without the card (scripted setups). Links
+      // from browsers arrive as deep links instead and always wait for a click.
+      let argv: Vec<String> = std::env::args().collect();
+      if let Some(link) = argv.iter().position(|a| a == "--pair").and_then(|i| argv.get(i + 1)).cloned() {
+        let pair_handle = handle.clone();
+        tauri::async_runtime::spawn(async move {
+          let state = pair_handle.state::<State>();
+          let result = match hub::parse_link(&link) {
+            Ok(link) => match hub::pair(&state.dir, &link).await {
+              Ok(config) => state.install(&pair_handle, config).await,
+              Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+          };
+          match result {
+            Ok(()) => {
+              eprintln!("[vocorum] paired");
+              if let Some(window) = pair_handle.get_webview_window(MAIN) {
+                let _ = window.eval("location.reload()");
+              }
+            }
+            Err(error) => eprintln!("[vocorum] pairing failed: {error}"),
+          }
+        });
       }
       #[cfg(desktop)]
       tray(&handle)?;

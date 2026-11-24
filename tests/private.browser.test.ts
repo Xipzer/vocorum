@@ -61,7 +61,7 @@ test.skipIf(!ready || !chromiumPath)('Chromium: pair with a passkey on hub.home.
     await cdp.send('WebAuthn.addVirtualAuthenticator', { options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } })
     await page.goto(origin)
     expect(await page.evaluate('window.isSecureContext')).toBe(true)
-    await page.getByPlaceholder('Pairing code').fill(await hub.store.createPairing('chromium'))
+    await page.getByLabel('Pairing code').fill(await hub.store.createPairing('chromium'))
     await page.getByText('Pair this device').click()
     await page.locator('.composer textarea, textarea').first().waitFor({ timeout: 15_000 })
     const sw = await page.evaluate('navigator.serviceWorker.ready.then((r) => r.active && r.active.scriptURL)')

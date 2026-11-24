@@ -288,7 +288,7 @@ pub struct PairLink {
 }
 
 pub fn parse_link(text: &str) -> Result<PairLink, String> {
-  let bad = || "That is not a Vocorum pairing link. Run `vocorum devices add <name>` on the hub and paste the vocorum://pair link it prints.".to_string();
+  let bad = || "That is not a Vocorum pairing link. Run `vocorum pair <device> --app` on the hub and paste the vocorum://pair link it prints.".to_string();
   let url = url::Url::parse(text.trim()).map_err(|_| bad())?;
   if url.scheme() != "vocorum" || url.host_str() != Some("pair") {
     return Err(bad());
@@ -411,4 +411,44 @@ pub async fn pair(dir: &Path, link: &PairLink) -> Result<HubConfig, String> {
   let config = HubConfig { key_id: registered.key_id, device_id: registered.device.id, device_name: registered.device.name, approval_tag: approval.map(|_| tag), ..draft };
   config.save(dir)?;
   Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  const FP: &str = "260c476ba166446e8ff8b71b92a8052eb32042b6b498b6add3cdf61df5fedc60";
+
+  #[test]
+  fn reads_a_pairing_link() {
+    let link = parse_link(&format!("vocorum://pair?h=hub.home.arpa&a=10.0.0.2&p=47443&hp=47080&fp={FP}&c=abcd1234")).unwrap();
+    assert_eq!(link.name, "hub.home.arpa");
+    assert_eq!(link.address, "10.0.0.2");
+    assert_eq!((link.port, link.http_port), (47443, 47080));
+    assert_eq!(link.code, "ABCD1234");
+    assert_eq!(link.fingerprint, FP);
+  }
+
+  #[test]
+  fn refuses_bad_links() {
+    let good = format!("vocorum://pair?h=hub.home.arpa&a=10.0.0.2&p=47443&hp=47080&fp={FP}&c=CODE");
+    for bad in [
+      good.replace("vocorum://", "https://"),
+      good.replace("pair?", "other?"),
+      good.replace("a=10.0.0.2", "a=hub.example"),
+      good.replace("h=hub.home.arpa", "h=hub/evil"),
+      good.replace("p=47443", "p=99999"),
+      good.replace(FP, &FP[..60]),
+      good.replace("&c=CODE", ""),
+    ] {
+      assert!(parse_link(&bad).is_err(), "{bad}");
+    }
+  }
+
+  #[test]
+  fn colons_in_the_fingerprint_are_fine() {
+    let colons = FP.as_bytes().chunks(2).map(|c| std::str::from_utf8(c).unwrap().to_uppercase()).collect::<Vec<_>>().join(":");
+    let link = parse_link(&format!("vocorum://pair?h=h.arpa&a=::1&p=1&hp=2&fp={colons}&c=X")).unwrap();
+    assert_eq!(link.fingerprint, FP);
+  }
 }

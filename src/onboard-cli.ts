@@ -8,7 +8,7 @@
 //   discord scan [<guild id>...|all]          read only: what is there and what the bot cannot read
 //   discord import <guild id>...|all [--archive DIR] [--no-files] [--detach]
 //   discord status
-//   discord purge <guild id> [--older-than 7d] [--authors me,bot] [--keep ID,...] [--threads] [--kimaki-keep]
+//   discord purge <guild id> [--channels IDS] [--older-than 7d] [--authors me,bot] [--keep ID,...] [--threads] [--kimaki-keep]
 //   discord purge --execute <plan id> [--detach]
 //   discord report
 //   kimaki setup <machine> [--guild ID|NAME,...] [--kimaki PATH] [--lock-port N] [--peer-data-dir DIR] [--no-service] [-- kimaki args]
@@ -99,7 +99,7 @@ read, whether the bot has the Message Content intent, and how long an import and
 cleanup would take.
 
 ${TOKEN_HELP}`,
-  'discord import': `vocorum discord import GUILD_ID ...|all [--token-file FILE|--kimaki] [--archive DIR] [--no-files] [--detach] [--json]
+  'discord import': `vocorum discord import GUILD_ID ...|all [--channels IDS] [--token-file FILE|--kimaki] [--archive DIR] [--no-files] [--detach] [--json]
 
 Copies Discord servers into the hub with their Discord ids: channels, active and
 archived threads, every message, files (while Discord still has them), avatars and
@@ -108,6 +108,7 @@ gets busy. Checks every channel and resumes where it stopped when run again.
 Writes ~/.vocorum/import/report.json, including secrets it saw (masked).
 Set your Discord user id first: vocorum config set ownerDiscordIds <id>
 
+  --channels IDS  only these channels and their threads (comma separated)
   --detach     keep running in the background (needs --token-file or --kimaki)
   --archive D  also read an earlier archive (D/<guild>/<channel>.jsonl)
   --no-files   skip files (not recommended: Discord's file links expire)
@@ -116,7 +117,7 @@ ${TOKEN_HELP}`,
   'discord status': `vocorum discord status [--json]
 
 Shows how far the import and any cleanup have got.`,
-  'discord purge': `vocorum discord purge GUILD_ID [--older-than 7d] [--authors me,bot] [--keep ID,...] [--threads] [--kimaki-keep] [--token-file FILE|--kimaki] [--json]
+  'discord purge': `vocorum discord purge GUILD_ID [--channels IDS] [--older-than 7d] [--authors me,bot] [--keep ID,...] [--threads] [--kimaki-keep] [--token-file FILE|--kimaki] [--json]
 vocorum discord purge --execute PLAN_ID [--detach]
 
 Deleting on Discord cannot be undone, so this works in two steps.
@@ -127,6 +128,7 @@ failure with Discord's error code.
 
   --older-than 7d   keep messages, and whole threads, active in this period (default 7d)
   --authors LIST    whose messages: me, bot, all, or Discord user ids (default me,bot)
+  --channels IDS    only these channels and their threads
   --keep IDS        channels or threads to leave alone
   --threads         also delete threads nobody else wrote in
   --kimaki-keep     leave threads with scheduled Kimaki work alone
@@ -212,6 +214,8 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
       help(key)
       return true
     }
+    // Never run a command when help was asked for: the main CLI prints it.
+    return false
   }
   const json = flags['json'] === true
   const emit = async (value: unknown, text: () => unknown) => (json ? console.log(JSON.stringify(value, null, 1)) : await text())
@@ -359,19 +363,19 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
 
 async function printPairing(links: { setup: string | null; app: string; native: string | null }, code: string, minutes: number, forApp = false) {
   const { qrTerminal } = await import('./qr.ts')
+  const lasts = `Code ${code} works once, for ${minutes} minutes.`
   if (forApp && links.native) {
-    console.log(`\nPair the Vocorum app (code ${code}, single use, ${minutes} minutes):`)
+    console.log(`\nPair the Vocorum app. ${lasts}\n`)
     console.log(qrTerminal(links.native))
-    console.log(`Scan it with the phone's camera, or open: ${links.native}`)
+    console.log(`Scan it with the phone's camera, or open this on the device:\n  ${links.native}`)
     return
   }
   const first = links.setup ?? links.app
-  console.log(`\nPair a device (code ${code}, single use, ${minutes} minutes):`)
+  console.log(`\nPair a device. ${lasts}\n`)
   console.log(qrTerminal(first))
-  console.log(`Scan it with the device's camera, or open: ${first}`)
-  if (links.setup) console.log(`The page shows what to install for that device, then opens the app with the code filled in.\nAlready trusted? Open ${links.app} directly.`)
-  if (links.native) console.log(`Using the Vocorum app instead? Open ${links.native} on that device, or show its QR with: vocorum pair <device> --app`)
-  console.log('A new code any time: vocorum pair <device name>')
+  console.log(`Scan it with the device's camera, or open:\n  ${first}`)
+  if (links.setup) console.log(`That page shows what to install, then opens Vocorum with the code filled in.\n\nAlready set up?   ${links.app}`)
+  if (links.native) console.log(`The Vocorum app?  vocorum pair <device> --app`)
 }
 
 async function discordCommand(sub: string | undefined, rest: string[], flags: Record<string, string | true>, json: boolean, argv: string[]) {
@@ -402,7 +406,7 @@ async function discordCommand(sub: string | undefined, rest: string[], flags: Re
     }
     if (!(config.ownerDiscordIds ?? []).length) console.error('Note: your own Discord user id is not set, so your Discord messages will show under your Discord name, not as you. Set it first with: vocorum config set ownerDiscordIds <your Discord user id> (then restart the hub).')
     const { importDiscord } = await import('./discord/import.ts')
-    const report = await importDiscord(await discordRest(flags), config, paths, { guilds, archive: str(flags['archive']), files: flags['no-files'] !== true, log: json ? () => {} : console.log })
+    const report = await importDiscord(await discordRest(flags), config, paths, { guilds, channels: (str(flags['channels']) ?? '').split(',').filter(Boolean), archive: str(flags['archive']), files: flags['no-files'] !== true, log: json ? () => {} : console.log })
     await emit(report, () => {
       const gaps = Object.values(report.guilds).reduce((n, g) => n + Object.keys(g.gaps).length + g.files_failed, 0)
       console.log(gaps ? `\nSome messages or files did not arrive. Run the same command again; it resumes.` : `\nEverything arrived. Report: ${path.join(paths.root, 'import', 'report.json')}`)
@@ -444,7 +448,7 @@ async function discordCommand(sub: string | undefined, rest: string[], flags: Re
       return
     }
     const guild = rest[0]
-    if (!guild || !/^\d{1,20}$/.test(guild)) throw new Error('usage: discord purge <guild id> [--older-than 7d] [--authors me,bot] [--keep ID,...] [--threads] [--kimaki-keep]')
+    if (!guild || !/^\d{1,20}$/.test(guild)) throw new Error('usage: discord purge <guild id> [--channels IDS] [--older-than 7d] [--authors me,bot] [--keep ID,...] [--threads] [--kimaki-keep]')
     const plan = await makePlan(await discordRest(flags), config, paths, {
       guild,
       olderThanDays: duration(str(flags['older-than']) ?? '7d') / 86_400_000,
@@ -452,13 +456,16 @@ async function discordCommand(sub: string | undefined, rest: string[], flags: Re
       keep: (str(flags['keep']) ?? '').split(',').filter(Boolean),
       threads: flags['threads'] === true,
       kimakiKeep: flags['kimaki-keep'] === true,
+      ...(str(flags['channels']) && { channels: str(flags['channels'])!.split(',').filter(Boolean) }),
     })
     const summary = summarise(plan)
     await emit(summary, () => {
-      console.log(`Plan ${plan.id} for ${summary.guild}: delete ${summary.messages} messages in ${summary.channels} channels (${summary.with_secrets} with secrets first), and ${summary.threads_to_delete} threads. About ${summary.estimate_minutes} minutes.`)
+      console.log(`Plan ${plan.id} for ${summary.guild}: delete ${summary.messages} messages in ${summary.channels} channels (${summary.with_secrets} with secrets first), and ${summary.threads_to_delete} threads. About ${summary.estimate_minutes} minute${summary.estimate_minutes === 1 ? "" : "s"}.`)
       const s = summary.not_touched
       console.log(`Not touched: ${s.other_authors} by other people, ${s.recent} too recent, ${s.kept} in kept threads, ${s.not_copied} whose files the hub does not have yet, ${s.not_from_discord} written in the hub.`)
       if (s.not_copied) console.log('Copy those files first: vocorum discord import <guild id>, then plan again.')
+      const bots = summary.other_authors.filter((a) => a.bot)
+      if (bots.length) console.log(`Left as other people's, but bots or webhooks: ${bots.map((a) => `${a.name} (${a.id}, ${a.messages})`).join(', ')}. To include them: --authors me,bot,${bots.map((a) => a.id).join(',')}`)
       console.log(`Deleting on Discord cannot be undone. When the person has read this, run: vocorum discord purge --execute ${plan.id} --detach`)
     })
     return

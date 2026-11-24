@@ -68,7 +68,7 @@ test.skipIf(!ready)('pair, chat, modal, slash command, phone layout, passkey sig
   await page.screenshot({ path: path.join(shots, '1-login.png') })
 
   const code = await hub.store.createPairing('chromium')
-  await page.getByPlaceholder('Pairing code').fill(code)
+  await page.getByLabel('Pairing code').fill(code)
   await page.getByText('Pair this device').click()
   // A session is waiting for the owner, so the app opens on the Overview.
   await page.getByRole('heading', { name: /Needs you/ }).waitFor()

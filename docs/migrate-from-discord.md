@@ -90,7 +90,9 @@ node bin/vocorum.js discord purge <server id> --kimaki
 
 This changes nothing. It writes a plan of what it would delete, and prints its
 id and a summary. By default it plans your messages and your bot's that are
-older than 7 days. Threads still in use are left alone.
+older than 7 days. Threads still in use are left alone. Messages from other bots
+and webhooks are left too: the plan names them and shows how to include them.
+Add `--channels <id,id>` to try it on a few channels first.
 
 When you are happy with the plan:
 

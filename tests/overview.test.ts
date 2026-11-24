@@ -3,7 +3,8 @@
 // by every device.
 
 import { afterAll, beforeAll, expect, test } from 'vitest'
-import { pairedDevice, startTestHub, waitFor, type TestDevice } from './helpers.ts'
+import WebSocket from 'ws'
+import { LOGIN, pairedDevice, startTestHub, waitFor, type TestDevice } from './helpers.ts'
 import { startDemoBot } from './demo-bot.ts'
 
 let t: Awaited<ReturnType<typeof startTestHub>>
@@ -49,6 +50,23 @@ test('read state is shared by devices and only moves forward', async () => {
   await laptop.fetch('/client/read', { method: 'PUT', json: { read: { [id]: '100' } } })
   const state = await laptop.json<{ read: Record<string, string> }>('/client/state')
   expect(state.read[id]).toBe('200')
+})
+
+test('mark unread moves the position back; the other devices follow', async () => {
+  const id = demo.thread.id
+  const ws = new WebSocket(`ws://127.0.0.1:${t.hub.port}/client/events`, { headers: { origin: laptop.origin, cookie: laptop.cookie!, 'tailscale-user-login': LOGIN } })
+  const acks: Array<{ channel_id: string; message_id: string; manual: boolean }> = []
+  ws.on('message', (raw) => {
+    const event = JSON.parse(String(raw))
+    if (event.t === 'MESSAGE_ACK') acks.push(event.d)
+  })
+  await new Promise((resolve) => ws.once('open', resolve))
+  await phone.fetch('/client/read', { method: 'PUT', json: { read: { [id]: '300' } } })
+  expect(await waitFor(() => acks.find((a) => a.message_id === '300'))).toMatchObject({ channel_id: id, manual: false })
+  await phone.fetch('/client/read', { method: 'PUT', json: { unread: { [id]: '250' } } })
+  expect(await waitFor(() => acks.find((a) => a.manual))).toEqual({ channel_id: id, message_id: '249', manual: true })
+  expect((await laptop.json<{ read: Record<string, string> }>('/client/state')).read[id]).toBe('249')
+  ws.close()
 })
 
 test('favourites round trip', async () => {

@@ -1,6 +1,7 @@
 // Small HTTP helpers for the hub's own routes (outside the twin's /api).
 
 import type http from 'node:http'
+import zlib from 'node:zlib'
 import { HttpError } from './auth.ts'
 
 export const JSON_LIMIT = 1024 * 1024
@@ -30,9 +31,31 @@ export async function readJson<T = Record<string, unknown>>(req: http.IncomingMe
 }
 
 export function sendJson(res: http.ServerResponse, status: number, value: unknown, headers: Record<string, string> = {}) {
-  const body = value === undefined ? '' : JSON.stringify(value)
-  res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...headers })
-  res.end(body)
+  endJson(res, status, value === undefined ? '' : JSON.stringify(value), headers)
+}
+
+// JSON bodies larger than one packet go out compressed when the client accepts it
+// (/client/state is hundreds of KB on a phone). Brotli first, then gzip.
+export function endJson(res: http.ServerResponse, status: number, body: string, headers: Record<string, string> = {}) {
+  const base = { 'content-type': 'application/json', 'cache-control': 'no-store', ...headers }
+  const accepts = String(res.req?.headers['accept-encoding'] ?? '')
+  const encoding = body.length < 1400 ? null : /\bbr\b/.test(accepts) ? 'br' : /\bgzip\b/.test(accepts) ? 'gzip' : null
+  if (!encoding) {
+    res.writeHead(status, base)
+    res.end(body)
+    return
+  }
+  const done = (error: Error | null, data: Buffer) => {
+    if (error) {
+      res.writeHead(status, base)
+      res.end(body)
+      return
+    }
+    res.writeHead(status, { ...base, 'content-encoding': encoding, vary: 'Accept-Encoding', 'content-length': String(data.length) })
+    res.end(data)
+  }
+  if (encoding === 'br') zlib.brotliCompress(body, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: body.length } }, done)
+  else zlib.gzip(body, { level: 6 }, done)
 }
 
 export function sendError(res: http.ServerResponse, error: unknown) {

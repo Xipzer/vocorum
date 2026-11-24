@@ -29,7 +29,6 @@ import { Members } from './members.ts'
 import { MachineIconStore } from './machine-icons.ts'
 import { Mirror } from './mirror.ts'
 import { Requests } from './requests.ts'
-import { machineName } from './sessions.ts'
 
 // Constant time, whatever the lengths.
 function sameSecret(a: string, b: string) {
@@ -296,6 +295,9 @@ export class Hub {
 
   // Creates guilds registered by the CLI in the twin and applies renames.
   // Returns the guilds that are new to the twin.
+  // Servers copied from Discord bring their own channels: no extra #general.
+  readonly mirroredGuilds = new Set<string>()
+
   private async syncGuilds(): Promise<GuildRow[]> {
     const { config } = this.options
     await this.store.ensureGuild(config.guildId, config.guildName)
@@ -304,7 +306,7 @@ export class Hub {
     for (const guild of this.guilds) {
       const existing = await this.twin.prisma.guild.findUnique({ where: { id: guild.id } })
       if (!existing) {
-        await this.twin.createGuild({ id: guild.id, name: guild.name, ownerId: config.ownerUserId, icon: guild.icon })
+        await this.twin.createGuild({ id: guild.id, name: guild.name, ownerId: config.ownerUserId, icon: guild.icon, general: !this.mirroredGuilds.delete(guild.id) })
         created.push(guild)
       } else if (existing.name !== guild.name || existing.icon !== guild.icon) {
         await this.twin.updateGuild({ id: guild.id, name: guild.name, icon: guild.icon })
@@ -376,7 +378,7 @@ export class Hub {
     if (this.access.isHubOwner(userId)) return new Set(machines.map((m) => m.toLowerCase()))
     const visible = await this.access.visibleChannels(userId)
     const categories = await this.twin.prisma.channel.findMany({ where: { id: { in: [...visible] }, type: 4 }, select: { name: true } })
-    return new Set(categories.flatMap((c) => machineName(c.name ?? '', machines)?.toLowerCase() ?? []))
+    return new Set(categories.flatMap((c) => this.sessions.machineOf(c.name ?? '')?.toLowerCase() ?? []))
   }
 
   private async handle(req: http.IncomingMessage, res: http.ServerResponse) {

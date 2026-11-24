@@ -123,7 +123,10 @@ export class Mirror {
   async guild(machine: string | null, id: string, name: string) {
     if (!/^\d{1,20}$/.test(id)) throw new HttpError(400, 'Bad guild id')
     const existing = this.hub.guilds.find((g) => g.id === id)
-    if (!existing) await this.hub.store.addGuild(name, { id })
+    if (!existing) {
+      this.hub.mirroredGuilds.add(id)
+      await this.hub.store.addGuild(name, { id })
+    }
     else if (name && existing.name !== name) await this.hub.store.renameGuild(id, name)
     if (machine) {
       const memberships = (await this.hub.store.botGuilds()).get(machine) ?? [this.hub.options.config.guildId]
@@ -410,6 +413,7 @@ export class Mirror {
     if (!/^\d{1,20}$/.test(id) || !name) throw new HttpError(400, 'discord_user_id and name are required')
     await this.hub.store.db.execute({ sql: 'INSERT INTO machine_bots (machine, discord_user_id, name) VALUES (?, ?, ?) ON CONFLICT(machine) DO UPDATE SET discord_user_id = excluded.discord_user_id, name = excluded.name', args: [machine, id, name] })
     const bots = await this.machineBots()
+    await this.hub.sessions.reloadBots()
     this.hub.events.send('MACHINE_BOTS_UPDATE', { machine, ...bots[machine] }, { shape: async (userId) => ((await this.hub.visibleMachines(userId)).has(machine.toLowerCase()) ? { machine, ...bots[machine] } : null) })
     return { machine, ...bots[machine] }
   }

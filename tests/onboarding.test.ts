@@ -65,6 +65,10 @@ test('import keeps Discord ids, pages past 100 messages, verifies every channel 
   expect(g.complete).toBe(g.channels + g.threads)
   for (const id of [posted[0]!, posted[129]!, posted.at(-1)!]) expect(await hub.hub.twin.prisma.message.findUnique({ where: { id } })).not.toBeNull()
   expect(await hub.hub.twin.prisma.message.count({ where: { channelId } })).toBe(130)
+  // The copy has Discord's channels and nothing else (no extra #general of the hub's own).
+  const onDiscord = new Set((await rest.get<Array<{ id: string }>>(`/guilds/${guildId}/channels`)).map((c) => c.id))
+  const inHub = (await hub.hub.twin.prisma.channel.findMany({ where: { guildId } })).map((c) => c.id)
+  expect(inHub.filter((id) => !onDiscord.has(id) && id !== threadId)).toEqual([])
   expect(report.secrets).toEqual([expect.objectContaining({ kind: 'env_secret', masked: 'API_TO…5678' })])
   expect(JSON.stringify(report)).not.toContain('abcd1234efgh5678')
   // A second run skips finished channels and creates nothing.
@@ -90,6 +94,10 @@ test('purge plans only what the hub holds, and never a message whose files it la
   // The message with a secret goes first.
   expect(plan.messages[0]![1]).toBe(posted[3])
   expect(plan.threads).toEqual([threadId])
+  // --channels: only that channel and its threads; an unknown one plans nothing.
+  const narrow = await makePlan(rest, config(), hub.paths, { guild: guildId, olderThanDays: 0, authors: ['bot'], keep: [], threads: true, kimakiKeep: false, channels: [threadId] })
+  expect(new Set(narrow.messages.map((m) => m[0]))).toEqual(new Set([threadId]))
+  await expect(makePlan(rest, config(), hub.paths, { guild: guildId, olderThanDays: 0, authors: ['bot'], keep: [], threads: true, kimakiKeep: false, channels: ['1'] })).rejects.toThrow(/none of 1/)
   expect(summarise(plan)).toMatchObject({ messages: posted.length - 1, with_secrets: 1, threads_to_delete: 1 })
   // A changed plan is refused.
   const file = path.join(hub.paths.root, 'purge', `plan-${plan.id}.json`)

@@ -193,8 +193,23 @@ export async function doctor(paths: HubPaths, { repo = path.resolve(import.meta.
     const guilds = Object.values(raw.guilds ?? (raw as Record<string, { gaps?: Record<string, unknown>; files_failed?: number }>)).filter((g) => g && typeof g === 'object')
     const finished = raw.guilds ? Boolean(raw.finished) : true
     const gaps = guilds.reduce((n, g) => n + Object.keys(g.gaps ?? {}).length, 0)
-    const failed = guilds.reduce((n, g) => n + (g.files_failed ?? 0), 0)
-    add('discord-import', !finished || gaps || failed ? 'warn' : 'ok', !finished ? 'running or stopped early' : gaps || failed ? `${gaps} channels with missing messages, ${failed} files not copied` : `complete (${guilds.length} servers)`, gaps || failed || !finished ? 'vocorum discord import <guild id> (resumes where it stopped)' : undefined)
+    // Files are counted in the hub, not the report: a later run may have copied them, and a
+    // file Discord already deleted is gone for good, so it is no reason to warn.
+    let failed = guilds.reduce((n, g) => n + (g.files_failed ?? 0), 0)
+    let gone = 0
+    if (fs.existsSync(paths.twinDb)) {
+      const twin = createClient({ url: `file:${paths.twinDb}` })
+      try {
+        const row = (await twin.execute(`SELECT sum(coalesce(json_extract(j.value, '$.missing'), 0) = 1) AS gone, sum(coalesce(json_extract(j.value, '$.missing'), 0) = 0 AND (json_extract(j.value, '$.url') LIKE 'https://cdn.discordapp.com/%' OR json_extract(j.value, '$.url') LIKE 'https://media.discordapp.net/%')) AS left FROM Message m, json_each(m.attachments) j WHERE m.attachments != '[]'`)).rows[0]
+        gone = Number(row?.['gone'] ?? 0)
+        failed = Number(row?.['left'] ?? 0)
+      } catch {
+      } finally {
+        twin.close()
+      }
+    }
+    const goneNote = gone ? `; ${plural(gone, 'file')} Discord had already deleted` : ''
+    add('discord-import', !finished || gaps || failed ? 'warn' : 'ok', !finished ? 'running or stopped early' : gaps || failed ? [gaps && plural(gaps, 'channel') + ' with missing messages', failed && plural(failed, 'file') + ' not copied yet'].filter(Boolean).join(', ') + goneNote : `complete (${guilds.length} servers)${goneNote}`, gaps || failed || !finished ? 'vocorum discord import <guild id> (resumes where it stopped)' : undefined)
   }
 
   const funnel = await quiet('tailscale', ['funnel', 'status'])
@@ -202,12 +217,32 @@ export async function doctor(paths: HubPaths, { repo = path.resolve(import.meta.
   return checks
 }
 
+const TITLES: Record<string, string> = { node: 'Node.js', openssl: 'OpenSSL', ffmpeg: 'ffmpeg', https: 'HTTPS', 'ca-fingerprint': 'CA fingerprint', 'listen-address': 'Listening on', 'agent-access': 'Agent access', 'kimaki-projects': 'Kimaki projects', 'discord-import': 'Discord import', 'tailscale-funnel': 'Tailscale Funnel' }
+// "listen-address" reads "Listening on"; "name <host>" keeps the host as it is.
+const title = (id: string) => {
+  const [head = '', ...rest] = id.split(' ')
+  return [TITLES[head] ?? head.charAt(0).toUpperCase() + head.slice(1).replace(/-/g, ' '), ...rest].join(' ')
+}
+const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
+
+// One line per check: a mark, the name in a column, what was found; the fix underneath.
+// Colour only on a terminal that wants it (NO_COLOR turns it off).
+// One line per check or step: a mark, the name in a column, then the fix underneath.
+// setup prints its steps the same way.
+export function printLine(status: Check['status'], name: string, detail: string, fix: string | undefined, width = 16) {
+  const colour = process.stdout.isTTY && !process.env['NO_COLOR']
+  const paint = (code: number, text: string) => (colour ? `\x1b[${code}m${text}\x1b[0m` : text)
+  const mark = { ok: paint(32, '✓'), warn: paint(33, '!'), fail: paint(31, '✗'), skip: paint(90, '-') }
+  console.log(`${mark[status]} ${name.padEnd(width)}  ${status === 'skip' ? paint(90, detail) : detail}`)
+  if (fix && status !== 'ok') console.log(`  ${' '.repeat(width)}  ${paint(90, 'Fix:')} ${fix}`)
+}
+
 export function printChecks(checks: Check[]) {
-  const mark = { ok: 'ok  ', warn: 'warn', fail: 'FAIL', skip: 'skip' }
-  for (const c of checks) {
-    console.log(`${mark[c.status]}  ${c.id}: ${c.detail}`)
-    if (c.fix && c.status !== 'ok') console.log(`      fix: ${c.fix}`)
-  }
+  // A long name (a host) does not push every other line out.
+  const width = Math.min(16, Math.max(...checks.map((c) => title(c.id).length)))
+  for (const c of checks) printLine(c.status, title(c.id), c.detail, c.fix, width)
   const failed = checks.filter((c) => c.status === 'fail').length
-  console.log(failed ? `\n${failed} problem(s) to fix.` : '\nNo problems.')
+  const warned = checks.filter((c) => c.status === 'warn').length
+  const parts = [failed && plural(failed, 'problem') + ' to fix', warned && plural(warned, 'warning')].filter(Boolean)
+  console.log(`\n${parts.length ? `${parts.join(', ')}.` : 'All good.'}`)
 }

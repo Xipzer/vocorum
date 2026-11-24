@@ -40,7 +40,7 @@ async function pair(page: Page) {
   await cdp.send('WebAuthn.enable')
   await cdp.send('WebAuthn.addVirtualAuthenticator', { options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } })
   await page.goto(origin)
-  await page.getByPlaceholder('Pairing code').fill(await hub.store.createPairing(`chromium-${Math.random()}`))
+  await page.getByLabel('Pairing code').fill(await hub.store.createPairing(`chromium-${Math.random()}`))
   await page.getByText('Pair this device').click()
   await page.locator('.channel').first().waitFor()
   return cdp

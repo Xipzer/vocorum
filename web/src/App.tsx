@@ -19,6 +19,7 @@ import { snowflakeGt, store, useStore } from './store.ts'
 import { bellSheet, useFocusReporting, useNotificationClicks } from './notify.ts'
 import { native, shareOrigin } from './native.ts'
 import { NativeLogin } from './NativeLogin.tsx'
+import { loginError } from './login.ts'
 import { Tooltips } from './Tooltip.tsx'
 import { WorkspacePanel } from './Workspace.tsx'
 import { LoadingMark } from './components.tsx'
@@ -48,66 +49,75 @@ function Login({ onDone }: { onDone: () => void }) {
   const [code, setCode] = useState(PAIR_CODE ?? '')
   const [pairing, setPairing] = useState(PAIR_CODE !== null)
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const run = async (fn: () => Promise<void>) => {
+  const [error, setError] = useState<{ on: 'signin' | 'pair'; text: string } | null>(null)
+  const run = async (on: 'signin' | 'pair', fn: () => Promise<void>) => {
     setBusy(true)
     setError(null)
     try {
       await fn()
       onDone()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError({ on, text: loginError(e) })
     } finally {
       setBusy(false)
     }
   }
   if (native) return <NativeLogin onDone={onDone} />
+  const pairError = error?.on === 'pair' ? error.text : null
   return (
     <div className="login">
       <div className="login-card">
-        <h1>Vocorum</h1>
-        <p className="muted">{pairing ? 'Pair this device' : 'Private hub'}</p>
-        {pairing ? null : <>
-        <button
-          className="button primary wide"
-          disabled={busy}
-          onClick={() =>
-            void run(async () => {
-              const { challengeId, options } = await api.loginOptions()
-              await api.login(challengeId, await startAuthentication({ optionsJSON: options }))
-            })
-          }
-        >
-          Sign in with passkey
-        </button>
-        <div className="login-divider">
-          <span>New device</span>
+        <div className="login-head">
+          <h1>{pairing ? 'Pair this device' : 'Vocorum'}</h1>
+          <p>{pairing ? 'Create a passkey on this device to finish.' : "Sign in with this device's passkey."}</p>
         </div>
-        </>}
+        {!pairing && (
+          <>
+            <button
+              className="button primary wide"
+              disabled={busy}
+              onClick={() =>
+                void run('signin', async () => {
+                  const { challengeId, options } = await api.loginOptions()
+                  await api.login(challengeId, await startAuthentication({ optionsJSON: options }))
+                })
+              }
+            >
+              Sign in with passkey
+            </button>
+            {error?.on === 'signin' && <p className="login-error" role="alert">{error.text}</p>}
+            <div className="login-divider">
+              <span>New device</span>
+            </div>
+          </>
+        )}
         <form
           onSubmit={(e) => {
             e.preventDefault()
-            void run(async () => {
+            void run('pair', async () => {
               const { challengeId, options } = await api.registerOptions(code)
               await api.register(challengeId, await startRegistration({ optionsJSON: options }))
             })
           }}
         >
-          <input className="code-input" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="Pairing code" autoComplete="one-time-code" autoCapitalize="characters" spellCheck={false} />
+          <label className={`login-label${pairError ? ' bad' : ''}`} htmlFor="pairing-code">
+            Pairing code
+            {pairError && <span role="alert"> · {pairError}</span>}
+          </label>
+          <input id="pairing-code" className="code-input" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} autoComplete="one-time-code" autoCapitalize="characters" spellCheck={false} />
           <button className={`button wide${pairing ? ' primary' : ''}`} disabled={busy || code.trim().length < 6} autoFocus={pairing}>
             {pairing ? 'Create passkey' : 'Pair this device'}
           </button>
         </form>
         {pairing ? (
-          <button className="link-button help" onClick={() => setPairing(false)}>
-            Sign in instead
+          <button className="link-button login-help" onClick={() => setPairing(false)}>
+            This device already has a passkey? Sign in
           </button>
         ) : (
-          <p className="help">
-            Get a code on the hub machine with <code>vocorum devices add &lt;name&gt;</code>
+          <p className="login-help">
+            No code? On the hub machine, run <code>vocorum pair &lt;device&gt;</code>
           </p>
         )}
-        {error && <div className="error">{error}</div>}
       </div>
     </div>
   )
@@ -1047,13 +1057,32 @@ export function App() {
     }
   }
   useEffect(() => void check(), [])
+  // A hub that is restarting or out of reach: try again on its own every few seconds.
+  useEffect(() => {
+    if (phase !== 'error') return
+    const timer = window.setInterval(() => void check(), 5000)
+    return () => window.clearInterval(timer)
+  }, [phase])
   if (phase === 'loading')
     return (
       <div className="splash">
         <LoadingMark />
       </div>
     )
-  if (phase === 'error') return <div className="splash error">{error}</div>
+  if (phase === 'error')
+    return (
+      <div className="login">
+        <div className="login-card" role="alert">
+          <div className="login-head">
+            <h1>Can't reach the hub</h1>
+            <p>{/can't reach the hub/i.test(error) ? 'Check this device is on your network. It tries again by itself.' : error}</p>
+          </div>
+          <button className="button primary wide" onClick={() => void check()}>
+            Try again
+          </button>
+        </div>
+      </div>
+    )
   if (phase === 'login') return <Login onDone={() => void check()} />
   return <Main />
 }

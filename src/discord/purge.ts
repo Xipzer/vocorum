@@ -26,6 +26,8 @@ export type PurgeOptions = {
   keep: string[]
   threads: boolean
   kimakiKeep: boolean
+  // Only these channels and their threads; empty means the whole server.
+  channels?: string[]
 }
 
 export type Plan = {
@@ -38,9 +40,14 @@ export type Plan = {
   threads: string[]
   skipped: { not_copied: number; other_authors: number; recent: number; kept: number; not_from_discord: number }
   authors: string[]
+  // Who wrote the messages left as "other people", so a webhook or another bot can be added with --authors.
+  others?: Array<{ id: string; name: string; bot: boolean; messages: number }>
 }
 
-const DELETABLE_TYPES = new Set([0, 19, 20])
+// Message types Discord lets their author (or a moderator) delete: replies, slash command
+// answers, and notices such as "pinned a message" or "started a thread". Joins, boosts and
+// thread starters are left; a type Discord refuses (50021) is counted, not failed.
+const DELETABLE_TYPES = new Set([0, 6, 7, 8, 9, 10, 11, 12, 18, 19, 20, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 36, 37, 38, 39, 44, 46])
 const DAY = 86_400_000
 
 function hashPlan(plan: Omit<Plan, 'id' | 'created'>) {
@@ -85,12 +92,15 @@ export async function makePlan(rest: DiscordRest, config: HubConfig, paths: HubP
   try {
     const guild = (await twin.execute({ sql: 'SELECT id, name FROM Guild WHERE id = ?', args: [options.guild] })).rows[0]
     if (!guild) throw new Error(`The hub has no server ${options.guild}. Import it first: vocorum discord import ${options.guild}`)
-    const channels = (await twin.execute({ sql: 'SELECT id, type, parentId FROM Channel WHERE guildId = ?', args: [options.guild] })).rows
+    const only = options.channels?.length ? new Set(options.channels) : null
+    const channels = (await twin.execute({ sql: 'SELECT id, type, parentId FROM Channel WHERE guildId = ?', args: [options.guild] })).rows.filter((c) => !only || only.has(String(c['id'])) || (THREAD_TYPES.has(Number(c['type'])) && only.has(String(c['parentId']))))
+    if (only && !channels.length) throw new Error(`The hub has none of ${[...only].join(', ')} in this server. Import them first.`)
     const isThread = new Map(channels.map((c) => [String(c['id']), THREAD_TYPES.has(Number(c['type']))]))
     const fromDiscord = new Set((await hubDb.execute("SELECT message_id FROM message_origins WHERE origin = 'discord'")).rows.map((r) => String(r['message_id'])))
     const cutoff = Date.now() - options.olderThanDays * DAY
     const skipped = { not_copied: 0, other_authors: 0, recent: 0, kept: 0, not_from_discord: 0 }
     const messages: Plan['messages'] = []
+    const otherAuthors = new Map<string, number>()
     const threadState = new Map<string, { last: number; others: boolean; planned: number; total: number }>()
     for (const c of channels) {
       const channelId = String(c['id'])
@@ -114,7 +124,10 @@ export async function makePlan(rest: DiscordRest, config: HubConfig, paths: HubP
           continue
         }
         if (!own) {
-          if (!system) skipped.other_authors++
+          if (!system) {
+            skipped.other_authors++
+            otherAuthors.set(author, (otherAuthors.get(author) ?? 0) + 1)
+          }
           continue
         }
         // Whole threads go together: an active thread is left alone until it is quiet.
@@ -136,7 +149,12 @@ export async function makePlan(rest: DiscordRest, config: HubConfig, paths: HubP
     }
     messages.sort((a, b) => a[2] - b[2] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
     const threads = options.threads ? [...threadState].filter(([id, s]) => !s.others && !keep.has(id) && s.last <= cutoff && s.planned > 0).map(([id]) => id) : []
-    const body = { guild: { id: String(guild['id']), name: String(guild['name']) }, options, messages, threads, skipped, authors: [...authors] }
+    const others = []
+    for (const [id, count] of [...otherAuthors].sort((a, b) => b[1] - a[1]).slice(0, 10)) {
+      const user = (await twin.execute({ sql: 'SELECT username, bot FROM User WHERE id = ?', args: [id] })).rows[0]
+      others.push({ id, name: String(user?.['username'] ?? id), bot: Boolean(Number(user?.['bot'] ?? 0)), messages: count })
+    }
+    const body = { guild: { id: String(guild['id']), name: String(guild['name']) }, options, messages, threads, skipped, authors: [...authors], others }
     const plan: Plan = { id: hashPlan(body), created: new Date().toISOString(), ...body }
     writeJson(path.join(jobDir(paths, 'purge'), `plan-${plan.id}.json`), plan)
     return plan
@@ -162,6 +180,7 @@ export function summarise(plan: Plan) {
     threads_to_delete: plan.threads.length,
     estimate_minutes: minutes,
     not_touched: plan.skipped,
+    other_authors: plan.others ?? [],
   }
 }
 

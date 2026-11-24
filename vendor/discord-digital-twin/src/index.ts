@@ -398,13 +398,13 @@ export class DigitalDiscord {
   // A guild created after start, with the bot and the given users as members
   // and a #general channel, like a new Discord server. Bots see it once
   // setGatewayClientGuilds() adds it.
-  async createGuild({ id = generateSnowflake(), name, ownerId, icon = null, userIds = [] }: { id?: string; name: string; ownerId: string; icon?: string | null; userIds?: string[] }): Promise<string> {
+  async createGuild({ id = generateSnowflake(), name, ownerId, icon = null, userIds = [], general = true }: { id?: string; name: string; ownerId: string; icon?: string | null; userIds?: string[]; general?: boolean }): Promise<string> {
     await this.prisma.guild.create({ data: { id, name, ownerId, icon } })
     await this.prisma.role.create({ data: { id, guildId: id, name: '@everyone', permissions: '1071698660929', position: 0 } })
     for (const userId of new Set([this.botUserId, ownerId, ...userIds])) {
       if (await this.prisma.user.findUnique({ where: { id: userId } })) await this.prisma.guildMember.create({ data: { guildId: id, userId } })
     }
-    await this.prisma.channel.create({ data: { id: generateSnowflake(), guildId: id, type: 0, name: 'general' } })
+    if (general) await this.prisma.channel.create({ data: { id: generateSnowflake(), guildId: id, type: 0, name: 'general' } })
     if (!this.guildIds.includes(id)) this.guildIds.push(id)
     return id
   }

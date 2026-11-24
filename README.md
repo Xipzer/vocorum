@@ -11,8 +11,8 @@ or any other company.
 
 > **Early preview.** Expect rough edges and breaking changes. Known issues:
 >
-> - Signing in an iPhone has not been tested end to end yet. It works on a Mac
->   and in desktop browsers.
+> - On iPhone, signing in and reading work. Sending messages and notifications
+>   from the Home Screen app have not been confirmed yet.
 
 ## What it does
 
