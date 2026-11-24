@@ -2,7 +2,7 @@
 // hub. Every command takes --json, so an agent can drive it and read results.
 //
 //   setup [--port N] [--address IP] [--name a,b] [--allow CIDR,...] [--no-service] [--dry-run] [--yes]
-//   doctor
+//   doctor | restart
 //   pair <device> [--ttl 30m] [--person <username>]   one link and a QR code for a new device
 //   config get [key] | config set <key> <value>
 //   discord scan [<guild id>...|all]          read only: what is there and what the bot cannot read
@@ -47,7 +47,104 @@ function parse(argv: string[]) {
   }
   return { flags, positional }
 }
-const BOOLEAN = new Set(['no-service', 'remove', 'json', 'yes', 'dry-run', 'no-service', 'detach', 'no-files', 'threads', 'kimaki-keep', 'kimaki'])
+const TOKEN_HELP = `Discord token, in this order: --token-file FILE (a file only you can read, chmod 600),
+the DISCORD_BOT_TOKEN environment variable, or --kimaki (this machine's Kimaki bot).
+The token is never printed or written anywhere.`
+
+export const HELP: Record<string, string> = {
+  setup: `vocorum setup [--port N] [--address IP] [--name NAME,...] [--allow CIDR,...] [--no-service] [--dry-run] [--yes] [--json]
+
+Sets up the hub on this machine in one go, and is safe to run again.
+  - Checks Node 22+, the build and openssl.
+  - Picks a private address: your Tailscale IP, else a WireGuard address, else this machine only.
+  - Names the hub: your Tailscale machine name first (devices need no DNS setup), then hub.home.arpa.
+    The certificate comes from the hub's own authority, so the names never reach public certificate logs.
+  - Creates ~/.vocorum, turns on HTTPS for your own devices, installs and starts the service,
+    adds a vocorum command to ~/.local/bin, checks everything, and prints a pairing link and QR code.
+
+  --dry-run     show what it would do, change nothing
+  --yes         go ahead without asking (agents: only after the person said yes)
+  --address IP  listen on this private address instead of the one found
+  --name A,B    hub names, the first is the app address
+  --allow CIDR  networks allowed to connect (default: the tailnet)
+  --port N      local port for a new hub (default 47100)
+  --no-service  do not install a service; start it with: vocorum start`,
+  doctor: `vocorum doctor [--json]
+
+Checks every layer a device or bot goes through and prints the command that fixes
+each problem. Read only. Exits 1 when something fails.`,
+  pair: `vocorum pair <device name> [--ttl 30m] [--person USERNAME] [--app] [--json]
+
+Makes a single-use pairing code and prints one link and a QR code. The link opens
+the hub's setup page by address, which works before the device trusts anything; it
+shows what to install for that device and then opens the app with the code filled in.
+
+  --ttl 30m          how long the code works (at most 24h; default 30m)
+  --person USERNAME  a device for someone you invited (default: you)
+  --app              QR for the Vocorum app instead of the browser (the app checks the
+                     hub's certificate itself: no profile, DNS step or passkey needed)`,
+  config: `vocorum config get [KEY] [--json]
+vocorum config set KEY VALUE
+
+Keys you can set: ownerUsername, ownerDiscordIds (your Discord user ids, comma
+separated), botUsername, guildName, publicUrl (or none), tailscaleLogin (or none).
+Restart the hub afterwards: vocorum restart`,
+  restart: `vocorum restart
+
+Restarts this hub's service (systemd or launchd) and waits until it answers.`,
+  'discord scan': `vocorum discord scan [GUILD_ID ...|all] [--token-file FILE|--kimaki] [--json]
+
+Read only. Shows each Discord server's channels and threads, what the bot cannot
+read, whether the bot has the Message Content intent, and how long an import and a
+cleanup would take.
+
+${TOKEN_HELP}`,
+  'discord import': `vocorum discord import GUILD_ID ...|all [--token-file FILE|--kimaki] [--archive DIR] [--no-files] [--detach] [--json]
+
+Copies Discord servers into the hub with their Discord ids: channels, active and
+archived threads, every message, files (while Discord still has them), avatars and
+server icons. History is marked read. Runs beside the hub and slows down when the hub
+gets busy. Checks every channel and resumes where it stopped when run again.
+Writes ~/.vocorum/import/report.json, including secrets it saw (masked).
+Set your Discord user id first: vocorum config set ownerDiscordIds <id>
+
+  --detach     keep running in the background (needs --token-file or --kimaki)
+  --archive D  also read an earlier archive (D/<guild>/<channel>.jsonl)
+  --no-files   skip files (not recommended: Discord's file links expire)
+
+${TOKEN_HELP}`,
+  'discord status': `vocorum discord status [--json]
+
+Shows how far the import and any cleanup have got.`,
+  'discord purge': `vocorum discord purge GUILD_ID [--older-than 7d] [--authors me,bot] [--keep ID,...] [--threads] [--kimaki-keep] [--token-file FILE|--kimaki] [--json]
+vocorum discord purge --execute PLAN_ID [--detach]
+
+Deleting on Discord cannot be undone, so this works in two steps.
+The first form only writes a plan and prints its id and what it would delete. It
+only plans messages the hub already holds with their files; nothing can turn that off.
+The second form runs exactly that plan, can be stopped and run again, and logs every
+failure with Discord's error code.
+
+  --older-than 7d   keep messages, and whole threads, active in this period (default 7d)
+  --authors LIST    whose messages: me, bot, all, or Discord user ids (default me,bot)
+  --keep IDS        channels or threads to leave alone
+  --threads         also delete threads nobody else wrote in
+  --kimaki-keep     leave threads with scheduled Kimaki work alone
+  --detach          run in the background; follow it with: vocorum discord status
+
+${TOKEN_HELP}`,
+  'discord report': `vocorum discord report [--json]
+
+Writes ~/.vocorum/purge/PURGE-REPORT.md: what the hub holds, what was deleted, what
+failed and why, secrets to rotate (masked), what Discord still keeps, and the steps
+only you can do on Discord.`,
+}
+
+function help(key: string) {
+  console.log(HELP[key] ?? Object.values(HELP).map((h) => h.split('\n')[0]).join('\n'))
+}
+
+const BOOLEAN = new Set(['help', 'app', 'no-service', 'remove', 'json', 'yes', 'dry-run', 'no-service', 'detach', 'no-files', 'threads', 'kimaki-keep', 'kimaki'])
 
 const str = (v: string | true | undefined) => (typeof v === 'string' ? v : undefined)
 
@@ -67,11 +164,16 @@ function requireConfig(): HubConfig {
 // The links a new device opens: the setup page by address (works before any
 // trust or DNS exists), and the app with the code in the fragment, which no
 // server ever logs.
-export function pairingLinks(config: HubConfig, code: string) {
+// The Vocorum apps pair from their own link instead, which carries the CA's
+// fingerprint: no certificate or DNS setup and no passkey on those devices.
+export async function pairingLinks(config: HubConfig, code: string) {
   const l = config.privateListener
-  if (!l) return { setup: null, app: `http://localhost:${config.port}/#pair=${code}` }
+  if (!l) return { setup: null, app: `http://localhost:${config.port}/#pair=${code}`, native: null }
   const host = l.address.includes(':') ? `[${l.address}]` : l.address
-  return { setup: l.httpPort === null ? null : `http://${host}:${l.httpPort}/?code=${code}`, app: `https://${l.names[0]}:${l.port}/#pair=${code}` }
+  const { appPairLink } = await import('./private-listener.ts')
+  const caCert = path.join(paths.ca, 'ca.crt')
+  const native = fs.existsSync(caCert) ? appPairLink(l, caCert, code) : null
+  return { setup: l.httpPort === null ? null : `http://${host}:${l.httpPort}/?code=${code}`, app: `https://${l.names[0]}:${l.port}/#pair=${code}`, native }
 }
 
 const CONFIG_KEYS: Record<string, (value: string) => unknown> = {
@@ -94,8 +196,23 @@ async function discordRest(flags: Record<string, string | true>) {
 }
 
 export async function onboardCommand(argv: string[]): Promise<boolean> {
+  // `vocorum ... | head` closes the pipe early: that is not an error.
+  process.stdout.on('error', (error: NodeJS.ErrnoException) => {
+    if (error.code === 'EPIPE') process.exit(0)
+  })
   const { flags, positional } = parse(argv)
   const [command, sub, ...rest] = positional
+  if (command === 'help' && sub && (HELP[sub] || HELP[`${sub} ${rest[0]}`])) {
+    help(HELP[sub] ? sub : `${sub} ${rest[0]}`)
+    return true
+  }
+  if (flags['help'] === true || argv.includes('-h')) {
+    const key = command === 'discord' ? `discord ${sub}` : String(command)
+    if (HELP[key]) {
+      help(key)
+      return true
+    }
+  }
   const json = flags['json'] === true
   const emit = async (value: unknown, text: () => unknown) => (json ? console.log(JSON.stringify(value, null, 1)) : await text())
 
@@ -113,7 +230,7 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
       repo,
     })
     const config = loadConfig(paths)
-    const links = result.pairing && config ? pairingLinks(config, result.pairing.code) : null
+    const links = result.pairing && config ? await pairingLinks(config, result.pairing.code) : null
     await emit({ ...result, links }, async () => {
       if (flags['dry-run']) return console.log('\nDry run: nothing changed. Run again without --dry-run.')
       const { printChecks } = await import('./doctor.ts')
@@ -121,6 +238,24 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
       printChecks(result.checks)
       if (links && result.pairing) await printPairing(links, result.pairing.code, result.pairing.ttlMinutes)
     })
+    return true
+  }
+  if (command === 'restart') {
+    const config = requireConfig()
+    const { serviceName } = await import('./setup.ts')
+    const { hubLatency } = await import('./doctor.ts')
+    const { execFile } = await import('node:child_process')
+    const unit = serviceName(paths)
+    const [cmd, args] = process.platform === 'darwin' ? ['launchctl', ['kickstart', '-k', `gui/${process.getuid?.()}/dev.${unit}`]] : ['systemctl', ['--user', 'restart', unit]]
+    await new Promise<void>((resolve, reject) => execFile(cmd as string, args as string[], (error) => (error ? reject(new Error(`${cmd} failed: ${error.message}. Is the service installed? vocorum setup`)) : resolve())))
+    const started = Date.now()
+    let latency: number | null | 'other' = null
+    while (Date.now() - started < 30_000 && typeof latency !== 'number') {
+      await new Promise((r) => setTimeout(r, 300))
+      latency = await hubLatency(config, paths)
+    }
+    if (typeof latency !== 'number') throw new Error(`The hub did not come back within 30 s. journalctl --user -u ${unit} -n 50`)
+    await emit({ restarted: unit, seconds: (Date.now() - started) / 1000 }, () => console.log(`Restarted ${unit}; answering after ${((Date.now() - started) / 1000).toFixed(1)} s.`))
     return true
   }
   if (command === 'doctor') {
@@ -141,12 +276,25 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
     await store.migrate()
     let code: string
     try {
-      code = await store.createPairing(name, { ttlMs })
+      let userId: string | null = null
+      const person = str(flags['person'])
+      if (person) {
+        const { openTwin } = await import('./discord/local.ts')
+        const twin = openTwin(paths)
+        try {
+          const row = (await twin.execute({ sql: 'SELECT id FROM User WHERE username = ? AND bot = 0', args: [person.toLowerCase()] })).rows[0]
+          if (!row) throw new Error(`No person "${person}". Invite them first: vocorum people invite ${person}`)
+          userId = String(row['id']) === config.ownerUserId ? null : String(row['id'])
+        } finally {
+          twin.close()
+        }
+      }
+      code = await store.createPairing(name, { ttlMs, userId })
     } finally {
       store.close()
     }
-    const links = pairingLinks(config, code)
-    await emit({ device: name, code, expires_in_minutes: ttlMs / 60_000, links }, () => printPairing(links, code, ttlMs / 60_000))
+    const links = await pairingLinks(config, code)
+    await emit({ device: name, code, expires_in_minutes: ttlMs / 60_000, links }, () => printPairing(links, code, ttlMs / 60_000, flags['app'] === true))
     return true
   }
   if (command === 'config') {
@@ -163,7 +311,7 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
       const parseValue = key ? CONFIG_KEYS[key] : undefined
       if (!key || !parseValue || value.length === 0) throw new Error(`usage: config set <key> <value>. Keys: ${Object.keys(CONFIG_KEYS).join(', ')}`)
       const updated = initHub(paths, { [key]: parseValue(value.join(' ')) } as Partial<HubConfig>)
-      await emit({ [key]: (updated as Record<string, unknown>)[key], restart: true }, () => console.log(`${key} set. Restart the hub to apply: systemctl --user restart vocorum`))
+      await emit({ [key]: (updated as Record<string, unknown>)[key], restart: true }, () => console.log(`${key} set. Restart the hub to apply: vocorum restart`))
       return true
     }
     throw new Error('usage: config get [key] | config set <key> <value>')
@@ -209,13 +357,20 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
   return false
 }
 
-async function printPairing(links: { setup: string | null; app: string }, code: string, minutes: number) {
+async function printPairing(links: { setup: string | null; app: string; native: string | null }, code: string, minutes: number, forApp = false) {
   const { qrTerminal } = await import('./qr.ts')
+  if (forApp && links.native) {
+    console.log(`\nPair the Vocorum app (code ${code}, single use, ${minutes} minutes):`)
+    console.log(qrTerminal(links.native))
+    console.log(`Scan it with the phone's camera, or open: ${links.native}`)
+    return
+  }
   const first = links.setup ?? links.app
   console.log(`\nPair a device (code ${code}, single use, ${minutes} minutes):`)
   console.log(qrTerminal(first))
   console.log(`Scan it with the device's camera, or open: ${first}`)
   if (links.setup) console.log(`The page shows what to install for that device, then opens the app with the code filled in.\nAlready trusted? Open ${links.app} directly.`)
+  if (links.native) console.log(`Using the Vocorum app instead? Open ${links.native} on that device, or show its QR with: vocorum pair <device> --app`)
   console.log('A new code any time: vocorum pair <device name>')
 }
 
@@ -232,7 +387,7 @@ async function discordCommand(sub: string | undefined, rest: string[], flags: Re
         console.log(`\n${g.name} (${g.id}): ${g.channels} channels in ${g.categories} categories, ${g.threads} threads (${g.thread_messages} messages in threads)`)
         if (g.unreadable.length) console.log(`  the bot cannot read ${g.unreadable.length}: ${g.unreadable.slice(0, 10).join(', ')}${g.unreadable.length > 10 ? ', …' : ''}`)
       }
-      console.log(`\nImport takes about ${result.estimate.import_minutes} minutes; deleting it all from Discord later about ${result.estimate.purge_hours} hours.`)
+      console.log(`\nImport takes about ${result.estimate.import_minutes} minute${result.estimate.import_minutes === 1 ? '' : 's'} plus channel history; deleting it from Discord later about ${result.estimate.purge_hours < 1 ? `${Math.max(1, Math.round(result.estimate.purge_hours * 60))} minutes` : `${result.estimate.purge_hours} hours`}.`)
       console.log('Next: vocorum discord import <guild id> (or all) --detach')
     })
     return
@@ -250,8 +405,8 @@ async function discordCommand(sub: string | undefined, rest: string[], flags: Re
     const report = await importDiscord(await discordRest(flags), config, paths, { guilds, archive: str(flags['archive']), files: flags['no-files'] !== true, log: json ? () => {} : console.log })
     await emit(report, () => {
       const gaps = Object.values(report.guilds).reduce((n, g) => n + Object.keys(g.gaps).length + g.files_failed, 0)
-      console.log(gaps ? `\nSome messages or files did not arrive. Run the same command again; it resumes.` : '\nEverything arrived. Report: ~/.vocorum/import/report.json')
-      if (report.secrets.length) console.log(`\n${report.secrets.length} secrets appeared in Discord messages. Rotate them (vocorum discord report lists them, masked).`)
+      console.log(gaps ? `\nSome messages or files did not arrive. Run the same command again; it resumes.` : `\nEverything arrived. Report: ${path.join(paths.root, 'import', 'report.json')}`)
+      if (report.secrets.length) console.log(`\n${report.secrets.length} secret${report.secrets.length === 1 ? "" : "s"} appeared in Discord messages. Rotate them (vocorum discord report lists them, masked).`)
     })
     return
   }
@@ -260,13 +415,16 @@ async function discordCommand(sub: string | undefined, rest: string[], flags: Re
     const { statusOf } = await import('./discord/purge.ts')
     const imported = readJson<Record<string, unknown> | null>(path.join(paths.root, 'import', 'report.json'), null)
     const purges = statusOf(paths)
-    await emit({ import: imported, purges }, () => {
+    const { jobs } = await import('./discord/local.ts')
+    const background = await jobs(paths)
+    await emit({ import: imported, purges, jobs: background }, () => {
+      for (const j of background) console.log(`${j.name}: ${j.running ? 'running' : 'not running'} (started ${j.started.slice(0, 16)}${j.unit ? `, ${j.unit}` : ''})${j.running ? '' : `. Last line of ${j.log}: ${j.last}`}`)
       if (imported) {
         const report = imported as { finished: string | null; guilds: Record<string, { name: string; complete: number; channels: number; threads: number; messages_created: number; files_copied: number; files_missing: number; gaps: object }> }
         console.log(`Import ${report.finished ? `finished ${report.finished.slice(0, 16)}` : 'running (or stopped; run it again to resume)'}`)
-        for (const g of Object.values(report.guilds)) console.log(`  ${g.name}: ${g.complete} of ${g.channels + g.threads} complete, ${g.messages_created} messages, ${g.files_copied} files copied, ${g.files_missing} gone on Discord, ${Object.keys(g.gaps).length} with gaps`)
+        for (const g of Object.values(report.guilds)) console.log(`  ${g.name}: ${g.complete} of ${g.channels + g.threads} complete, ${g.messages_created} new messages in the last run, ${g.files_copied} files copied, ${g.files_missing} gone on Discord, ${Object.keys(g.gaps).length} with gaps`)
       } else console.log('No import yet.')
-      for (const p of purges) console.log(`Purge ${p.plan} (${p.guild}): ${p.deleted} of ${p.planned} deleted, ${p.failed} failed, ${p.threads_deleted} threads. ${p.finished ? 'Finished' : 'Running or stopped'}.`)
+      for (const p of purges) console.log(`Purge ${p.plan} (${p.guild}): ${p.deleted} of ${p.planned} deleted, ${p.already_gone ?? 0} were already gone, ${p.failed} failed, ${p.threads_deleted} threads. ${p.finished ? 'Finished' : 'Running or stopped'}.`)
     })
     return
   }

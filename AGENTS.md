@@ -43,7 +43,7 @@ Every command is safe to run twice.
 
 ```bash
 node --version          # 22 or newer
-pnpm --version
+pnpm --version          # missing? corepack enable
 openssl version
 which ffmpeg            # optional, voice notes from phones
 ```
@@ -74,6 +74,15 @@ What setup does:
 - Writes a systemd user service (macOS: a launchd agent) only if none exists,
   then starts it. It never overwrites a unit someone wrote by hand.
 - Prints a 30-minute pairing link and QR code if no device is paired yet.
+
+Get the names right the first time. Changing the first name later means a new
+CA, reinstalling the certificate on every device and new passkeys, because a
+passkey is tied to the name. Running `setup` again keeps an existing hub's
+names and prints the command to switch, with that warning.
+
+If another hub holds the port, setup refuses: use `--port N`. Setup starts an
+empty server called Home. After an import the person has Home plus their old
+servers.
 
 Check: `doctor` exits 0. On Linux, if it warns about linger, run
 `loginctl enable-linger "$USER"`.
@@ -125,8 +134,9 @@ address.
   `~/.vocorum/kimaki-data`, picks a free `KIMAKI_LOCK_PORT`, writes the
   `kimaki-hub` service (with `KillMode=mixed` and the CA) and starts it. Use
   `--kimaki <path>` if Kimaki is not on PATH. It refuses if the machine already
-  has a hub bot or the service exists. Then set the model with `/model` in the
-  app: a new data folder starts on a free model with a low limit.
+  has a hub bot or the service exists. On its first start Kimaki opens an
+  onboarding thread and starts a model run on a free model with a low limit:
+  set the person's usual model with `/model` in the app.
 - **Kimaki on another machine:** copy the `.env` file and `~/.vocorum/ca/ca.crt`
   over SSH, set `NODE_EXTRA_CA_CERTS` to the CA file, and check the machine
   reaches the hub before starting Kimaki:
@@ -159,7 +169,8 @@ name.
 Token: `--kimaki` uses this machine's Kimaki bot. Otherwise `--token-file <file>`
 (mode 0600) or `DISCORD_BOT_TOKEN`. With `--detach`, use a file or `--kimaki`.
 
-Read the scan with the person:
+With no server id, `scan` covers every server the bot is in. Read the scan with
+the person:
 
 - Message Content intent off: other people's messages would import empty. They
   turn it on in the Discord developer portal, the app, Bot, Privileged Gateway
@@ -191,7 +202,7 @@ gaps. Open old threads in the app: messages and pictures load.
 
 ```bash
 vocorum config get --json
-vocorum config set ownerUsername <name>        # restart the hub after config set
+vocorum config set ownerUsername <name>        # then: vocorum restart
 vocorum guilds add '<server name>'             # one per former Discord server
 vocorum bots guilds <machine> 'Home,<server name>'
 vocorum machines icon <machine> avatar <image>
@@ -261,7 +272,7 @@ vocorum discord report --json
 | `Location not found` from Kimaki | A project folder moved | `kimaki project add <new path>` |
 | `Free usage limit reached` | New Kimaki data folder on a free model | Set the model with `/model` |
 | Kimaki unit ends as failed on stop | No `KillMode=mixed` | Add it |
-| Bots on other machines cannot load files | No public URL | `vocorum config set publicUrl https://<hub name>:47443`, restart |
+| Bots on other machines cannot load files | No public URL | `vocorum config set publicUrl https://<hub name>:47443`, then `vocorum restart` |
 | 421 Misdirected Request | The host name is not one of the hub's | Use a name from `vocorum private status` |
 | A purge plan skips messages | Their files are not in the hub yet | Run the import again, then plan again |
 | An approved request was wrong | | `vocorum requests undo <id>`; the owner approves the undo |

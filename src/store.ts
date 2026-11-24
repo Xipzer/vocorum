@@ -237,6 +237,8 @@ export class HubStore {
     // 'web' (passkey, cookie sessions) or 'app' (device key, bearer sessions).
     await this.addColumn('devices', 'kind', "TEXT NOT NULL DEFAULT 'web'")
     await this.addColumn('sessions', 'kind', "TEXT NOT NULL DEFAULT 'cookie'")
+    // A second app key for approving requests: P-256, kept where the OS asks for Touch ID, Face ID or Windows Hello.
+    await this.addColumn('app_keys', 'approval_key', 'BLOB')
   }
 
   private async addColumn(table: string, column: string, type: string) {
@@ -571,15 +573,15 @@ export class HubStore {
     }
   }
 
-  async addAppKey(keyId: string, deviceId: string, publicKey: Buffer) {
-    await this.db.execute({ sql: 'INSERT INTO app_keys (key_id, device_id, public_key, created_at) VALUES (?, ?, ?, ?)', args: [keyId, deviceId, publicKey, Date.now()] })
+  async addAppKey(keyId: string, deviceId: string, publicKey: Buffer, approvalKey: Buffer | null = null) {
+    await this.db.execute({ sql: 'INSERT INTO app_keys (key_id, device_id, public_key, approval_key, created_at) VALUES (?, ?, ?, ?, ?)', args: [keyId, deviceId, publicKey, approvalKey, Date.now()] })
   }
 
-  async getAppKey(keyId: string): Promise<{ deviceId: string; publicKey: Buffer } | null> {
+  async getAppKey(keyId: string): Promise<{ deviceId: string; publicKey: Buffer; approvalKey: Buffer | null } | null> {
     const [row] = await this.rows('SELECT * FROM app_keys WHERE key_id = ?', [keyId])
     if (!row) return null
-    const key = row['public_key']
-    return { deviceId: String(row['device_id']), publicKey: Buffer.from(key instanceof ArrayBuffer ? new Uint8Array(key) : (key as unknown as Uint8Array)) }
+    const bytes = (key: unknown) => Buffer.from(key instanceof ArrayBuffer ? new Uint8Array(key) : (key as Uint8Array))
+    return { deviceId: String(row['device_id']), publicKey: bytes(row['public_key']), approvalKey: row['approval_key'] == null ? null : bytes(row['approval_key']) }
   }
 
   async updateCredentialCounter(id: string, counter: number) {

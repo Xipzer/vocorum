@@ -4,13 +4,15 @@
 import { isMac } from './columns.ts'
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Sheet, type SheetSpec } from './Sheet.tsx'
-import { api, type FoundChannel, type LinkKind, type Mention, type Message, type SearchResult, type Service, type ServiceEvent } from './api.ts'
+import { startAuthentication } from '@simplewebauthn/browser'
+import { api, type HubRequest, type FoundChannel, type LinkKind, type Mention, type Message, type SearchResult, type Service, type ServiceEvent } from './api.ts'
 import { Avatar, machineIcon } from './Avatar.tsx'
 import { Icon, type IconName } from './icons.tsx'
 import { Markdown, type MarkdownContext } from './markdown.tsx'
 import { store, useStore } from './store.ts'
 import { can, P } from './perms.ts'
 import { clock, plain, machineLabel } from './text.ts'
+import { approveInApp, native } from './native.ts'
 
 export type Jump = (channelId: string, messageId: string) => void
 
@@ -326,11 +328,16 @@ export function InboxPanel({ onClose, onJump, onOpen }: { onClose: () => void; o
     .filter((s) => s.state === 'waiting' || s.state === 'failed')
     .sort((a, b) => b.since.localeCompare(a.since))
   const unreadCount = list?.filter(unread).length ?? 0
+  // Agents' requests: pending first, then what was decided in the last 15 minutes.
+  const allRequests = useStore((d) => d.requests)
+  const now = Date.now()
+  const requests = allRequests.filter((r) => (r.status === 'pending' && r.expires_at > now) || (r.decided_at ?? 0) > now - 15 * 60_000)
+  const pendingCount = requests.filter((r) => r.status === 'pending').length
   return (
     <Panel
       title="Inbox"
       icon="bell"
-      count={needs.length + unreadCount}
+      count={pendingCount + needs.length + unreadCount}
       onClose={onClose}
       extra={
         unreadCount > 0 ? (
@@ -342,6 +349,14 @@ export function InboxPanel({ onClose, onJump, onOpen }: { onClose: () => void; o
     >
       <div className="panel-body">
         {error && <div className="error panel-pad">{error}</div>}
+        {requests.length > 0 && (
+          <div className="panel-section">
+            Requests {pendingCount > 0 && <span className="num">{pendingCount}</span>}
+          </div>
+        )}
+        {requests.map((r) => (
+          <RequestCard key={r.id} request={r} />
+        ))}
         {needs.length > 0 && (
           <div className="panel-section">
             Needs you <span className="num">{needs.length}</span>
@@ -365,9 +380,64 @@ export function InboxPanel({ onClose, onJump, onOpen }: { onClose: () => void; o
           </div>
         )}
         {list?.map((m) => <MentionRow key={m.message.id} m={m} unread={unread(m)} onJump={onJump} showServer />)}
-        {needs.length === 0 && list?.length === 0 && <Empty icon="bell" title="You're all caught up">Mentions and sessions waiting on you, from every server, show here.</Empty>}
+        {requests.length === 0 && needs.length === 0 && list?.length === 0 && <Empty icon="bell" title="You're all caught up">Mentions and sessions waiting on you, from every server, show here.</Empty>}
       </div>
     </Panel>
+  )
+}
+
+// One change an agent asked for. The summary is shown verbatim (it says when a role can
+// give a shell); approving takes a fresh passkey on this device.
+const DECIDED: Record<HubRequest['status'], string> = { pending: '', approved: 'Approved', denied: 'Denied', failed: 'Failed', expired: 'Expired' }
+function RequestCard({ request }: { request: HubRequest }) {
+  const [busy, setBusy] = useState<'approve' | 'deny' | 'undo' | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const act = (kind: 'approve' | 'deny' | 'undo') => {
+    setBusy(kind)
+    setError(null)
+    void (async () => {
+      if (kind === 'deny') await api.deny(request.id)
+      else if (kind === 'undo') store.upsertRequest(await api.undo(request.id))
+      else if (native) await approveInApp(request.id)
+      else {
+        const { challengeId, options } = await api.approveOptions(request.id)
+        await api.approve(request.id, challengeId, await startAuthentication({ optionsJSON: options }))
+      }
+      await store.loadRequests()
+    })()
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy(null))
+  }
+  const pending = request.status === 'pending'
+  const failure = request.status !== 'failed' ? null : typeof request.result === 'string' ? request.result : ((request.result as { error?: string } | null)?.error ?? null)
+  return (
+    <div className={`request-card ${request.status}`}>
+      <div className="request-summary">{request.summary}</div>
+      {request.reason && <div className="request-reason">{request.reason}</div>}
+      <div className="request-meta">
+        from {request.origin}
+        {pending ? ` · expires ${clock(new Date(request.expires_at).toISOString())}` : ` · ${DECIDED[request.status]}${failure ? `: ${failure}` : ''}`}
+      </div>
+      {error && <div className="error">{error}</div>}
+      {pending && (
+        <div className="request-actions">
+          <button className="button" disabled={busy !== null} onClick={() => act('deny')}>
+            Deny
+          </button>
+          <button className="button primary" disabled={busy !== null} onClick={() => act('approve')}>
+            <Icon name="key" size={16} />
+            Approve
+          </button>
+        </div>
+      )}
+      {request.status === 'approved' && request.undoable && (
+        <div className="request-actions">
+          <button className="button" disabled={busy !== null} onClick={() => act('undo')}>
+            Undo
+          </button>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -545,6 +615,7 @@ function ServiceDetail({ unit, service, all, onBack, onClose, onOpen }: { unit: 
     setSheet({
       at,
       title: `${verb[0]!.toUpperCase()}${verb.slice(1)} ${short(unit)}?`,
+      confirm: true,
       subtitle: unit === 'vocorum.service' && verb !== 'start' ? 'This is the hub itself: the app reconnects when it is back.' : 'Runs systemctl --user on the hub machine.',
       groups: [
         [

@@ -5,7 +5,7 @@ This sets up the hub on one computer and signs in your first device.
 ## What you need
 
 - A computer that stays on, running Linux or macOS. This is the hub.
-- Node.js 22 or newer, pnpm, and `openssl`. `ffmpeg` is optional, for voice
+- Node.js 22 or newer, pnpm (no pnpm? run `corepack enable`), and `openssl`. `ffmpeg` is optional, for voice
   notes from phones.
 - A private network between the hub and your other devices, such as Tailscale or
   WireGuard. Vocorum is never meant to be reachable from the internet.
@@ -33,8 +33,16 @@ Setup:
 - checks everything with `doctor`,
 - prints a link and a QR code to sign in your first device.
 
+Check the names in the dry run before you go ahead. Changing the hub's first
+name later means a new certificate on every device and new passkeys.
+
+Setup also adds a `vocorum` command, so from now on you can type `vocorum`
+instead of `node bin/vocorum.js`. It makes an empty server called Home to start
+with.
+
 Your data and keys live in `~/.vocorum`. Set `VOCORUM_DIR` to keep them
-somewhere else.
+somewhere else. If another hub already uses the port, setup stops: pick another
+with `--port`.
 
 On Linux, run `loginctl enable-linger "$USER"` if setup asks for it, so the hub
 keeps running after you log out.
@@ -86,8 +94,8 @@ fixes it.
 git pull
 pnpm install
 pnpm build
-systemctl --user restart vocorum    # macOS: launchctl kickstart -k gui/$(id -u)/dev.vocorum.hub
-node bin/vocorum.js doctor
+vocorum restart
+vocorum doctor
 ```
 
 ## When something goes wrong

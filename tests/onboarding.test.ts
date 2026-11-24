@@ -70,6 +70,12 @@ test('import keeps Discord ids, pages past 100 messages, verifies every channel 
   // A second run skips finished channels and creates nothing.
   const again = await importDiscord(rest, config(), hub.paths, { guilds: [guildId], log: () => {} })
   expect(again.guilds[guildId]!.messages_created).toBe(0)
+  // Something said on Discord after the import arrives with the next run, finished channels included.
+  const later = (await rest.call<{ id: string }>('POST', `/channels/${channelId}/messages`, { content: 'one more' })).data!.id
+  posted.push(later)
+  const third = await importDiscord(rest, config(), hub.paths, { guilds: [guildId], log: () => {} })
+  expect(third.guilds[guildId]!.messages_created).toBe(1)
+  expect(await hub.hub.twin.prisma.message.findUnique({ where: { id: later } })).not.toBeNull()
 })
 
 test('purge plans only what the hub holds, and never a message whose files it lacks', async () => {
@@ -103,7 +109,7 @@ test('purge plans only what the hub holds, and never a message whose files it la
   expect(left.map((m) => m.id)).toEqual([kept])
   expect(await discord.hub.twin.prisma.channel.findUnique({ where: { id: threadId } })).toBeNull()
   // The hub keeps everything.
-  expect(await hub.hub.twin.prisma.message.count({ where: { channelId } })).toBe(130)
+  expect(await hub.hub.twin.prisma.message.count({ where: { channelId } })).toBe(131)
   // Running it again is a no-op.
   expect((await executePlan(rest, hub.paths, plan, { log: () => {} })).failed).toBe(0)
   const report = fs.readFileSync(writeReport(hub.paths), 'utf8')
@@ -122,8 +128,8 @@ test('doctor checks the running hub and gives a fix for every problem', async ()
   for (const c of checks) if (c.status === 'fail' || c.status === 'warn') expect(c.fix, c.id).toBeTruthy()
 })
 
-test('pairing links: the setup page by address, the app with the code in the fragment', () => {
-  const links = pairingLinks({ ...hub.config, privateListener: { address: '100.64.0.5', port: 47443, httpPort: 47080, names: ['desk.example.ts.net', 'hub.home.arpa'], allowedCidrs: [] } }, 'ABCDEFGHJK')
+test('pairing links: the setup page by address, the app with the code in the fragment', async () => {
+  const { native: _native, ...links } = await pairingLinks({ ...hub.config, privateListener: { address: '100.64.0.5', port: 47443, httpPort: 47080, names: ['desk.example.ts.net', 'hub.home.arpa'], allowedCidrs: [] } }, 'ABCDEFGHJK')
   expect(links).toEqual({ setup: 'http://100.64.0.5:47080/?code=ABCDEFGHJK', app: 'https://desk.example.ts.net:47443/#pair=ABCDEFGHJK' })
   expect(duration('30m')).toBe(1_800_000)
   expect(duration('7d')).toBe(7 * 86_400_000)
@@ -152,4 +158,15 @@ test('kimaki setup: its own bot, data folder and lock port, token only in a 0600
   expect(result.command).not.toContain('KIMAKI_BOT_TOKEN')
   expect((await hub.hub.store.listBots()).some((b) => b.machine === 'desktop' && !b.revokedAt)).toBe(true)
   await expect(kimakiSetup(config(), hub.paths, { machine: 'desktop', guilds: [], kimaki: '/usr/bin/true', service: false, extraArgs: [] })).rejects.toThrow(/already has a hub bot/)
+})
+
+test('kimaki setup never starts the hub Kimaki through the wrapper that pins the Discord data folder', async () => {
+  const { resolveKimaki } = await import('../src/kimaki-setup.ts')
+  const dir = fs.mkdtempSync(path.join(hub.paths.root, 'bin-'))
+  const wrapper = path.join(dir, 'kimaki')
+  fs.writeFileSync(wrapper, "#!/bin/sh\nexport KIMAKI_DATA_DIR='/home/alice/.kimaki'\nexec /usr/bin/node /opt/kimaki/dist/cli.js \"$@\"\n")
+  expect(resolveKimaki(wrapper)).toBe('/usr/bin/node /opt/kimaki/dist/cli.js')
+  fs.writeFileSync(wrapper, "#!/bin/sh\nexport KIMAKI_DATA_DIR='/home/alice/.kimaki'\nnode cli.js\n")
+  expect(() => resolveKimaki(wrapper)).toThrow(/KIMAKI_DATA_DIR/)
+  expect(resolveKimaki('/usr/bin/true')).toBe('/usr/bin/true')
 })

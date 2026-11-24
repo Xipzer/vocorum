@@ -20,12 +20,32 @@ const portFree = (port: number) =>
     server.listen(port, '127.0.0.1', () => server.close(() => resolve(true)))
   })
 
+// Kimaki puts a small wrapper on PATH for its agents that pins KIMAKI_DATA_DIR to the
+// Discord Kimaki's folder. Started through it, the hub Kimaki could open the Discord
+// Kimaki's database. Use what the wrapper runs instead, without its environment.
+export function resolveKimaki(file: string): string {
+  let text = ''
+  try {
+    if (fs.statSync(file).size < 4096) text = fs.readFileSync(file, 'utf8')
+  } catch {
+    return file
+  }
+  if (!text.startsWith('#!/bin/sh') && !text.startsWith('#!/usr/bin/env sh')) return file
+  const exec = /^exec\s+(.+?)\s+"\$@"\s*$/m.exec(text)
+  if (!exec) {
+    if (/KIMAKI_DATA_DIR/.test(text)) throw new Error(`${file} is a wrapper that sets KIMAKI_DATA_DIR. Pass the real Kimaki with --kimaki <path to kimaki/dist/cli.js>`)
+    return file
+  }
+  return exec[1]!.replace(/'/g, '')
+}
+
 export type KimakiOptions = { machine: string; guilds: string[]; kimaki?: string; lockPort?: number; peerDataDir?: string; service: boolean; extraArgs: string[] }
 
 export async function kimakiSetup(config: HubConfig, paths: HubPaths, options: KimakiOptions) {
   if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(options.machine)) throw new Error('Machine names are lower case letters, digits and dashes')
   const kimaki = options.kimaki ?? (await run('sh', ['-c', 'command -v kimaki']).then((r) => r.stdout.trim(), () => ''))
   if (!kimaki) throw new Error('No kimaki command found. Install Kimaki first, or pass --kimaki <path to kimaki>')
+  const command = resolveKimaki(kimaki)
   const dataDir = path.join(paths.root, 'kimaki-data')
   const envFile = path.join(paths.root, `${options.machine}.env`)
   if (fs.existsSync(envFile)) throw new Error(`${envFile} exists: this machine already has a hub bot. Revoke it first (vocorum bots revoke ${options.machine}) to make a new one.`)
@@ -50,22 +70,25 @@ export async function kimakiSetup(config: HubConfig, paths: HubPaths, options: K
   const log = path.join(paths.root, 'kimaki.log')
   const ca = config.privateListener ? path.join(paths.ca, 'ca.crt') : null
   let unit: string | null = null
+  const { serviceName } = await import('./setup.ts')
+  const hubUnit = serviceName(paths)
+  const name = hubUnit === 'vocorum' ? 'kimaki-hub' : `kimaki-${hubUnit}`
   if (options.service && process.platform === 'linux') {
-    unit = path.join(os.homedir(), '.config/systemd/user/kimaki-hub.service')
+    unit = path.join(os.homedir(), `.config/systemd/user/${name}.service`)
     if (fs.existsSync(unit)) throw new Error(`${unit} exists already. Remove it or pass --no-service.`)
     fs.mkdirSync(path.dirname(unit), { recursive: true })
     fs.writeFileSync(
       unit,
       `[Unit]
 Description=Kimaki on Vocorum (${options.machine})
-After=vocorum.service
+After=${hubUnit}.service
 
 [Service]
 Type=simple
 WorkingDirectory=%h
 Environment=PATH=${process.env['PATH'] ?? '/usr/local/bin:/usr/bin:/bin'}
 EnvironmentFile=${envFile}
-${ca ? `Environment=NODE_EXTRA_CA_CERTS=${ca}\n` : ''}ExecStart=${kimaki} ${args.join(' ')}
+${ca ? `Environment=NODE_EXTRA_CA_CERTS=${ca}\n` : ''}ExecStart=${command} ${args.join(' ')}
 Restart=on-failure
 RestartSec=10
 # Kimaki's supervisor forwards one SIGTERM to the bot; signalling the whole group
@@ -79,7 +102,7 @@ WantedBy=default.target
 `,
     )
     await run('systemctl', ['--user', 'daemon-reload']).catch(() => null)
-    await run('systemctl', ['--user', 'enable', '--now', 'kimaki-hub']).catch(() => null)
+    await run('systemctl', ['--user', 'enable', '--now', name]).catch(() => null)
   }
-  return { machine: options.machine, envFile, dataDir, lockPort, unit, command: `set -a; . ${envFile}; set +a; ${ca ? `NODE_EXTRA_CA_CERTS=${ca} ` : ''}${kimaki} ${args.join(' ')}`, log }
+  return { machine: options.machine, envFile, dataDir, lockPort, unit, command: `set -a; . ${envFile}; set +a; ${ca ? `NODE_EXTRA_CA_CERTS=${ca} ` : ''}${command} ${args.join(' ')}`, log }
 }

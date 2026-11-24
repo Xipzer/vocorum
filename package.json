@@ -11,6 +11,7 @@
     "vocorum": "node --import tsx src/cli.ts",
     "prepare": "pnpm --filter discord-digital-twin exec prisma generate",
     "build:web": "vite build --config web/vite.config.ts",
+    "build:app-web": "vite build --config web/vite.config.ts --outDir ../apps/desktop/dist --emptyOutDir",
     "dev:web": "vite --config web/vite.config.ts",
     "test": "vitest",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.dom.json && tsc --noEmit -p web",
@@ -30,6 +31,7 @@
   },
   "devDependencies": {
     "@simplewebauthn/browser": "^13.2.2",
+    "@tauri-apps/api": "2.12.5",
     "@types/node": "^24.11.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",

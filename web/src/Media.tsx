@@ -9,6 +9,7 @@ import { highlight } from './highlight.tsx'
 import { Icon } from './icons.tsx'
 import { Markdown, type MarkdownContext } from './markdown.tsx'
 import { clock } from './text.ts'
+import { native } from './native.ts'
 
 const IS_VOICE = 1 << 13
 const IS_SPOILER = 1 << 3
@@ -409,7 +410,8 @@ function EmbedVideo({ e, onOpen }: { e: Embed; onOpen: () => void }) {
   const w = e.video?.width ?? e.thumbnail?.width
   const h = e.video?.height ?? e.thumbnail?.height
   const style: CSSProperties = { aspectRatio: w && h ? `${w} / ${h}` : '16 / 9' }
-  const iframe = PLAYABLE.test(raw)
+  // The app loads no outside pages: players open in the browser instead.
+  const iframe = PLAYABLE.test(raw) && !native
   if (playing)
     return (
       <div className="embed-video playing" style={style}>

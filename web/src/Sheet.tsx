@@ -8,7 +8,7 @@ export type SheetAction = { label: string; icon?: IconName; run: () => void; red
 /** Where a menu opens: at a point (right-click, long press) or dropped from a control,
  *  8px below it and aligned to its start or end edge, like Discord's. */
 export type SheetAt = { x: number; y: number } | { rect: DOMRect; align: 'start' | 'end' }
-export type SheetSpec = { title: string; subtitle?: string; badge?: ReactNode; groups: SheetAction[][]; at?: SheetAt; plain?: boolean }
+export type SheetSpec = { title: string; subtitle?: string; badge?: ReactNode; groups: SheetAction[][]; at?: SheetAt; plain?: boolean; /** A question before an action: the title stays on desktop too. */ confirm?: boolean }
 
 /** A menu that drops from the clicked control. */
 export const below = (el: Element, align: 'start' | 'end' = 'end'): SheetAt => ({ rect: el.getBoundingClientRect(), align })
@@ -30,11 +30,19 @@ export function Sheet({ spec, onClose }: { spec: SheetSpec; onClose: () => void 
   const drag = useRef<{ y: number; t: number; dy: number } | null>(null)
   const [offset, setOffset] = useState(0)
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
+  // A picked action runs once the Back that closes this sheet has landed, so an action
+  // that navigates (or opens another sheet) is not undone by it.
+  const after = useRef<(() => void) | null>(null)
   const isPhone = phone()
 
   useEffect(() => {
     history.pushState({ sheet: true }, '')
-    const onPop = () => onClose()
+    const onPop = () => {
+      onClose()
+      const run = after.current
+      after.current = null
+      if (run) window.setTimeout(run, 0)
+    }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') return close()
       if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
@@ -77,16 +85,20 @@ export function Sheet({ spec, onClose }: { spec: SheetSpec; onClose: () => void 
     else onClose()
   }
   const pick = (action: SheetAction) => {
-    close()
-    // Run after the history entry is gone, so an action that navigates is not undone.
-    window.setTimeout(action.run, 60)
+    if (history.state?.sheet) {
+      after.current = action.run
+      history.back()
+    } else {
+      onClose()
+      window.setTimeout(action.run, 0)
+    }
   }
 
   return (
     <div className={`sheet-layer${isPhone ? ' phone' : ''}`} onPointerDown={(e) => e.target === e.currentTarget && close()} onContextMenu={(e) => e.preventDefault()}>
       <div
         ref={panel}
-        className={`sheet${spec.plain && !isPhone ? ' plain' : ''}`}
+        className={`sheet${spec.plain && !isPhone ? ' plain' : ''}${spec.confirm ? ' confirm' : ''}`}
         role="menu"
         style={isPhone ? { transform: offset ? `translateY(${offset}px)` : undefined, transition: drag.current ? 'none' : undefined } : (pos ?? { visibility: 'hidden' })}
         onPointerDown={(e) => {
@@ -139,6 +151,28 @@ export function Sheet({ spec, onClose }: { spec: SheetSpec; onClose: () => void 
 
 // Long press (500 ms, cancelled by 10 px of movement or by starting on an inner
 // control) on touch, right click on desktop. The click after a long press is eaten.
+// The menu opens under the finger, so the tap the browser makes when the finger lifts
+// would land on a menu item (Delete, say). Swallow that tap: everything until shortly
+// after the lift.
+function swallowRelease() {
+  const swallow = (e: Event) => {
+    e.preventDefault()
+    e.stopPropagation()
+  }
+  const kinds = ['click', 'mousedown', 'mouseup'] as const
+  for (const k of kinds) window.addEventListener(k, swallow, true)
+  let done = false
+  const stop = () => {
+    if (done) return
+    done = true
+    for (const k of kinds) window.removeEventListener(k, swallow, true)
+  }
+  const lifted = () => window.setTimeout(stop, 400)
+  window.addEventListener('pointerup', lifted, { capture: true, once: true })
+  window.addEventListener('pointercancel', lifted, { capture: true, once: true })
+  window.setTimeout(stop, 5000)
+}
+
 export function usePress(onPress: (at: { x: number; y: number }) => void) {
   const timer = useRef<number | undefined>(undefined)
   const start = useRef<{ x: number; y: number } | null>(null)
@@ -156,6 +190,7 @@ export function usePress(onPress: (at: { x: number; y: number }) => void) {
       start.current = { x: e.clientX, y: e.clientY }
       timer.current = window.setTimeout(() => {
         fired.current = true
+        swallowRelease()
         navigator.vibrate?.(8)
         onPress(start.current ?? { x: e.clientX, y: e.clientY })
         start.current = null

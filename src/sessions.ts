@@ -200,10 +200,11 @@ export class Sessions {
     this.botMachines = (await this.hub.store.listBots()).filter((b) => !b.revokedAt).map((b) => b.machine)
   }
 
+  private stopped = false
+
   async start() {
+    this.stopped = false
     await this.reloadBots()
-    const threads = await this.prisma.channel.findMany({ where: { guildId: { in: [...this.hub.guildIds] }, type: { in: [...THREAD_TYPES] }, archived: false } })
-    for (const thread of threads) await this.recompute(thread.id, { quiet: true })
     void this.links.start()
     void this.services.start()
     this.unobserve = this.hub.twin.observeDispatches((event, data: any) => {
@@ -223,7 +224,20 @@ export class Sessions {
     this.health.unref()
   }
 
+  // Every open thread's state, worked out once the hub is up: with a large
+  // imported history this takes tens of seconds and keeps the database busy,
+  // so nothing at start (remote machines connecting) waits for it.
+  async warm() {
+    const threads = await this.prisma.channel.findMany({ where: { guildId: { in: [...this.hub.guildIds] }, type: { in: [...THREAD_TYPES] }, archived: false }, orderBy: { lastMessageId: 'desc' }, select: { id: true } })
+    for (const thread of threads) {
+      if (this.stopped) return
+      await this.recompute(thread.id, { quiet: true }).catch((error) => console.error('[sessions]', error))
+      await new Promise((resolve) => setImmediate(resolve))
+    }
+  }
+
   stop() {
+    this.stopped = true
     this.unobserve?.()
     this.links.stop()
     this.services.stop()

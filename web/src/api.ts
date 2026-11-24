@@ -1,4 +1,7 @@
 // Client API + event socket. Cookies carry the device session (same origin).
+// In the app the same paths are served by Rust, which signs in with the device key.
+
+import { connectNativeEvents, native, sendNativeFocus } from './native.ts'
 
 export type User = { id: string; username: string; global_name?: string | null; bot?: boolean; avatar?: string | null; color?: number | null }
 export type Attachment = { id: string; filename: string; size: number; url: string; proxy_url?: string; content_type?: string; duration_secs?: number; waveform?: string; width?: number | null; height?: number | null; flags?: number; description?: string; spoiler?: boolean; missing?: boolean }
@@ -117,6 +120,7 @@ export type LinkKind = 'liaison' | 'spawned' | 'parent' | 'mentions' | 'mentione
 export type SessionLink = { id: string; kind: LinkKind; count: number; last: string; messageId: string; messageChannelId: string }
 export type ServiceStatus = 'running' | 'waiting' | 'stopped' | 'failed' | 'restarting' | 'starting'
 export type Service = { unit: string; kind: 'service' | 'timer'; description: string; status: ServiceStatus; sub: string; pid: number | null; since: string | null; restarts: number; enabled: boolean; transient: boolean; version: string | null; next: string | null; threads: string[]; timer: string | null; runs: string | null }
+export type HubRequest = { id: string; kind: string; summary: string; reason: string; origin: string; status: 'pending' | 'approved' | 'denied' | 'failed' | 'expired'; created_at: number; expires_at: number; decided_at?: number | null; result: unknown; undoable?: boolean }
 export type ServiceEvent = { unit: string; at: number; kind: string; detail: string | null }
 export type Guild = { id: string; name: string; icon: string | null; owner_id?: string; permissions?: string }
 export type DeviceInfo = { id: string; name: string; created_at: number | string; last_seen_at: number | string | null; current: boolean; online: boolean; push: boolean }
@@ -230,6 +234,11 @@ export const api = {
   patchChannel: (id: string, body: { name?: string; topic?: string | null; parent_id?: string | null; position?: number }) => call<Channel>(`/client/channels/${id}/settings`, { method: 'PATCH', json: body }),
   reorderChannels: (guildId: string, moves: Array<{ id: string; position?: number; parent_id?: string | null }>) => call<{ channels: Channel[] }>(`/client/guilds/${guildId}/channels`, { method: 'PATCH', json: moves }),
   deleteChannel: (id: string) => call<{ deleted: string }>(`/client/channels/${id}`, { method: 'DELETE' }),
+  requests: () => call<{ requests: HubRequest[] }>('/client/requests'),
+  approveOptions: (id: string) => call<{ challengeId: string; options: any }>(`/client/requests/${id}/approve/options`, { method: 'POST', json: {} }),
+  approve: (id: string, challengeId: string, response: unknown) => call<{ result: unknown }>(`/client/requests/${id}/approve`, { method: 'POST', json: { challengeId, response } }),
+  deny: (id: string) => call(`/client/requests/${id}/deny`, { method: 'POST', json: {} }),
+  undo: (id: string) => call<HubRequest>(`/client/requests/${id}/undo`, { method: 'POST', json: {} }),
   pairDevice: (name: string) => call<{ code: string; expires_at: number }>('/client/devices/pair', { method: 'POST', json: { name } }),
   invite: (guildId: string, body: { username: string; global_name?: string } | { user_id: string }) => call<{ user: User; code: string | null; expires_at: number | null }>(`/client/guilds/${guildId}/invites`, { method: 'POST', json: body }),
   removeMember: (guildId: string, userId: string) => call<{ removed: string }>(`/client/guilds/${guildId}/members/${userId}`, { method: 'DELETE' }),
@@ -247,11 +256,16 @@ let focus: { channel_id: string | null; visible: boolean } = { channel_id: null,
 export function reportFocus(next: { channel_id: string | null; visible: boolean }) {
   if (next.channel_id === focus.channel_id && next.visible === focus.visible) return
   focus = next
+  if (native) return sendNativeFocus(focus)
   if (liveSocket?.readyState === WebSocket.OPEN) liveSocket.send(JSON.stringify({ op: 'focus', d: focus }))
 }
 
 // Reconnecting event socket. `onOpen` runs after every (re)connect so the app can resync.
 export function connectEvents(onEvent: (t: string, d: any) => void, onOpen: () => void, onStatus: (online: boolean) => void): () => void {
+  if (native) {
+    sendNativeFocus(focus)
+    return connectNativeEvents(onEvent, onOpen, onStatus)
+  }
   let socket: WebSocket | null = null
   let closed = false
   let delay = 500

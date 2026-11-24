@@ -4,8 +4,10 @@
 // below your highest, never a permission you lack); the UI disables what would
 // be refused and shows the hub's reason when something still is.
 
+import { qrMatrix } from '../../src/qr.ts'
 import { useState } from 'react'
 import { api, type Channel, type Guild, type GuildMember, type HubState, type Overwrite, type Role, type User } from './api.ts'
+import { shareOrigin } from './native.ts'
 import { Avatar } from './Avatar.tsx'
 import { Icon } from './icons.tsx'
 import { bits, can, P, PERMISSION_GROUPS } from './perms.ts'
@@ -50,10 +52,24 @@ function memberColor(ctx: GuildCtx, member: GuildMember | undefined, user: User 
   return roleColor(role) ?? (user?.color != null ? hex(user.color) : undefined)
 }
 
-function CodeCard({ code, expires, note }: { code: string; expires: number; note: string }) {
+// A pairing link as a QR code: one dark-module path, with the standard 4-module quiet zone.
+function QrCode({ text }: { text: string }) {
+  const rows = qrMatrix(text)
+  const size = rows.length + 8
+  const d = rows.flatMap((row, y) => row.map((on, x) => (on ? `M${x + 4} ${y + 4}h1v1h-1z` : ''))).join('')
+  return (
+    <svg className="settings-qr" viewBox={`0 0 ${size} ${size}`} shapeRendering="crispEdges" role="img" aria-label="Pairing QR code">
+      <rect width={size} height={size} fill="#fff" />
+      <path d={d} fill="#000" />
+    </svg>
+  )
+}
+
+function CodeCard({ code, expires, note, qr }: { code: string; expires: number; note: string; qr?: boolean }) {
   const [copied, setCopied] = useState(false)
   return (
     <div className="settings-code" role="status">
+      {qr && <QrCode text={`${shareOrigin()}/#pair=${code}`} />}
       <div className="settings-code-row">
         <code aria-label="Pairing code">{code}</code>
         <button
@@ -664,7 +680,7 @@ export function PairDevice() {
   const feedback = useFeedback()
   return (
     <Group title="Pair another device" note="A short-lived code that signs another of your devices in as you.">
-      {code && <CodeCard code={code.code} expires={code.expires_at} note="On the new device, open Vocorum and enter it under New device." />}
+      {code && <CodeCard code={code.code} expires={code.expires_at} qr note="Scan the code with the new device's camera, or open Vocorum there and enter the code under New device." />}
       {open ? (
         <form
           className="settings-field-row"

@@ -23,6 +23,7 @@ const CHALLENGE_TTL_MS = 5 * 60_000
 const APP_SESSION_TTL_MS = 12 * 3600_000
 // What an app signs: this prefix, the challenge and its key id, one per line.
 export const APP_LOGIN_PREFIX = 'vocorum-app-login'
+export const APP_APPROVE_PREFIX = 'vocorum-app-approve'
 // Wrong codes per peer (address plus verified Tailscale login). No global
 // lock: one peer must never be able to stop everyone else from pairing, and
 // single-use ~49-bit codes that expire make guessing hopeless anyway.
@@ -57,6 +58,29 @@ export function parseCookies(header: string | undefined): Record<string, string>
     cookies[part.slice(0, index).trim()] ??= value
   }
   return cookies
+}
+
+// An approval key as stored: an uncompressed P-256 point (Secure Enclave), or
+// the DER SubjectPublicKeyInfo of an RSA key of 2048 to 4096 bits (Windows Hello).
+function approvalPublicKey(raw: Buffer): crypto.KeyObject {
+  if (raw.length === 65 && raw[0] === 4) {
+    return crypto.createPublicKey({ key: { kty: 'EC', crv: 'P-256', x: raw.subarray(1, 33).toString('base64url'), y: raw.subarray(33).toString('base64url') }, format: 'jwk' })
+  }
+  const key = crypto.createPublicKey({ key: raw, format: 'der', type: 'spki' })
+  const bits = key.asymmetricKeyDetails?.modulusLength ?? 0
+  if (key.asymmetricKeyType !== 'rsa' || bits < 2048 || bits > 4096) throw new Error('not an RSA key of 2048 to 4096 bits')
+  return key
+}
+
+function parseApprovalKey(value: unknown): Buffer {
+  const raw = typeof value === 'string' && /^[A-Za-z0-9_-]{87,1024}$/.test(value) ? Buffer.from(value, 'base64url') : null
+  try {
+    if (raw) {
+      approvalPublicKey(raw)
+      return raw
+    }
+  } catch {}
+  throw new HttpError(400, 'approvalKey must be an uncompressed P-256 key (65 bytes) or an RSA SubjectPublicKeyInfo of 2048 to 4096 bits, base64url')
 }
 
 export class HubAuth {
@@ -248,9 +272,13 @@ export class HubAuth {
 
   // POST /client/auth/app/register {code, publicKey}: the pairing code, used up
   // exactly like passkey pairing, enrols an app device with its public key.
-  async registerApp(body: { code?: unknown; publicKey?: unknown }, peer = '') {
+  // approvalKey (optional): a public key held behind Touch ID, Face ID or
+  // Windows Hello (P-256 point, or RSA SubjectPublicKeyInfo; see approvalPublicKey). Only then can the app approve
+  // requests. It is set at pairing only: a stolen session cannot add one.
+  async registerApp(body: { code?: unknown; publicKey?: unknown; approvalKey?: unknown }, peer = '') {
     const publicKey = typeof body.publicKey === 'string' && /^[A-Za-z0-9_-]{43}$/.test(body.publicKey) ? Buffer.from(body.publicKey, 'base64url') : null
     if (!publicKey || publicKey.length !== 32) throw new HttpError(400, 'publicKey must be a raw Ed25519 key, 32 bytes base64url')
+    const approvalKey = body.approvalKey === undefined || body.approvalKey === null ? null : parseApprovalKey(body.approvalKey)
     if (this.pairingLocked(peer)) throw new HttpError(429, 'Too many wrong pairing codes. Wait 10 minutes.')
     const pairing = typeof body.code === 'string' ? await this.store.findPairing(body.code) : null
     if (!pairing) {
@@ -260,7 +288,7 @@ export class HubAuth {
     if (!(await this.store.consumePairing(pairing.codeHash))) throw new HttpError(403, 'Pairing code already used or expired')
     const device = await this.store.createDevice(pairing.deviceName, pairing.userId, 'app')
     const keyId = crypto.randomBytes(16).toString('base64url')
-    await this.store.addAppKey(keyId, device.id, publicKey)
+    await this.store.addAppKey(keyId, device.id, publicKey, approvalKey)
     return { device: { id: device.id, name: device.name }, keyId }
   }
 
@@ -268,6 +296,31 @@ export class HubAuth {
   appChallenge() {
     const challenge = crypto.randomBytes(32).toString('base64url')
     return { challengeId: this.putChallenge({ challenge, kind: 'app', origin: '', expiresAt: Date.now() + CHALLENGE_TTL_MS }), challenge }
+  }
+
+  // A request approval from an app: its approval key signed
+  // vocorum-app-approve\n<challenge>\n<requestId>\n<keyId> with SHA-256 (ECDSA
+  // P-256 in DER or raw r||s, or RSA PKCS#1 v1.5), on the device that asked.
+  async verifyAppApproval(deviceId: string, challenge: string, requestId: string, body: { keyId?: unknown; signature?: unknown }) {
+    const keyId = typeof body.keyId === 'string' ? body.keyId : ''
+    const key = keyId ? await this.store.getAppKey(keyId) : null
+    if (!key || key.deviceId !== deviceId) throw new HttpError(403, 'Use the app key of this device')
+    if (!key.approvalKey) throw new HttpError(403, 'This app cannot approve: it has no key behind Touch ID, Face ID or Windows Hello. Approve with a passkey instead.')
+    const signature = typeof body.signature === 'string' ? Buffer.from(body.signature, 'base64url') : Buffer.alloc(0)
+    const publicKey = approvalPublicKey(key.approvalKey)
+    const signed = Buffer.from(`${APP_APPROVE_PREFIX}\n${challenge}\n${requestId}\n${keyId}`, 'utf8')
+    const attempt = (check: () => boolean) => {
+      try {
+        return check()
+      } catch {
+        return false
+      }
+    }
+    const ok =
+      publicKey.asymmetricKeyType === 'rsa'
+        ? attempt(() => crypto.verify('sha256', signed, { key: publicKey, padding: crypto.constants.RSA_PKCS1_PADDING }, signature))
+        : (['der', 'ieee-p1363'] as const).some((dsaEncoding) => attempt(() => crypto.verify('sha256', signed, { key: publicKey, dsaEncoding }, signature)))
+    if (!ok) throw new HttpError(403, 'Signature rejected')
   }
 
   // POST /client/auth/app/login {challengeId, keyId, signature}

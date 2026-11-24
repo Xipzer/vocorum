@@ -4,6 +4,14 @@ import { useEffect } from 'react'
 import { api, reportFocus, type Channel, type HubState, type NotifyLevel } from './api.ts'
 import type { SheetAction, SheetAt, SheetSpec } from './Sheet.tsx'
 import { store } from './store.ts'
+import { native, setNativeAlerts } from './native.ts'
+
+// The app shows alerts itself from its own connection; the hub needs no push subscription.
+async function nativeAlerts(on: boolean): Promise<string> {
+  const text = await setNativeAlerts(on)
+  store.setPushSubscribed(on)
+  return text
+}
 
 const IDLE_MS = 5 * 60_000
 
@@ -80,7 +88,7 @@ export function effective(state: HubState, channel: Channel): { level: NotifyLev
   return { level, inherited: !own?.level, mutedUntil: muted.length ? Math.max(...muted) : null }
 }
 
-export const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window && window.isSecureContext
+export const pushSupported = () => native || ('serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window && window.isSecureContext)
 
 const keyBytes = (b64: string) => {
   const raw = atob((b64 + '='.repeat((4 - (b64.length % 4)) % 4)).replace(/-/g, '+').replace(/_/g, '/'))
@@ -89,6 +97,7 @@ const keyBytes = (b64: string) => {
 
 // Must run from a tap: iPhone only asks for permission in response to one.
 export async function enablePush(): Promise<string> {
+  if (native) return nativeAlerts(true)
   const key = store.data.state?.notifications?.vapid_public_key
   if (!pushSupported() || !key) return 'This browser can’t receive notifications. On iPhone, add Vocorum to the Home Screen first.'
   const permission = await Notification.requestPermission()
@@ -101,6 +110,7 @@ export async function enablePush(): Promise<string> {
 }
 
 export async function disablePush(): Promise<string> {
+  if (native) return nativeAlerts(false)
   if (pushSupported()) await (await (await navigator.serviceWorker.ready).pushManager.getSubscription())?.unsubscribe()
   await api.pushUnsubscribe()
   store.setPushSubscribed(false)

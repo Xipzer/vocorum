@@ -14,6 +14,7 @@ import { snowflakeGt, store, THREAD_TYPES, useStore } from './store.ts'
 import { workspaceWaiting } from './Workspace.tsx'
 import { Icon, type IconName } from './icons.tsx'
 import { clock, plain, wallHue, machineLabel } from './text.ts'
+import { shareOrigin } from './native.ts'
 import { bellSheet, effective } from './notify.ts'
 import { below, Sheet, sessionActions, usePress, type SheetAction, type SheetAt, type SheetSpec } from './Sheet.tsx'
 import { can, isHubOwner, P } from './perms.ts'
@@ -269,12 +270,21 @@ function MessageItem({
         ],
         [
           ...(message.content ? [{ label: 'Copy text', icon: 'copy' as const, run: () => void navigator.clipboard?.writeText(message.content) }] : []),
-          { label: 'Copy link', icon: 'link', run: () => void navigator.clipboard?.writeText(`${location.origin}/#/c/${channelId}`) },
+          { label: 'Copy link', icon: 'link', run: () => void navigator.clipboard?.writeText(`${shareOrigin()}/#/c/${channelId}`) },
           ...(pinOk ? [{ label: message.pinned ? 'Unpin' : 'Pin', icon: 'pin' as const, run: () => void api.pin(channelId, message.id, !message.pinned).catch((e: Error) => onError(e.message)) }] : []),
         ],
         mine && message.content ? [{ label: 'Edit', icon: 'pencil', run: () => setEditing(message.content) }] : [],
-        mine || canManage ? [{ label: 'Delete', icon: 'trash', red: true, run: () => void api.remove(channelId, message.id).catch((e: Error) => onError(e.message)) }] : [],
+        mine || canManage ? [{ label: 'Delete', icon: 'trash', red: true, run: () => confirmDelete(at) }] : [],
       ],
+    })
+  // As in Discord, deleting asks first: there is no undo.
+  const confirmDelete = (at: SheetAt) =>
+    onSheet({
+      at,
+      title: 'Delete message?',
+      confirm: true,
+      subtitle: plain(message.content, ctx.userName, ctx.channelName).slice(0, 80) || undefined,
+      groups: [[{ label: 'Delete', icon: 'trash', red: true, run: () => void api.remove(channelId, message.id).catch((e: Error) => onError(e.message)) }]],
     })
   const press = usePress(openMenu)
   if (message.type === 6) {
@@ -710,7 +720,7 @@ export function Chat({
         manageThread ? [{ label: channel.thread_metadata?.archived ? 'Unarchive' : 'Archive', icon: channel.thread_metadata?.archived ? 'unarchive' : 'archive', run: () => void api.patchThread(channel.id, { archived: !channel.thread_metadata?.archived }).catch((e: Error) => setToast(e.message)) }] : [],
         [
           { label: isThread ? 'Edit thread' : 'Edit channel', icon: 'gear', run: () => sessionActions.channelSettings?.(channel.id) },
-          { label: 'Copy link', icon: 'link', run: () => void navigator.clipboard?.writeText(`${location.origin}/#/c/${channel.id}`) },
+          { label: 'Copy link', icon: 'link', run: () => void navigator.clipboard?.writeText(`${shareOrigin()}/#/c/${channel.id}`) },
         ],
       ].filter((g): g is SheetAction[] => g.length > 0) as SheetAction[][],
     })

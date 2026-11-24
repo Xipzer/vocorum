@@ -4731,6 +4731,12 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
   overflow: hidden;
   background: none;
 }
+/* A server with its own icon shows it as is: the accent fill and hover tint are only for
+   servers shown by their initials (as in Discord). */
+.rail-item.active .rail-guild.has-icon,
+.rail-item:hover .rail-guild.has-icon {
+  background: none;
+}
 .rail-guild img {
   width: 100%;
   height: 100%;
@@ -6133,4 +6139,61 @@ svg.flip {
   left: 8px;
   right: 8px;
   bottom: 0;
+}
+
+/* Inbox: a change an agent asked for, decided here with a passkey. */
+/* Same card as the panel's thread rows. */
+.request-card {
+  margin-bottom: 8px;
+  padding: 12px;
+  border-radius: var(--r-control);
+  background: var(--bg-3);
+  border: 1px solid var(--line-strong);
+  font: 400 14px/18px var(--font);
+}
+.request-summary {
+  color: var(--text);
+  font-weight: 500;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.request-reason {
+  margin-top: 4px;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.request-meta {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-faint);
+}
+.request-card .error {
+  margin-top: 8px;
+}
+.request-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+.request-card:not(.pending) > :not(.request-actions) {
+  opacity: 0.7;
+}
+
+/* Threads panel cards: the meta line starts under the name, not under the status dot. */
+.side-panel .thread-row .result-where {
+  padding-left: 16px;
+}
+
+/* A confirming menu keeps its question on desktop: the title says what the one item does. */
+@media (min-width: 768px) {
+  .sheet.confirm .sheet-head {
+    display: flex;
+    max-width: 280px;
+  }
+  .sheet.confirm .sheet-sub {
+    white-space: normal;
+  }
 }

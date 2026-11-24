@@ -87,7 +87,7 @@ export class AttachmentStore {
       size: input.data.length,
       durationSecs: input.durationSecs ?? null,
       waveform: input.waveform ?? null,
-      ...imageSize(input.data),
+      ...(await mediaSize(input.data, input.contentType)),
       uploadedBy: input.uploadedBy,
     }
     await this.store.addAttachment(row)
@@ -139,6 +139,28 @@ function findFfmpeg(): Promise<string | null> {
 
 // What browsers record, and the one ffmpeg demuxer each may be read with.
 const RECORDED_FORMATS: Record<string, string> = { 'audio/webm': 'matroska', 'video/webm': 'matroska', 'audio/mp4': 'mov', 'audio/x-m4a': 'mov', 'video/mp4': 'mov' }
+
+const VIDEO_FORMATS: Record<string, string> = { 'video/mp4': 'mov', 'video/quicktime': 'mov', 'video/webm': 'matroska' }
+
+// Images from their header; videos (mp4, mov, webm) through ffprobe when it is
+// installed, limited to that one demuxer. Otherwise no size.
+async function mediaSize(data: Buffer, contentType: string): Promise<{ width: number | null; height: number | null }> {
+  const image = imageSize(data)
+  const format = VIDEO_FORMATS[contentType.split(';')[0]!.trim().toLowerCase()]
+  if (image.width !== null || !format || !(await findFfmpeg())) return image
+  const dir = await fs.promises.mkdtemp(path.join((await import('node:os')).tmpdir(), 'hub-video-'))
+  try {
+    const input = path.join(dir, 'in')
+    await fs.promises.writeFile(input, data)
+    const { stdout } = await promisify(execFile)('ffprobe', ['-hide_banner', '-loglevel', 'error', '-protocol_whitelist', 'file', '-f', format, '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'json', input], { timeout: 10_000 })
+    const stream = (JSON.parse(stdout) as { streams?: Array<{ width?: number; height?: number }> }).streams?.[0]
+    return stream?.width && stream.height ? { width: stream.width, height: stream.height } : image
+  } catch {
+    return image
+  } finally {
+    await fs.promises.rm(dir, { recursive: true, force: true })
+  }
+}
 
 // Voice notes: browsers record webm (Chrome) or mp4 (iOS Safari). Discord's
 // voice messages are ogg/opus, so convert when ffmpeg exists, else keep the

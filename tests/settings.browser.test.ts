@@ -193,6 +193,7 @@ test.skipIf(!ready)('settings: screenshots of every section, desktop 2x and phon
   await dialog(p).getByRole('button', { name: 'Pair another device' }).click()
   await dialog(p).getByRole('button', { name: 'Get a code' }).click()
   await dialog(p).getByLabel('Pairing code').waitFor()
+  await expect(dialog(p).getByRole('img', { name: 'Pairing QR code' }).isVisible()).resolves.toBe(true)
   await p.screenshot({ path: path.join(shots, 'settings-devices-pair.png') })
   // A project channel's own settings, from Channels.
   await dialog(p).getByRole('button', { name: 'Channels', exact: true }).click()

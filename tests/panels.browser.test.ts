@@ -10,6 +10,7 @@ import zlib from 'node:zlib'
 import { afterAll, beforeAll, expect, test } from 'vitest'
 import { chromium, type Browser, type Page } from 'playwright-core'
 import { LOGIN, startTestHub } from './helpers.ts'
+import { readSecret } from '../src/config.ts'
 import { startDemoBot } from './demo-bot.ts'
 import { Hub } from '../src/hub.ts'
 import { createClient } from '@libsql/client'
@@ -1101,4 +1102,148 @@ test.skipIf(!ready)('list pills: a row below the fold shows a pill 26px tall, 6p
   const side = await p2.locator('.sidebar').boundingBox()
   await p2.screenshot({ path: path.join(shots, 'list-pills.png'), clip: { x: side!.x, y: 0, width: side!.width, height: 360 } })
   await ctx2.close()
+}, 60_000)
+
+test.skipIf(!ready)('pairing link: #pair=CODE opens on Create passkey, signs the device in and clears the fragment', async () => {
+  const context = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, viewport: { width: 1280, height: 800 }, serviceWorkers: 'block' })
+  const p = await context.newPage()
+  const cdp = await context.newCDPSession(p)
+  await cdp.send('WebAuthn.enable')
+  await cdp.send('WebAuthn.addVirtualAuthenticator', { options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } })
+  const code = await hub.store.createPairing('tablet')
+  await p.goto(`${origin}/#pair=${code}`)
+  await p.getByRole('button', { name: 'Create passkey' }).waitFor()
+  expect(await p.evaluate(() => location.hash)).toBe('')
+  await expect(p.getByPlaceholder('Pairing code').inputValue()).resolves.toBe(code)
+  await expect(p.getByText('Sign in with passkey').count()).resolves.toBe(0)
+  await p.getByRole('button', { name: 'Create passkey' }).click()
+  await p.locator('.sidebar .channel', { hasText: 'Fix footer on short turns' }).waitFor()
+  await context.close()
+}, 60_000)
+
+test.skipIf(!ready)('requests: an agent asks, the bell counts it, the owner approves with a passkey or denies', async () => {
+  const token = readSecret(t.paths.adminToken)
+  const ask = async (username: string, reason: string) => {
+    const res = await fetch(`http://127.0.0.1:${hub.port}/admin/requests`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ method: 'POST', route: `/client/guilds/${t.config.guildId}/invites`, body: { username }, reason, origin: 'agent session docs' }) })
+    expect(res.status).toBeLessThan(300)
+  }
+  await page.goto(`${origin}/#/c/${demo.kimaki.id}`)
+  const bell = page.locator('.inbox-button')
+  await bell.waitFor()
+  const before = Number((await bell.locator('.num').textContent().catch(() => '0')) ?? 0)
+  await ask('robin', 'Robin reviews the release notes')
+  await ask('kit', 'Kit tests the installer')
+  await expect.poll(() => bell.locator('.num').textContent()).toBe(String(before + 2))
+  await bell.click()
+  const cards = page.locator('.request-card')
+  await expect.poll(() => cards.count()).toBe(2)
+  const robin = cards.filter({ hasText: 'Robin reviews' })
+  await expect(robin.locator('.request-meta').textContent()).resolves.toMatch(/^from agent session docs · expires \d\d:\d\d$/)
+  const shot = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, serviceWorkers: 'block', storageState: await page.context().storageState(), deviceScaleFactor: 2, viewport: { width: 1280, height: 800 } })
+  const p2 = await shot.newPage()
+  await p2.goto(`${origin}/#/c/${demo.kimaki.id}`)
+  await p2.locator('.inbox-button').click()
+  await p2.locator('.request-card').first().waitFor()
+  await p2.mouse.move(1, 1)
+  await p2.waitForTimeout(300)
+  await p2.locator('.side-panel').last().screenshot({ path: path.join(shots, 'inbox-requests.png') })
+  await shot.close()
+  await robin.getByRole('button', { name: 'Approve' }).click()
+  await expect.poll(() => robin.getAttribute('class')).toContain('approved')
+  // An approved change can be undone: the reversal is a new pending request.
+  await robin.getByRole('button', { name: 'Undo' }).click()
+  const reversal = cards.filter({ hasText: /^Undo: / })
+  await expect.poll(() => reversal.count()).toBe(1)
+  await expect(reversal.getAttribute('class')).resolves.toContain('pending')
+  await reversal.getByRole('button', { name: 'Deny' }).click()
+  await expect.poll(() => reversal.getAttribute('class')).toContain('denied')
+  const kit = cards.filter({ hasText: 'Kit tests' })
+  await kit.getByRole('button', { name: 'Deny' }).click()
+  await expect.poll(() => kit.getAttribute('class')).toContain('denied')
+  await expect.poll(() => bell.locator('.num').count().then(async (n) => (n ? Number(await bell.locator('.num').textContent()) : 0))).toBe(before)
+  await page.keyboard.press('Escape')
+}, 60_000)
+
+test.skipIf(!ready)('one chat at a time: switching channels with a thread\'s Services panel open leaves no stale chat behind', async () => {
+  await page.goto(`${origin}/#/c/${demo.kimaki.id}`)
+  const rows = page.locator('.sidebar .channel')
+  await rows.filter({ hasText: 'Fix footer on short turns' }).click()
+  await page.locator('.chat-title', { hasText: 'Fix footer' }).waitFor()
+  await page.locator('.chat-header button[aria-label^="Services"]').click()
+  await page.locator('.side-panel').first().waitFor()
+  await rows.filter({ hasText: '#general' }).click()
+  await page.locator('.chat-title', { hasText: 'general' }).waitFor()
+  await rows.filter({ hasText: '#kimaki' }).click()
+  await page.locator('.chat-title', { hasText: 'kimaki' }).waitFor()
+  await expect.poll(() => page.locator('section.chat').count()).toBe(1)
+  await page.keyboard.press('Escape')
+}, 60_000)
+
+test.skipIf(!ready)('server rail: a server with its own icon gets no accent fill when open or hovered', async () => {
+  await page.goto(`${origin}/#/c/${demo.kimaki.id}`)
+  const guild = page.locator('.rail-item.active .rail-guild')
+  await guild.waitFor()
+  const fill = () => guild.evaluate((e) => getComputedStyle(e).backgroundColor)
+  expect(await fill()).not.toBe('rgba(0, 0, 0, 0)')
+  await guild.evaluate((e) => e.classList.add('has-icon'))
+  await expect.poll(fill).toBe('rgba(0, 0, 0, 0)')
+  await guild.hover()
+  await expect.poll(fill).toBe('rgba(0, 0, 0, 0)')
+  await guild.evaluate((e) => e.classList.remove('has-icon'))
+}, 30_000)
+
+test.skipIf(!ready)('phone: a channel opened from outside the list (a link, a notification) shows the channel', async () => {
+  const phone = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, serviceWorkers: 'block', storageState: await page.context().storageState(), viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
+  const m = await phone.newPage()
+  await m.goto(`${origin}/`)
+  await m.locator('.sidebar .channel').first().waitFor()
+  await m.evaluate((id) => (location.hash = `#/c/${id}`), demo.thread.id)
+  await m.locator('.chat-title', { hasText: 'Fix footer' }).waitFor()
+  await expect.poll(() => m.locator('.sidebar.open').count()).toBe(0)
+  await phone.close()
+}, 60_000)
+
+test.skipIf(!ready)('long press: holding a message on a phone opens its sheet, and lifting the finger picks nothing', async () => {
+  const phone = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, serviceWorkers: 'block', storageState: await page.context().storageState(), deviceScaleFactor: 3, viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
+  const m = await phone.newPage()
+  await m.goto(`${origin}/#/c/${demo.thread.id}`)
+  const msg = m.locator('.message').last()
+  await msg.waitFor()
+  const text = await msg.textContent()
+  const b = (await msg.boundingBox())!
+  const cdp = await phone.newCDPSession(m)
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: b.x + 150, y: b.y + b.height / 2 }] })
+  await m.locator('.sheet-layer').waitFor()
+  await m.waitForTimeout(200)
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+  await m.waitForTimeout(600)
+  // Still open, nothing chosen: the message is still there.
+  await expect(m.locator('.sheet-layer').count()).resolves.toBe(1)
+  await expect(m.locator('.message').last().textContent()).resolves.toBe(text)
+  await m.screenshot({ path: path.join(shots, 'longpress-sheet.png') })
+  // A real tap afterwards still works.
+  await m.getByRole('menuitem', { name: 'Reply' }).or(m.locator('.sheet-item', { hasText: 'Reply' })).first().tap()
+  await m.locator('.sheet-layer').waitFor({ state: 'detached' })
+  await phone.close()
+}, 60_000)
+
+test.skipIf(!ready)('deleting a message asks first, as in Discord', async () => {
+  await page.goto(`${origin}/#/c/${demo.thread.id}`)
+  await page.evaluate((id) => fetch(`/client/channels/${id}/messages`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content: 'zz-delete-me' }) }), demo.thread.id)
+  // Exact text: the demo bot answers with "Got it: zz-delete-me".
+  const msg = page.locator('.message').filter({ has: page.getByText('zz-delete-me', { exact: true }) })
+  await msg.waitFor()
+  const del = async () => {
+    await msg.click({ button: 'right' })
+    await page.locator('.sheet-item', { hasText: 'Delete' }).click()
+    await page.locator('.sheet-title', { hasText: 'Delete message?' }).waitFor()
+  }
+  await del()
+  await page.keyboard.press('Escape')
+  await page.locator('.sheet-layer').waitFor({ state: 'detached' })
+  await expect(msg.count()).resolves.toBe(1)
+  await del()
+  await page.locator('.sheet').screenshot({ path: path.join(shots, 'delete-confirm.png') })
+  await page.locator('.sheet-item', { hasText: 'Delete' }).click()
+  await msg.waitFor({ state: 'detached' })
 }, 60_000)

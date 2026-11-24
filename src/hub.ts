@@ -242,6 +242,7 @@ export class Hub {
     await timed('presence', () => this.presence.start())
     this.notifications.start()
     await timed('private listener', () => this.privateListener?.start())
+    void timed('session states', () => this.sessions.warm())
   }
 
   async stop() {

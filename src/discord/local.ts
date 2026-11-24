@@ -67,7 +67,7 @@ export class HubAdmin {
       if (!response.ok) throw new Error(`hub ${method} ${route} answered ${response.status}: ${json.error ?? ''}`)
       return json
     }
-    throw new Error('The hub is not answering. Start it (systemctl --user start vocorum) and run this again; it resumes.')
+    throw new Error('The hub is not answering. Start it (vocorum restart) and run this again; it resumes.')
   }
 
   // How long a cheap request takes, in ms (Infinity when it does not answer).
@@ -157,7 +157,8 @@ export function findSecrets(m: Text): Array<{ kind: string; value: string }> {
   const text = messageText(m)
   const found: Array<{ kind: string; value: string }> = []
   for (const [kind, re] of Object.entries(SECRET_PATTERNS)) for (const match of text.matchAll(re)) found.push({ kind, value: match[0] })
-  return found
+  // KEY=ghp_... is one secret, not two: keep the most specific match.
+  return found.filter((f) => !found.some((o) => o !== f && o.value.length < f.value.length && f.value.includes(o.value)))
 }
 
 // Runs this same command again as its own service, so it survives the agent's
@@ -172,12 +173,39 @@ export async function detach(paths: HubPaths, name: string, argv: string[]): Pro
   const unit = `vocorum-${name}-${Date.now().toString(36)}`
   const hasSystemd = spawnSync('systemctl', ['--user', 'is-system-running'], { encoding: 'utf8' }).stdout.trim() !== ''
   if (hasSystemd) {
-    const result = spawnSync('systemd-run', ['--user', `--unit=${unit}`, '--collect', `--setenv=VOCORUM_DIR=${paths.root}`, ...(process.env['DISCORD_BOT_TOKEN'] ? ['--setenv=DISCORD_BOT_TOKEN'] : []), '-p', `StandardOutput=append:${log}`, '-p', `StandardError=append:${log}`, node, ...args], { encoding: 'utf8', env: process.env })
-    if (result.status === 0) return `Running as ${unit}. Follow it with: vocorum discord status (log: ${log})`
+    const result = spawnSync('systemd-run', ['--user', `--unit=${unit}`, '--collect', `--setenv=VOCORUM_DIR=${paths.root}`, ...(process.env['VOCORUM_DISCORD_API'] ? ['--setenv=VOCORUM_DISCORD_API'] : []), '-p', `StandardOutput=append:${log}`, '-p', `StandardError=append:${log}`, node, ...args], { encoding: 'utf8', env: process.env })
+    if (result.status === 0) {
+      recordJob(paths, { name, unit, pid: null, log, started: new Date().toISOString() })
+      return `Running as ${unit}. Follow it with: vocorum discord status (log: ${log})`
+    }
   }
   const out = fs.openSync(log, 'a', 0o600)
   const child = spawn(node, args, { detached: true, stdio: ['ignore', out, out], env: { ...process.env, VOCORUM_DIR: paths.root } })
   child.unref()
-  fs.writeFileSync(path.join(paths.root, `${name}.pid`), String(child.pid), { mode: 0o600 })
+  recordJob(paths, { name, unit: null, pid: child.pid ?? null, log, started: new Date().toISOString() })
   return `Running in the background (pid ${child.pid}). Follow it with: vocorum discord status (log: ${log})`
+}
+
+export type Job = { name: string; unit: string | null; pid: number | null; log: string; started: string }
+
+function recordJob(paths: HubPaths, job: Job) {
+  const file = path.join(paths.root, 'jobs.json')
+  writeJson(file, [...readJson<Job[]>(file, []).filter((j) => j.name !== job.name), job])
+}
+
+// Background jobs and whether they still run; a stopped one shows its last log line.
+export async function jobs(paths: HubPaths): Promise<Array<Job & { running: boolean; last: string }>> {
+  const { spawnSync } = await import('node:child_process')
+  return readJson<Job[]>(path.join(paths.root, 'jobs.json'), []).map((job) => {
+    let running = false
+    if (job.unit) running = spawnSync('systemctl', ['--user', 'is-active', job.unit], { encoding: 'utf8' }).stdout.trim() === 'active'
+    else if (job.pid) {
+      try {
+        process.kill(job.pid, 0)
+        running = true
+      } catch {}
+    }
+    const lines = fs.existsSync(job.log) ? fs.readFileSync(job.log, 'utf8').trim().split('\n') : []
+    return { ...job, running, last: lines.at(-1) ?? '' }
+  })
 }

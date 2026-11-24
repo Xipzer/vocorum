@@ -3,7 +3,7 @@
 
 import { useSyncExternalStore } from 'react'
 import { forgetMissingImages } from './Avatar.tsx'
-import { api, type Channel, type HubState, type MachineSummary, type Message, type Command, type Guild, type Service, type SessionLink, type SessionSummary, type User, type Role, type GuildMember, type Overwrite } from './api.ts'
+import { api, type HubRequest, type Channel, type HubState, type MachineSummary, type Message, type Command, type Guild, type Service, type SessionLink, type SessionSummary, type User, type Role, type GuildMember, type Overwrite } from './api.ts'
 
 export type ChannelMessages = { list: Message[]; hasMore: boolean; loading: boolean }
 
@@ -21,6 +21,8 @@ type Data = {
   links: Record<string, number>
   output: Record<string, boolean>
   services: Service[] | null
+  // Changes agents asked for, waiting on the hub owner (owner only).
+  requests: HubRequest[]
   linked: Record<string, SessionLink[]>
 }
 
@@ -33,7 +35,7 @@ export function snowflakeGt(a: string | null | undefined, b: string | null | und
 }
 
 class Store {
-  data: Data = { state: null, messages: {}, typing: {}, online: false, seen: JSON.parse(localStorage.getItem('seen') ?? '{}'), sessions: {}, machines: [], favourites: [], mentions: {}, links: {}, output: {}, services: null, linked: {} }
+  data: Data = { state: null, messages: {}, typing: {}, online: false, seen: JSON.parse(localStorage.getItem('seen') ?? '{}'), sessions: {}, machines: [], favourites: [], mentions: {}, links: {}, output: {}, services: null, linked: {}, requests: [] }
   private unsentRead: Record<string, string> = {}
   private readTimer: number | undefined
   private accessTimer: number | undefined
@@ -63,8 +65,10 @@ class Store {
     this.set({ state, seen, favourites: state.favourites ?? [], mentions: state.mentions ?? {}, links: state.links ?? {}, output: state.output ?? {} })
     void this.loadOverview()
     // Services and machine health are the hub owner's alone.
-    if (state.hub_owner !== false) void this.loadServices().catch(() => {})
-    else this.set({ services: null })
+    if (state.hub_owner !== false) {
+      void this.loadServices().catch(() => {})
+      void this.loadRequests().catch(() => {})
+    } else this.set({ services: null, requests: [] })
   }
 
   async loadOverview() {
@@ -320,6 +324,10 @@ class Store {
         if (state && n) this.set({ state: { ...state, notifications: { ...n, settings: { ...n.settings, [d.scope_id]: { level: d.level, muted_until: d.muted_until } } } } })
         break
       }
+      case 'REQUEST_CREATE':
+      case 'REQUEST_UPDATE':
+        this.upsertRequest(d as HubRequest)
+        break
       case 'MACHINES_UPDATE':
         this.set({ machines: d as MachineSummary[] })
         break
@@ -361,6 +369,15 @@ class Store {
     const { [channel.id]: _, ...rest } = this.data.output
     this.set({ output: value === null ? rest : { ...rest, [channel.id]: value } })
     await api.setOutput(channel.id, value)
+  }
+
+  async loadRequests() {
+    const { requests } = await api.requests()
+    this.set({ requests })
+  }
+
+  upsertRequest(request: HubRequest) {
+    this.set({ requests: [request, ...this.data.requests.filter((r) => r.id !== request.id)].sort((a, b) => b.created_at - a.created_at) })
   }
 
   async loadServices() {

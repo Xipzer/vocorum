@@ -2,6 +2,7 @@
 // polls, stickers, interaction metadata, mentions, locked threads, image
 // sizes; and the page policy that lets Discord media and players load.
 
+import { execFileSync } from 'node:child_process'
 import { afterAll, beforeAll, expect, test } from 'vitest'
 import { AttachmentBuilder, Client, GatewayIntentBits, type TextChannel } from 'discord.js'
 import { imageSize } from '../src/attachments.ts'
@@ -91,4 +92,25 @@ test('the app may load Discord media and YouTube or Vimeo players, nothing else 
   expect(csp).toContain('img-src \'self\' data: blob: https://cdn.discordapp.com https://media.discordapp.net')
   expect(csp).toContain('frame-src https://www.youtube-nocookie.com https://player.vimeo.com')
   expect(csp).not.toMatch(/img-src[^;]* https:(;| )/)
+})
+
+const hasFfmpeg = (() => {
+  try {
+    execFileSync('ffmpeg', ['-version'], { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+})()
+
+test.skipIf(!hasFfmpeg)('uploaded videos store their width and height', async () => {
+  const video = execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc=size=320x180:duration=0.2', '-pix_fmt', 'yuv420p', '-movflags', 'frag_keyframe+empty_moov', '-f', 'mp4', 'pipe:1'])
+  const form = new FormData()
+  form.append('file', new Blob([video], { type: 'video/mp4' }), 'clip.mp4')
+  const upload = await phone.json('/client/uploads', { method: 'POST', body: form })
+  expect(upload).toMatchObject({ width: 320, height: 180 })
+  // Not a video: no size, and ffprobe is never asked to guess the format.
+  const other = new FormData()
+  other.append('file', new Blob([video], { type: 'application/octet-stream' }), 'clip.bin')
+  expect(await phone.json('/client/uploads', { method: 'POST', body: other })).toMatchObject({ width: null, height: null })
 })

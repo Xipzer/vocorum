@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App.tsx'
 import { installKeyboardDock } from './keyboard.ts'
+import { native } from './native.ts'
 import './styles.css'
 import './media.css'
 import './composer.css'
@@ -14,6 +15,6 @@ createRoot(document.getElementById('root')!).render(
   </StrictMode>,
 )
 
-if ('serviceWorker' in navigator && window.isSecureContext) {
+if ('serviceWorker' in navigator && window.isSecureContext && !native) {
   void navigator.serviceWorker.register('/sw.js').catch(() => {})
 }

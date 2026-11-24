@@ -38,14 +38,15 @@ or any other company.
 - [Daily use](docs/daily-use.md): sessions, notifications, people and machines.
 - Using an AI agent to set it up? Point it at [AGENTS.md](AGENTS.md).
 
-Needs Node.js 22 or newer and pnpm.
+Needs Node.js 22 or newer and pnpm (no pnpm? run `corepack enable`).
 
 ```bash
 git clone https://github.com/Xipzer/vocorum && cd vocorum
 pnpm install && pnpm build
-node bin/vocorum.js init
-node bin/vocorum.js start
+node bin/vocorum.js setup
 ```
+
+Setup prints a link and a QR code to sign in your first device.
 
 ## Privacy and security
 

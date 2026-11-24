@@ -17,6 +17,8 @@ import type { MarkdownContext } from './markdown.tsx'
 import { ModalDialog, type OpenModal } from './Modal.tsx'
 import { snowflakeGt, store, useStore } from './store.ts'
 import { bellSheet, useFocusReporting, useNotificationClicks } from './notify.ts'
+import { native, shareOrigin } from './native.ts'
+import { NativeLogin } from './NativeLogin.tsx'
 import { Tooltips } from './Tooltip.tsx'
 import { WorkspacePanel } from './Workspace.tsx'
 import { LoadingMark } from './components.tsx'
@@ -34,8 +36,17 @@ export function applyAccent(accent: string | null) {
 }
 applyAccent(localStorage.getItem('accent'))
 
+// A pairing link (#pair=CODE) opens straight onto creating this device's passkey. The
+// fragment is read once and cleared so the code never stays in the address bar or history.
+const PAIR_CODE = (() => {
+  const code = /^#pair=([A-Z0-9]{10})$/.exec(location.hash)?.[1] ?? null
+  if (/^#pair=/.test(location.hash)) history.replaceState(null, '', location.pathname + location.search)
+  return code
+})()
+
 function Login({ onDone }: { onDone: () => void }) {
-  const [code, setCode] = useState('')
+  const [code, setCode] = useState(PAIR_CODE ?? '')
+  const [pairing, setPairing] = useState(PAIR_CODE !== null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const run = async (fn: () => Promise<void>) => {
@@ -50,11 +61,13 @@ function Login({ onDone }: { onDone: () => void }) {
       setBusy(false)
     }
   }
+  if (native) return <NativeLogin onDone={onDone} />
   return (
     <div className="login">
       <div className="login-card">
         <h1>Vocorum</h1>
-        <p className="muted">Private hub</p>
+        <p className="muted">{pairing ? 'Pair this device' : 'Private hub'}</p>
+        {pairing ? null : <>
         <button
           className="button primary wide"
           disabled={busy}
@@ -70,6 +83,7 @@ function Login({ onDone }: { onDone: () => void }) {
         <div className="login-divider">
           <span>New device</span>
         </div>
+        </>}
         <form
           onSubmit={(e) => {
             e.preventDefault()
@@ -80,13 +94,19 @@ function Login({ onDone }: { onDone: () => void }) {
           }}
         >
           <input className="code-input" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="Pairing code" autoComplete="one-time-code" autoCapitalize="characters" spellCheck={false} />
-          <button className="button wide" disabled={busy || code.trim().length < 6}>
-            Pair this device
+          <button className={`button wide${pairing ? ' primary' : ''}`} disabled={busy || code.trim().length < 6} autoFocus={pairing}>
+            {pairing ? 'Create passkey' : 'Pair this device'}
           </button>
         </form>
-        <p className="help">
-          Get a code on the hub machine with <code>vocorum devices add &lt;name&gt;</code>
-        </p>
+        {pairing ? (
+          <button className="link-button help" onClick={() => setPairing(false)}>
+            Sign in instead
+          </button>
+        ) : (
+          <p className="help">
+            Get a code on the hub machine with <code>vocorum devices add &lt;name&gt;</code>
+          </p>
+        )}
         {error && <div className="error">{error}</div>}
       </div>
     </div>
@@ -225,7 +245,8 @@ function SystemLight() {
 function InboxButton() {
   const mentions = useStore((d) => Object.values(d.mentions).reduce((a, b) => a + b, 0))
   const waiting = useStore((d) => Object.values(d.sessions).filter((s) => s.state === 'waiting' || s.state === 'failed').length)
-  const count = mentions + waiting
+  const requests = useStore((d) => d.requests.filter((r) => r.status === 'pending' && r.expires_at > Date.now()).length)
+  const count = mentions + waiting + requests
   return (
     <button className={`icon-button inbox-button${count ? ' with-count' : ''}`} onClick={() => sessionActions.inbox?.()} aria-label={count ? `Inbox: ${count}` : 'Inbox'} title="Inbox">
       <Icon name="bell" />
@@ -338,7 +359,7 @@ function ThreadRow({ thread, title, current, unread, session, favourite, mention
         [store.isOutput(thread) ? { label: 'Show as conversation', icon: 'chat', run: () => void store.setOutput(thread, false) } : { label: 'Show as output feed', icon: 'feed', run: () => void store.setOutput(thread, true) }],
         [
           ...(manage ? [{ label: 'Rename', icon: 'pencil' as const, run: () => sessionActions.rename?.(thread.id) }] : []),
-          { label: 'Copy link', icon: 'link', run: () => void navigator.clipboard?.writeText(`${location.origin}/#/c/${thread.id}`) },
+          { label: 'Copy link', icon: 'link', run: () => void navigator.clipboard?.writeText(`${shareOrigin()}/#/c/${thread.id}`) },
           { label: 'Edit thread', icon: 'gear', run: () => sessionActions.channelSettings?.(thread.id) },
           { label: 'Copy ID', icon: 'hash', run: () => void navigator.clipboard?.writeText(thread.id) },
           ...(manage ? [{ label: thread.thread_metadata?.archived ? 'Unarchive' : 'Archive', icon: (thread.thread_metadata?.archived ? 'unarchive' : 'archive') as 'archive', run: () => void api.patchThread(thread.id, { archived: !thread.thread_metadata?.archived }) }] : []),
@@ -776,6 +797,15 @@ function Main() {
   const state = useStore((d) => d.state)
   const [current, setCurrent] = useRoute()
   const [drawer, setDrawer] = useState(() => !location.hash && window.matchMedia('(max-width: 767px)').matches)
+  // On phones, arriving at a channel from outside the list (a notification, a link, Back)
+  // shows that channel rather than leaving the list over it.
+  useEffect(() => {
+    const onHash = () => {
+      if (window.matchMedia('(max-width: 767px)').matches && /^#\/c\//.test(location.hash)) setDrawer(false)
+    }
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
   const [modal, setModal] = useState<OpenModal | null>(null)
   const [linkSheet, setLinkSheet] = useState<SheetSpec | null>(null)
   useColumnKeys()
@@ -918,7 +948,9 @@ function Main() {
         <Inbox guildId={activeGuild} onMenu={showChannels} onJump={jump} onSearch={() => setPanel({ kind: 'search' })} />
       ) : channel && !(channel.type === 4) ? (
         <Chat
-          key={channel.id}
+          // Every sibling here has its own key prefix: a panel keyed by the same id as the
+          // chat makes React leave the old chat on screen when the channel changes.
+          key={`c${channel.id}`}
           channel={channel}
           state={state}
           ctx={ctx}
@@ -946,7 +978,7 @@ function Main() {
       {linkSheet && <Sheet spec={linkSheet} onClose={() => setLinkSheet(null)} />}
       {panel?.kind === 'services' && (
         <ServicesPanel
-          key={panel.threadId ?? 'all'}
+          key={`s${panel.threadId ?? 'all'}`}
           threadId={panel.threadId}
           onClose={() => setPanel(null)}
           onOpen={(id) => {
@@ -985,7 +1017,7 @@ function Main() {
       {panel?.kind === 'threads' && <ThreadsPanel key={`t${panel.channelId}`} channelId={panel.channelId} onClose={() => setPanel(null)} onOpen={(id) => { setCurrent(id); setDrawer(false); if (window.matchMedia('(max-width: 767px)').matches) setPanel(null) }} />}
       {panel?.kind === 'workspace' && <WorkspacePanel key={`w${panel.channelId}`} channelId={panel.channelId} ctx={ctx} onClose={() => setPanel(null)} onJump={jump} onOpen={(id) => { setCurrent(id); setDrawer(false) }} onServices={() => setPanel({ kind: 'services', threadId: panel.channelId })} />}
       {panel?.kind === 'members' && <MembersPanel key={`m${panel.channelId}`} channelId={panel.channelId} onClose={() => setPanel(null)} />}
-      {panel?.kind === 'pins' && <PinsPanel key={panel.channelId} channelId={panel.channelId} ctx={ctx} onClose={() => setPanel(null)} onJump={jump} />}
+      {panel?.kind === 'pins' && <PinsPanel key={`p${panel.channelId}`} channelId={panel.channelId} ctx={ctx} onClose={() => setPanel(null)} onJump={jump} />}
       {modal && modal.channelId === channel?.id && (
         <ModalDialog
           modal={modal}

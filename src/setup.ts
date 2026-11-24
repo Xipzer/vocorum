@@ -16,6 +16,15 @@ import { initHub, loadConfig, type HubPaths, type PrivateListenerConfig } from '
 import { doctor, hubLatency, type Check } from './doctor.ts'
 
 const run = promisify(execFile)
+
+// The service for this hub: "vocorum" for ~/.vocorum, its own name for any
+// other state folder, so a second hub (or a trial run) never touches the first.
+export function serviceName(paths: HubPaths) {
+  if (path.resolve(paths.root) === path.join(os.homedir(), '.vocorum')) return 'vocorum'
+  const base = path.basename(paths.root).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'hub'
+  return `vocorum-${base}`
+}
+
 const TAILNET = ['100.64.0.0/10', 'fd7a:115c:a1e0::/48']
 
 async function out(cmd: string, args: string[]) {
@@ -70,10 +79,11 @@ WantedBy=default.target
 }
 
 function launchdPlist(paths: HubPaths, repo: string) {
+  const label = `dev.${serviceName(paths)}`
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>Label</key><string>dev.vocorum.hub</string>
+<key>Label</key><string>${label}</string>
 <key>ProgramArguments</key><array><string>${process.execPath}</string><string>${path.join(repo, 'dist/hub.mjs')}</string><string>start</string></array>
 <key>EnvironmentVariables</key><dict><key>VOCORUM_DIR</key><string>${paths.root}</string></dict>
 <key>WorkingDirectory</key><string>${repo}</string>
@@ -101,15 +111,20 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
   const network: Network = { ...detected, ...(options.address && { address: options.address, kind: detected.address === options.address ? detected.kind : 'wireguard' }), ...(options.names && { names: options.names }), ...(options.allow && { allow: options.allow }) }
   if (options.address && !options.allow) network.allow = detected.address === options.address ? detected.allow : [`${options.address}/32`]
   const existing = loadConfig(paths)
-  const listener: PrivateListenerConfig | null = network.address ? { address: network.address, port: existing?.privateListener?.port ?? 47443, httpPort: existing?.privateListener?.httpPort ?? 47080, names: network.names, allowedCidrs: network.allow } : null
+  // A running hub keeps its listener unless told otherwise: a new first name means a new
+  // certificate authority and new passkeys on every paired device.
+  const kept = existing?.privateListener && !options.address && !options.names && !options.allow ? existing.privateListener : null
+  const listener: PrivateListenerConfig | null = kept ?? (network.address ? { address: network.address, port: existing?.privateListener?.port ?? 47443, httpPort: existing?.privateListener?.httpPort ?? 47080, names: network.names, allowedCidrs: network.allow } : null)
+  const better = kept && network.names[0] && !kept.names.includes(network.names[0]) ? network.names[0] : null
   const publicUrl = listener ? `https://${listener.names[0]}:${listener.port}` : null
 
   const plan = [
     `state in ${paths.root}${existing ? ' (exists, kept)' : ''}`,
     listener ? `HTTPS for your devices on ${listener.address}:${listener.port} and a setup page on ${listener.address}:${listener.httpPort}, only from ${listener.allowedCidrs.join(', ')} (${network.kind}); never the internet` : 'no private network found: the hub stays on this machine only (pass --address <private ip> to change that)',
     listener ? `app address ${publicUrl}` : '',
+    better ? `kept your current names (${kept!.names.join(', ')}). ${better} would need no DNS step on devices, but switching means reinstalling the certificate and new passkeys on every device: vocorum setup --name ${better},${kept!.names.join(',')}` : '',
     network.login ? `extra check: devices must be on the Tailscale account ${network.login}` : '',
-    options.service ? `service: ${process.platform === 'darwin' ? 'launchd agent dev.vocorum.hub' : 'systemd user unit vocorum.service'}` : 'no service (start it yourself with: vocorum start)',
+    options.service ? `service: ${process.platform === 'darwin' ? `launchd agent dev.${serviceName(paths)}` : `systemd user unit ${serviceName(paths)}.service`}` : 'no service (start it yourself with: vocorum start)',
   ].filter(Boolean)
   if (!options.json) {
     console.log('Vocorum setup will:')
@@ -151,7 +166,7 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
   // 5. service
   if (options.service) {
     if (process.platform === 'darwin') {
-      const file = path.join(os.homedir(), 'Library/LaunchAgents/dev.vocorum.hub.plist')
+      const file = path.join(os.homedir(), `Library/LaunchAgents/dev.${serviceName(paths)}.plist`)
       const body = launchdPlist(paths, options.repo)
       const same = fs.existsSync(file) && fs.readFileSync(file, 'utf8') === body
       if (!same) {
@@ -159,10 +174,10 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
         fs.writeFileSync(file, body)
         await out('launchctl', ['bootout', `gui/${process.getuid?.()}`, file])
         await out('launchctl', ['bootstrap', `gui/${process.getuid?.()}`, file])
-      } else if (listenerChanged) await out('launchctl', ['kickstart', '-k', `gui/${process.getuid?.()}/dev.vocorum.hub`])
+      } else if (listenerChanged) await out('launchctl', ['kickstart', '-k', `gui/${process.getuid?.()}/dev.${serviceName(paths)}`])
       log({ step: 'service', status: same ? 'already' : 'done', detail: file })
     } else {
-      const file = path.join(os.homedir(), '.config/systemd/user/vocorum.service')
+      const file = path.join(os.homedir(), `.config/systemd/user/${serviceName(paths)}.service`)
       const body = unitFile(paths, options.repo)
       const exists = fs.existsSync(file)
       // Never overwrite a unit someone wrote by hand; it may run a different checkout.
@@ -170,8 +185,8 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
         fs.mkdirSync(path.dirname(file), { recursive: true })
         fs.writeFileSync(file, body)
         await out('systemctl', ['--user', 'daemon-reload'])
-        await out('systemctl', ['--user', 'enable', '--now', 'vocorum'])
-      } else if (listenerChanged || (await hubLatency(config, paths)) === null) await out('systemctl', ['--user', 'restart', 'vocorum'])
+        await out('systemctl', ['--user', 'enable', '--now', serviceName(paths)])
+      } else if (listenerChanged || (await hubLatency(config, paths)) === null) await out('systemctl', ['--user', 'restart', serviceName(paths)])
       const linger = (await out('loginctl', ['show-user', os.userInfo().username, '-p', 'Linger']))?.includes('yes')
       log({ step: 'service', status: exists ? 'already' : 'done', detail: `${file}${exists && fs.readFileSync(file, 'utf8') !== body ? ' (kept your own unit)' : ''}${linger ? '' : '. To keep it running after you log out: loginctl enable-linger $USER'}` })
     }
@@ -182,7 +197,7 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
       if (latency === 'other') throw new Error(`Port ${config.port} is held by something else. Give this hub its own port: vocorum init --port <free port>`)
       if (latency === null) await new Promise((r) => setTimeout(r, 1000))
     }
-    log({ step: 'start', status: latency === null ? 'failed' : 'done', detail: latency === null ? 'the hub did not answer within 30 s. journalctl --user -u vocorum -n 50' : `answering in ${latency} ms` })
+    log({ step: 'start', status: latency === null ? 'failed' : 'done', detail: latency === null ? `the hub did not answer within 30 s. journalctl --user -u ${serviceName(paths)} -n 50` : `answering in ${latency} ms` })
   } else log({ step: 'start', status: 'skipped', detail: `no service: start it with vocorum start${listenerChanged ? ' (restart it if it runs, to apply the listener)' : ''}` })
 
   // 7. a `vocorum` command on PATH, so people and their agents can just type it

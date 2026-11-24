@@ -82,7 +82,7 @@ export async function scan(rest: DiscordRest, guildIds: string[] | 'all') {
     message_content_intent: contentIntent,
     guilds,
     // Reads are 100 messages a request at roughly 5 a second; deletes about 10 a second at best.
-    estimate: { import_minutes: Math.ceil(messages / 100 / 5 / 60) + 1, purge_hours: Math.ceil((messages / 10 / 3600) * 10) / 10 },
+    estimate: { import_minutes: Math.max(1, Math.ceil(messages / 100 / 5 / 60)), purge_hours: Math.ceil((messages / 10 / 3600) * 10) / 10 },
   }
 }
 
@@ -126,13 +126,12 @@ export async function importDiscord(rest: DiscordRest, config: HubConfig, paths:
       let index = 0
       for (const c of containers) {
         index++
-        if (done.has(c.id)) {
-          stats.complete++
-          continue
-        }
+        // A channel finished in an earlier run only needs what came after the hub's newest message.
+        const finished = done.has(c.id)
         const seen = new Map<string, Message>()
-        for (const m of readArchive(options.archive, guildId, c.id)) seen.set(m.id, m)
-        const after = [...seen.keys()].reduce((a, b) => (BigInt(b) > BigInt(a) ? b : a), '0')
+        if (!finished) for (const m of readArchive(options.archive, guildId, c.id)) seen.set(m.id, m)
+        const newest = finished ? String((await twin.execute({ sql: 'SELECT id FROM Message WHERE channelId = ? ORDER BY length(id) DESC, id DESC LIMIT 1', args: [c.id] })).rows[0]?.['id'] ?? '0') : '0'
+        const after = finished ? newest : [...seen.keys()].reduce((a, b) => (BigInt(b) > BigInt(a) ? b : a), '0')
         const fresh = await pageAfter(rest, c.id, after)
         if (fresh === null) {
           stats.unreadable.push(c.name ?? c.id)
@@ -160,6 +159,10 @@ export async function importDiscord(rest: DiscordRest, config: HubConfig, paths:
         const missing = messages.filter((m) => !have.has(m.id)).length
         // A channel is only done when every message and every file is on the hub: the purge relies on it.
         if (missing === 0 && filesFailed === 0) {
+          if (finished) {
+            stats.complete++
+            continue
+          }
           done.add(c.id)
           stats.complete++
           progress[guildId] = [...done]

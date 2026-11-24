@@ -64,6 +64,7 @@ export class DiscordRest {
   // GET that throws on anything but success, for steps that cannot go on without it.
   async get<T>(path: string): Promise<T> {
     const result = await this.call<T>('GET', path)
+    if (result.status === 401) throw new Error('Discord refused the bot token (401). Check the token file, or make a new token in the Discord developer portal (your app, Bot, Reset Token).')
     if (result.data === null) throw new Error(`Discord GET ${path.split('?')[0]} answered ${result.status}${result.code ? ` (code ${result.code})` : ''}${result.message ? `: ${result.message}` : ''}`)
     return result.data
   }
@@ -72,6 +73,7 @@ export class DiscordRest {
   async maybe<T>(path: string): Promise<T | null> {
     const result = await this.call<T>('GET', path)
     if (result.data !== null) return result.data
+    if (result.status === 401) throw new Error('Discord refused the bot token (401). Check the token file, or make a new token in the Discord developer portal (your app, Bot, Reset Token).')
     if ([403, 404, 405].includes(result.status)) return null
     throw new Error(`Discord GET ${path.split('?')[0]} answered ${result.status}${result.code ? ` (code ${result.code})` : ''}`)
   }

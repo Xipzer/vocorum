@@ -43,7 +43,7 @@ export type RequestRow = { id: string; method: string; route: string; body: stri
 
 export class Requests {
   private ready: Promise<void> | null = null
-  private challenges = new Map<string, { requestId: string; deviceId: string; at: number }>()
+  private challenges = new Map<string, { requestId: string; deviceId: string; at: number; challenge?: string }>()
 
   constructor(private readonly hub: Hub) {}
 
@@ -87,7 +87,7 @@ export class Requests {
       route,
       body: JSON.stringify(body),
       kind: allowed.kind,
-      summary: text(input['summary'], 300) || `${allowed.kind}: ${method} ${route}`,
+      summary: text(input['summary'], 300) || (await this.describe(method, route, body)),
       reason: text(input['reason'], 1000),
       origin: text(input['origin'], 300) || 'cli',
       created_at: Date.now(),
@@ -101,6 +101,35 @@ export class Requests {
     await this.db.execute({ sql: 'INSERT INTO change_requests (id, method, route, body, kind, summary, reason, origin, created_at, expires_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', args: [row.id, row.method, row.route, row.body, row.kind, row.summary, row.reason, row.origin, row.created_at, row.expires_at, row.status] })
     this.notify('REQUEST_CREATE', this.toClient(row))
     return this.toClient(row)
+  }
+
+  // A plain sentence for the approval card when the requester gave none.
+  private async describe(method: string, route: string, body: Record<string, unknown>): Promise<string> {
+    const prisma = this.hub.twin.prisma
+    const guildName = async (id: string) => this.hub.guilds.find((g) => g.id === id)?.name ?? 'the server'
+    const userName = async (id: string) => (await prisma.user.findUnique({ where: { id } }))?.username ?? 'someone'
+    const channelName = async (id: string) => `#${(await prisma.channel.findUnique({ where: { id } }))?.name ?? 'a channel'}`
+    const roleName = async (id: string) => (await prisma.role.findUnique({ where: { id } }))?.name ?? 'a role'
+    const target = async (channel: string, id: string) => {
+      const c = await prisma.channel.findUnique({ where: { id: channel } })
+      if (id === c?.guildId) return 'everyone'
+      return (await prisma.role.findUnique({ where: { id } }))?.name ?? (await userName(id))
+    }
+    let p: Record<string, string> | null
+    if ((p = match('/client/guilds/:id/invites', route))) return `Invite ${String(body['username'] ?? body['user_id'] ?? 'someone')} to ${await guildName(p['id']!)}`
+    if ((p = match('/client/guilds/:id/members/:user/roles', route))) {
+      const roles = Array.isArray(body['roles']) ? await Promise.all((body['roles'] as string[]).map(roleName)) : []
+      return `Set ${await userName(p['user']!)}'s roles in ${await guildName(p['id']!)} to ${roles.length ? roles.join(', ') : 'none'}`
+    }
+    if ((p = match('/client/guilds/:id/members/:user', route))) return `Remove ${await userName(p['user']!)} from ${await guildName(p['id']!)}`
+    if ((p = match('/client/guilds/:id/roles/:role', route))) return `Change the role ${await roleName(p['role']!)} in ${await guildName(p['id']!)}`
+    if ((p = match('/client/guilds/:id/roles', route))) return `Create the role ${String(body['name'] ?? '')} in ${await guildName(p['id']!)}`
+    if ((p = match('/client/channels/:id/permissions/:target', route))) return method === 'DELETE' ? `Reset ${await channelName(p['id']!)} permissions for ${await target(p['id']!, p['target']!)}` : `Change who can use ${await channelName(p['id']!)}: ${await target(p['id']!, p['target']!)}`
+    if ((p = match('/client/guilds/:id/channels', route))) return `Create the channel #${String(body['name'] ?? '')} in ${await guildName(p['id']!)}`
+    if ((p = match('/client/channels/:id/settings', route))) return `Change ${await channelName(p['id']!)}`
+    if ((p = match('/client/channels/:id', route))) return `Delete ${await channelName(p['id']!)}`
+    if ((p = match('/client/guilds/:id', route))) return `Rename ${await guildName(p['id']!)} to ${String(body['name'] ?? '')}`
+    return `${method} ${route}`
   }
 
   private toClient(r: RequestRow) {
@@ -221,6 +250,13 @@ export class Requests {
     // Step-up: a passkey assertion made for this request, on this device, now.
     if ((params = match('/client/requests/:id/approve/options', pathname)) && method === 'POST') {
       await this.pending(params['id']!)
+      // Apps sign with their approval key instead (see HubAuth.verifyAppApproval).
+      if (v.device.kind === 'app') {
+        const challenge = crypto.randomBytes(32).toString('base64url')
+        const challengeId = crypto.randomBytes(16).toString('base64url')
+        this.challenges.set(challengeId, { requestId: params['id']!, deviceId: v.device.id, at: Date.now(), challenge })
+        return { challengeId, challenge }
+      }
       const options = await this.hub.auth.loginOptions(origin!)
       this.challenges.set(options.challengeId, { requestId: params['id']!, deviceId: v.device.id, at: Date.now() })
       return options
@@ -231,6 +267,11 @@ export class Requests {
       if (typeof body['challengeId'] === 'string') this.challenges.delete(body['challengeId'])
       if (!challenge || challenge.requestId !== params['id'] || challenge.deviceId !== v.device.id || Date.now() - challenge.at > STEP_UP_MS) throw new HttpError(400, 'Confirm with your passkey again')
       const row = await this.pending(params['id']!)
+      if (v.device.kind === 'app') {
+        if (!challenge.challenge) throw new HttpError(400, 'Confirm on this device again')
+        await this.hub.auth.verifyAppApproval(v.device.id, challenge.challenge, row.id, body)
+        return { result: await this.apply(row) }
+      }
       const { device } = await this.hub.auth.login(origin!, body)
       if (device.id !== v.device.id) throw new HttpError(403, 'Use the passkey of this device')
       return { result: await this.apply(row) }

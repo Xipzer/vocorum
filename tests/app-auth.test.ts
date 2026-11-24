@@ -7,7 +7,8 @@ import fs from 'node:fs'
 import { afterAll, beforeAll, expect, test } from 'vitest'
 import WebSocket from 'ws'
 import { Client, GatewayIntentBits, type TextChannel } from 'discord.js'
-import { APP_LOGIN_PREFIX } from '../src/auth.ts'
+import { APP_APPROVE_PREFIX, APP_LOGIN_PREFIX } from '../src/auth.ts'
+import { readSecret } from '../src/config.ts'
 import { appPairLink } from '../src/private-listener.ts'
 import { LOGIN, pairedDevice, startTestHub, waitFor, type TestDevice } from './helpers.ts'
 
@@ -172,4 +173,58 @@ test('the app pairing link carries the hub address, the CA fingerprint and the c
   const listener = { address: '100.64.0.5', port: 47443, httpPort: 47080, names: ['hub.home.arpa'], allowedCidrs: ['100.64.0.0/10'] }
   expect(appPairLink(listener, ca, 'ABCDE12345')).toBe(`vocorum://pair?h=hub.home.arpa&a=100.64.0.5&p=47443&hp=47080&fp=${fp}&c=ABCDE12345`)
   expect(appPairLink({ ...listener, httpPort: null }, ca, 'ABCDE12345')).toBeNull()
+})
+
+test('an app approves a request only with its approval key, signed for that request', async () => {
+  const adminToken = readSecret(t.paths.adminToken)
+  const request = async (username: string) => (await (await fetch(`${t.hub.localUrl}/admin/requests`, { method: 'POST', headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' }, body: JSON.stringify({ method: 'POST', route: `/client/guilds/${t.config.guildId}/invites`, body: { username }, reason: 'test', origin: 'test' }) })).json()) as { id: string }
+  const approvalKeys = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' })
+  const jwk = approvalKeys.publicKey.export({ format: 'jwk' })
+  const approvalKey = Buffer.concat([Buffer.from([4]), Buffer.from(jwk.x!, 'base64url'), Buffer.from(jwk.y!, 'base64url')]).toString('base64url')
+  const key = deviceKey()
+  expect((await app('/client/auth/app/register', { json: { code: await t.hub.store.createPairing('phone app'), publicKey: key.raw, approvalKey: 'bad' } })).status).toBe(400)
+  const { keyId } = await (await app('/client/auth/app/register', { json: { code: await t.hub.store.createPairing('phone app'), publicKey: key.raw, approvalKey } })).json()
+  const { token } = await (await signIn(keyId, key.privateKey)).json()
+  const sign = (challenge: string, requestId: string, dsaEncoding: 'der' | 'ieee-p1363' = 'der') =>
+    crypto.sign('sha256', Buffer.from(`${APP_APPROVE_PREFIX}\n${challenge}\n${requestId}\n${keyId}`), { key: approvalKeys.privateKey, dsaEncoding }).toString('base64url')
+  const options = async (id: string) => (await app(`/client/requests/${id}/approve/options`, { token, json: {} })).json() as Promise<{ challengeId: string; challenge: string }>
+
+  // Signed by the login key, or for another request: refused.
+  const first = await request('ana')
+  let o = await options(first.id)
+  const loginKeySig = crypto.sign(null, Buffer.from(`${APP_APPROVE_PREFIX}\n${o.challenge}\n${first.id}\n${keyId}`), key.privateKey).toString('base64url')
+  expect((await app(`/client/requests/${first.id}/approve`, { token, json: { challengeId: o.challengeId, keyId, signature: loginKeySig } })).status).toBe(403)
+  o = await options(first.id)
+  expect((await app(`/client/requests/${first.id}/approve`, { token, json: { challengeId: o.challengeId, keyId, signature: sign(o.challenge, 'another') } })).status).toBe(403)
+  expect(await t.hub.twin.prisma.user.findFirst({ where: { username: 'ana' } })).toBeNull()
+  // DER (Apple) and raw r||s (Windows) signatures both work.
+  o = await options(first.id)
+  expect((await app(`/client/requests/${first.id}/approve`, { token, json: { challengeId: o.challengeId, keyId, signature: sign(o.challenge, first.id) } })).status).toBe(200)
+  expect(await t.hub.twin.prisma.user.findFirst({ where: { username: 'ana' } })).not.toBeNull()
+  const second = await request('ben')
+  o = await options(second.id)
+  expect((await app(`/client/requests/${second.id}/approve`, { token, json: { challengeId: o.challengeId, keyId, signature: sign(o.challenge, second.id, 'ieee-p1363') } })).status).toBe(200)
+
+  // Windows Hello: an RSA key, PKCS#1 v1.5. Too small a key is refused at pairing.
+  const small = crypto.generateKeyPairSync('rsa', { modulusLength: 1024 })
+  expect((await app('/client/auth/app/register', { json: { code: await t.hub.store.createPairing('win app'), publicKey: deviceKey().raw, approvalKey: small.publicKey.export({ format: 'der', type: 'spki' }).toString('base64url') } })).status).toBe(400)
+  const hello = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 })
+  const win = deviceKey()
+  const winPaired = await (await app('/client/auth/app/register', { json: { code: await t.hub.store.createPairing('win app'), publicKey: win.raw, approvalKey: hello.publicKey.export({ format: 'der', type: 'spki' }).toString('base64url') } })).json()
+  const winToken = (await (await signIn(winPaired.keyId, win.privateKey)).json()).token
+  const fourth = await request('dee')
+  const w = await (await app(`/client/requests/${fourth.id}/approve/options`, { token: winToken, json: {} })).json()
+  const rsaSig = crypto.sign('sha256', Buffer.from(`${APP_APPROVE_PREFIX}\n${w.challenge}\n${fourth.id}\n${winPaired.keyId}`), { key: hello.privateKey, padding: crypto.constants.RSA_PKCS1_PADDING }).toString('base64url')
+  expect((await app(`/client/requests/${fourth.id}/approve`, { token: winToken, json: { challengeId: w.challengeId, keyId: winPaired.keyId, signature: rsaSig } })).status).toBe(200)
+  expect(await t.hub.twin.prisma.user.findFirst({ where: { username: 'dee' } })).not.toBeNull()
+
+  // An app paired without an approval key (Linux) cannot approve.
+  const plain = deviceKey()
+  const paired = await (await app('/client/auth/app/register', { json: { code: await t.hub.store.createPairing('linux app'), publicKey: plain.raw } })).json()
+  const plainToken = (await (await signIn(paired.keyId, plain.privateKey)).json()).token
+  const third = await request('cy')
+  const p = await (await app(`/client/requests/${third.id}/approve/options`, { token: plainToken, json: {} })).json()
+  const res = await app(`/client/requests/${third.id}/approve`, { token: plainToken, json: { challengeId: p.challengeId, keyId: paired.keyId, signature: crypto.sign(null, Buffer.from('x'), plain.privateKey).toString('base64url') } })
+  expect(res.status).toBe(403)
+  expect((await res.json()).error).toMatch(/passkey/)
 })

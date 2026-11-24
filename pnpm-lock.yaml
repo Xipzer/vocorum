@@ -42,6 +42,9 @@ importers:
       '@simplewebauthn/browser':
         specifier: ^13.2.2
         version: 13.3.0
+      '@tauri-apps/api':
+        specifier: 2.12.5
+        version: 2.12.5
       '@types/node':
         specifier: ^24.11.0
         version: 24.19.2
@@ -891,6 +894,9 @@ packages:
 
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
+
+  '@tauri-apps/api@2.12.5':
+    resolution: {integrity: sha512-G9QIMt5fzED+aS4QhVK3w1HWLKpLIwH/MnpCr9z1ugGEHnS2ORmqrLkc0uALOjRK4qXJy+4Yiw8LDl/KicC1Hg==}
 
   '@tybys/wasm-util@0.10.3':
     resolution: {integrity: sha512-F3fo1MYrRJYL3zER0OUOmkutjr1Vp23m7OsSgp7nq4SP6OqX6C/56XFIPAl5bt3zaBRjmW7SGz3u/6LwFpYcOg==}
@@ -2418,6 +2424,8 @@ snapshots:
       - '@emnapi/runtime'
 
   '@standard-schema/spec@1.1.0': {}
+
+  '@tauri-apps/api@2.12.5': {}
 
   '@tybys/wasm-util@0.10.3':
     dependencies:
