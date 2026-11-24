@@ -1,0 +1,7 @@
+node_modules
+web/dist
+dist
+vendor/discord-digital-twin/src/generated
+*.db
+*.db-*
+.env

@@ -1,0 +1,64 @@
+{
+  "name": "vocorum",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted, Discord-style chat for you and your bots. Runs discord.js bots unchanged.",
+  "type": "module",
+  "bin": {
+    "vocorum": "./bin/vocorum.js"
+  },
+  "scripts": {
+    "vocorum": "node --import tsx src/cli.ts",
+    "prepare": "pnpm --filter discord-digital-twin exec prisma generate",
+    "build:web": "vite build --config web/vite.config.ts",
+    "dev:web": "vite --config web/vite.config.ts",
+    "test": "vitest",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.dom.json && tsc --noEmit -p web",
+    "build": "pnpm build:web && node scripts/build.mjs",
+    "build:server": "node scripts/build.mjs"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.17.2",
+    "@prisma/adapter-libsql": "7.4.2",
+    "@prisma/client": "7.4.2",
+    "@simplewebauthn/server": "^13.2.2",
+    "discord-api-types": "0.38.49",
+    "discord-digital-twin": "workspace:*",
+    "spiceflow": "1.26.0-rsc.3",
+    "tsx": "^4.20.5",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@simplewebauthn/browser": "^13.2.2",
+    "@types/node": "^24.11.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@types/ws": "^8.5.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "discord.js": "^14.25.1",
+    "esbuild": "^0.28.1",
+    "playwright-core": "^1.58.0",
+    "playwright-webkit": "npm:playwright-core@1.58.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.4",
+    "vitest": "^5.1.1"
+  },
+  "license": "SEE LICENSE IN LICENSE",
+  "author": "Xipz",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=22"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "prisma",
+      "@prisma/engines"
+    ],
+    "overrides": {
+      "discord-api-types": "0.38.49"
+    }
+  }
+}

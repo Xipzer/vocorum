@@ -1,0 +1,180 @@
+/* Pending uploads in the composer: Discord's attachment tiles. A row above the text,
+   inside the same box, each tile a preview, its name and a floating action bar. */
+
+.upload-tiles {
+  --tile: 216px;
+  --tile-pad: 8px;
+  display: flex;
+  gap: 12px;
+  margin: 0;
+  /* With the footer's own 4px this puts the tiles 16px from the box's edge. */
+  padding: 12px 12px 8px;
+  list-style: none;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+@media (max-width: 767px) {
+  .upload-tiles {
+    --tile: 168px;
+    padding: 12px 8px 4px;
+  }
+}
+.upload-tile {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tile-pad);
+  width: var(--tile);
+  height: var(--tile);
+  padding: var(--tile-pad);
+  background: var(--bg-4);
+  border: 1px solid var(--line-raised);
+  border-radius: var(--r-control);
+  transition: border-color var(--t-fast);
+}
+.upload-tile.failed {
+  border-color: rgb(255 77 94 / 0.55);
+}
+.upload-preview {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: var(--bg-1);
+  border-radius: var(--r-inline);
+}
+.upload-preview img,
+.upload-preview video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  transition: filter var(--t-fast), opacity var(--t-fast);
+}
+.upload-tile.busy .upload-preview img,
+.upload-tile.busy .upload-preview video {
+  opacity: 0.55;
+}
+.upload-tile.spoilered .upload-preview img,
+.upload-tile.spoilered .upload-preview video {
+  filter: blur(24px) brightness(0.7);
+  transform: scale(1.1);
+}
+.upload-tile .spoiler-pill {
+  font-size: 12px;
+  line-height: 16px;
+  padding: 4px 10px;
+}
+.upload-file {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+}
+.upload-file .num {
+  font: 600 12px/16px var(--font);
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+}
+.upload-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  text-align: center;
+  font: 400 12px/16px var(--font);
+  color: var(--danger-text);
+}
+.upload-error > span {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.upload-error .button {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+.upload-progress {
+  position: absolute;
+  inset: auto 0 0;
+  height: 3px;
+  overflow: hidden;
+  background: rgb(var(--accent-rgb) / 0.2);
+}
+.upload-progress::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  background: var(--accent);
+  animation: upload-slide 1.1s var(--ease-out) infinite;
+}
+@keyframes upload-slide {
+  from {
+    translate: -100% 0;
+  }
+  to {
+    translate: 250% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .upload-progress::after {
+    width: 100%;
+    animation: none;
+    opacity: 0.6;
+  }
+}
+.upload-tile-name {
+  flex: none;
+  font: 400 13px/18px var(--font);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The action bar: the message hover toolbar's shape, 6px inside the preview's corner. */
+.upload-actions {
+  position: absolute;
+  top: calc(var(--tile-pad) + 6px);
+  right: calc(var(--tile-pad) + 6px);
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg-3);
+  border: 1px solid var(--line-raised);
+  border-radius: var(--r-control);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.3);
+}
+.upload-actions .icon-button {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+}
+.upload-actions .icon-button[aria-pressed='true'] {
+  color: var(--accent);
+}
+.upload-actions .icon-button.danger {
+  color: var(--danger);
+}
+@media (hover: hover) {
+  .upload-actions .icon-button.danger:hover {
+    background: rgb(255 77 94 / 0.14);
+    color: var(--danger);
+  }
+}
+
+.upload-editor .modal-header h2 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

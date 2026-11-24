@@ -1,0 +1,30 @@
+Vocorum
+Copyright 2026 Xipz
+
+Licensed under the Apache License, Version 2.0, subject to the Commons Clause
+License Condition v1.0 (see LICENSE).
+
+This product includes third-party software:
+
+- discord-digital-twin (vendor/discord-digital-twin), Copyright (c) 2025 Kimaki,
+  MIT License. Vendored from https://github.com/remorses/kimaki and modified
+  (dispatch observers, HTTP/WebSocket extension hooks, attachment store,
+  client revocation, user reactions, thread archive, message flags, connected
+  gateway tokens). MIT code cannot be relicensed: that folder stays under its
+  own MIT LICENSE and is not subject to the Commons Clause.
+
+- Inter font (web/public/fonts), Copyright (c) 2016 The Inter Project Authors,
+  SIL Open Font License 1.1 (see OFL.txt and web/public/fonts/OFL.txt).
+
+Apache-2.0 dependencies installed from npm (not modified, not bundled into
+Vocorum's own files): Prisma (@prisma/client, @prisma/adapter-libsql, prisma),
+discord.js and playwright-core (also as playwright-webkit, pinned for the
+WebKit test; development and tests only). Their licences and
+notices ship inside their packages in node_modules.
+
+The web build bundles MIT-licensed packages (React, react-dom,
+@simplewebauthn/browser, scheduler); their licences are reproduced in
+THIRD_PARTY_LICENSES.txt.
+
+"Discord" is a trademark of Discord Inc. Vocorum is not affiliated with,
+endorsed by or sponsored by Discord Inc.

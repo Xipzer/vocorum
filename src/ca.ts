@@ -1,0 +1,123 @@
+// The hub's own certificate authority, so devices reach it over HTTPS without
+// any public CA, ACME or certificate-transparency log. The CA is name
+// constrained to the hub's own names and addresses: even a stolen CA key cannot
+// sign a certificate for any other site. Uses the openssl CLI.
+
+import crypto from 'node:crypto'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+
+const run = (args: string[]) => promisify(execFile)('openssl', args, { timeout: 30_000 })
+
+// Apple caps certificates from user-installed roots at 825 days; stay well under.
+const SERVER_DAYS = 397
+const RENEW_BEFORE_MS = 30 * 24 * 3600_000
+
+export type CaFiles = { dir: string; caKey: string; caCert: string; key: string; cert: string }
+
+export function caFiles(dir: string): CaFiles {
+  return { dir, caKey: path.join(dir, 'ca.key'), caCert: path.join(dir, 'ca.crt'), key: path.join(dir, 'server.key'), cert: path.join(dir, 'server.crt') }
+}
+
+function ipConstraint(ip: string) {
+  return ip.includes(':') ? `IP:${ip}/ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff` : `IP:${ip}/255.255.255.255`
+}
+
+async function withTemp<T>(fn: (dir: string) => Promise<T>): Promise<T> {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'vocorum-ca-'))
+  try {
+    return await fn(dir)
+  } finally {
+    await fs.promises.rm(dir, { recursive: true, force: true })
+  }
+}
+
+// The DNS names a CA's name constraint permits.
+export async function permittedNames(certFile: string): Promise<string[]> {
+  const { stdout } = await run(['x509', '-noout', '-ext', 'nameConstraints', '-in', certFile])
+  return [...stdout.matchAll(/DNS:([^\s,]+)/g)].map((m) => m[1]!.toLowerCase())
+}
+
+// Zones private by definition: a constraint to one of them can never cover a public site.
+const PRIVATE_ZONES = ['home.arpa', 'internal', 'lan', 'local']
+
+// Constraint entries broader than the hub's names: a whole zone that may be a
+// public suffix (ts.net, co.uk). Older hubs made such CAs.
+export async function broadConstraints(certFile: string, names: string[]): Promise<string[]> {
+  const wanted = names.map((n) => n.toLowerCase())
+  return (await permittedNames(certFile)).filter((entry) => !wanted.includes(entry) && !PRIVATE_ZONES.some((zone) => entry === zone || entry.endsWith(`.${zone}`)))
+}
+
+// reissueBroad: replace a CA whose constraint is too broad (the old one is
+// kept aside); devices must then install the new profile. Otherwise it only warns.
+export async function ensureCa(files: CaFiles, { names, ips, reissueBroad = false }: { names: string[]; ips: string[]; reissueBroad?: boolean }): Promise<{ broad: string[]; reissued: boolean }> {
+  if (fs.existsSync(files.caKey) && fs.existsSync(files.caCert)) {
+    const broad = await broadConstraints(files.caCert, names)
+    if (broad.length === 0) return { broad, reissued: false }
+    if (!reissueBroad) {
+      console.warn(`[vocorum] The hub's CA may sign any name under ${broad.join(', ')}. Run "vocorum private setup" again to replace it with one limited to ${names.join(', ')}.`)
+      return { broad, reissued: false }
+    }
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    for (const file of [files.caKey, files.caCert, files.cert, files.key]) if (fs.existsSync(file)) await fs.promises.rename(file, `${file}.old-${stamp}`)
+    await createCa(files, { names, ips })
+    return { broad, reissued: true }
+  }
+  await createCa(files, { names, ips })
+  return { broad: [], reissued: false }
+}
+
+async function createCa(files: CaFiles, { names, ips }: { names: string[]; ips: string[] }) {
+  await fs.promises.mkdir(files.dir, { recursive: true, mode: 0o700 })
+  // Exactly the hub's own names (a DNS constraint also covers their
+  // subdomains) and address: never a whole zone, which could be a public
+  // suffix such as ts.net or co.uk.
+  const permitted = [...[...new Set(names)].map((name) => `DNS:${name}`), ...ips.map(ipConstraint)].map((entry) => `permitted;${entry}`).join(',')
+  const id = crypto.randomBytes(4).toString('hex')
+  await run([
+    'req', '-x509', '-new', '-nodes',
+    '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256',
+    '-keyout', files.caKey, '-out', files.caCert,
+    '-days', '3650', '-sha256',
+    '-subj', `/CN=Vocorum local CA ${id}`,
+    '-addext', 'basicConstraints=critical,CA:TRUE,pathlen:0',
+    '-addext', 'keyUsage=critical,keyCertSign,cRLSign',
+    '-addext', `nameConstraints=critical,${permitted}`,
+  ])
+  await fs.promises.chmod(files.caKey, 0o600)
+}
+
+// Issues or renews the server certificate when missing, close to expiry, or
+// when the names or addresses changed.
+export async function ensureServerCert(files: CaFiles, { names, ips }: { names: string[]; ips: string[] }) {
+  const want = [...names.map((n) => `DNS:${n}`), ...ips.map((ip) => `IP Address:${ip}`)].map((s) => s.toLowerCase()).sort().join(',')
+  if (fs.existsSync(files.cert) && fs.existsSync(files.key)) {
+    const cert = new crypto.X509Certificate(fs.readFileSync(files.cert))
+    const have = (cert.subjectAltName ?? '').split(', ').map((s) => s.toLowerCase()).sort().join(',')
+    const fresh = new Date(cert.validTo).getTime() - Date.now() > RENEW_BEFORE_MS
+    const signedByCa = cert.checkIssued(new crypto.X509Certificate(fs.readFileSync(files.caCert)))
+    if (fresh && signedByCa && have === want) return false
+  }
+  await withTemp(async (tmp) => {
+    const csr = path.join(tmp, 'server.csr')
+    const ext = path.join(tmp, 'ext.cnf')
+    const san = [...names.map((n) => `DNS:${n}`), ...ips.map((ip) => `IP:${ip}`)].join(',')
+    await fs.promises.writeFile(ext, `basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\nsubjectAltName=${san}\n`)
+    await run(['req', '-new', '-nodes', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-keyout', files.key, '-out', csr, '-subj', `/CN=${names[0] ?? ips[0]}`])
+    await run(['x509', '-req', '-in', csr, '-CA', files.caCert, '-CAkey', files.caKey, '-CAcreateserial', '-out', files.cert, '-days', String(SERVER_DAYS), '-sha256', '-extfile', ext])
+  })
+  await fs.promises.chmod(files.key, 0o600)
+  await fs.promises.rm(path.join(files.dir, 'ca.srl'), { force: true })
+  return true
+}
+
+export function fingerprint(certFile: string) {
+  return new crypto.X509Certificate(fs.readFileSync(certFile)).fingerprint256
+}
+
+export function certDer(certFile: string) {
+  return new crypto.X509Certificate(fs.readFileSync(certFile)).raw
+}

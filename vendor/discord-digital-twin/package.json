@@ -1,0 +1,68 @@
+{
+  "name": "discord-digital-twin",
+  "version": "0.2.0",
+  "description": "Local Discord API twin for testing discord.js bots without hitting real Discord servers (vendored from the Kimaki repository, MIT)",
+  "type": "module",
+  "license": "MIT",
+  "author": "remorses <beats.by.morse@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/remorses/kimaki.git",
+    "directory": "discord-digital-twin"
+  },
+  "homepage": "https://github.com/remorses/kimaki/tree/main/discord-digital-twin",
+  "bugs": "https://github.com/remorses/kimaki/issues",
+  "keywords": [
+    "discord",
+    "testing",
+    "mock",
+    "discord.js",
+    "typescript",
+    "esm",
+    "test-utils",
+    "e2e",
+    "integration-test"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    "./schema.prisma": "./schema.prisma",
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./src": {
+      "types": "./dist/index.d.ts",
+      "default": "./src/index.ts"
+    },
+    "./src/*": {
+      "types": "./dist/*.d.ts",
+      "default": "./src/*.ts"
+    }
+  },
+  "scripts": {
+    "generate": "prisma generate",
+    "test": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.17.2",
+    "@prisma/adapter-libsql": "7.4.2",
+    "@prisma/client": "7.4.2",
+    "discord-api-types": "0.38.49",
+    "spiceflow": "1.26.0-rsc.3",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@discordjs/voice": "^0.19.2",
+    "@types/node": "^24.11.0",
+    "@types/ws": "^8.5.0",
+    "discord.js": "^14.25.1",
+    "prism-media": "^1.3.5",
+    "typescript": "^5.7.0",
+    "vitest": "^5.1.1",
+    "prisma": "7.4.2"
+  },
+  "private": true
+}

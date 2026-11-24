@@ -1,0 +1,6136 @@
+/* Tokens: plans/design-audit.md section 5 (rich dark, cyber cyan accent, hyper pink option). */
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('/fonts/inter-latin-wght.woff2') format('woff2-variations');
+}
+:root {
+  --bg-0: #000000;
+  --bg-1: #060608;
+  --bg-2: #0d0d10;
+  --bg-3: #121216;
+  --bg-4: #1a1a20;
+  /* State fills: white overlays, so they read the same on any surface (Discord's steps). */
+  --fill-hover: rgb(255 255 255 / 0.06);
+  --fill-selected: rgb(255 255 255 / 0.1);
+  --fill-press: rgb(255 255 255 / 0.13);
+  --fill-control-hover: rgb(255 255 255 / 0.1);
+  --fill-control-press: rgb(255 255 255 / 0.16);
+  --fill-menu-hover: rgb(255 255 255 / 0.08);
+  --disabled-opacity: 0.4;
+  --hover: var(--fill-hover);
+  --active: var(--fill-press);
+  /* Rules sit a small, even step above the surface they're on (Discord's ratio,
+     about +14 on the frame, +12 on raised pieces), so they separate without shouting. */
+  --line: #111115;
+  --line-strong: #17171c;
+  --line-card: #1d1d23;
+  --line-raised: #27272e;
+  --sel: var(--fill-selected);
+  --spine: #33333c;
+  --sheet: #0f0f13;
+  --group: #17171c;
+  --group-line: #24242b;
+  --danger-text: #ff8a96;
+  --text: #e3e3e9;
+  --text-strong: #ffffff;
+  --text-muted: #a3a3ae;
+  --text-faint: #82828e;
+  --pink: #ff2e88;
+  --cyan: #00d2ff;
+  --accent: var(--cyan);
+  --accent-rgb: 0 210 255;
+  --accent-ink: #0a0a0d;
+  --busy: var(--pink);
+  --busy-rgb: 255 46 136;
+  --link: #ff7ab8;
+  --ok: #3fb68b;
+  --warn: #e5a50a;
+  --danger: #ff4d5e;
+  --font: 'Inter Variable', Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace;
+  /* One radius scale: inline bits 4, controls and cards 8, floating surfaces 12
+     (so an 8px item sits concentric in a 12px menu with 4px padding), sheets 20. */
+  --r-inline: 4px;
+  --r-control: 8px;
+  --r-field: var(--r-control);
+  --r-float: 12px;
+  --r-group: var(--r-float);
+  --r-sheet: 20px;
+  /* One control height: buttons, fields, selects, menu rows (44 on phones). */
+  --control: 32px;
+  --dock-h: 58px;
+  /* One card padding: callouts, code, files, embeds. */
+  --card-pad: 10px 12px;
+  --shadow-float: 0 2px 8px rgb(0 0 0 / 0.5), 0 28px 64px -16px rgb(0 0 0 / 0.8);
+  --header: 48px;
+  --sidebar: 264px;
+  --measure: 720px;
+  --measure-wide: 860px;
+  --row: 32px;
+  --row-font: 15px;
+  --row-line: 20px;
+  --thread-font: 14px;
+  --body: 15px;
+  --body-line: 22px;
+  --hit: 32px;
+  --fast: 120ms;
+  --move: 220ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  color-scheme: dark;
+  font-family: var(--font);
+  font-feature-settings: 'cv11', 'ss01';
+  font-size: 15px;
+  -webkit-text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+}
+:root[data-accent='pink'] {
+  --accent: var(--pink);
+  --accent-rgb: 255 46 136;
+  --busy: var(--cyan);
+  --busy-rgb: 0 210 255;
+  --link: #6fdcff;
+}
+@media (max-width: 767px) {
+  :root {
+    --header: 52px;
+    --row: 38px;
+    --row-font: 16px;
+    --row-line: 22px;
+    --thread-font: 15px;
+    --body: 16px;
+    --body-line: 24px;
+    --hit: 44px;
+    --control: 44px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --fast: 0ms;
+    --move: 0ms;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: var(--bg-1);
+  color: var(--text);
+  overflow: hidden;
+}
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+input,
+textarea,
+select {
+  font: inherit;
+  color: var(--text);
+}
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+a {
+  color: var(--link);
+  text-decoration: none;
+}
+@media (hover: hover) {
+  a:hover {
+    text-decoration: underline;
+  }
+}
+.muted {
+  color: var(--text-muted);
+}
+.error {
+  color: var(--danger-text);
+  font-size: 13px;
+  margin-top: 8px;
+}
+.splash {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--text-muted);
+}
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Layout */
+.app {
+  display: flex;
+  height: 100%;
+  height: var(--app-height, 100dvh);
+}
+html[data-keyboard='open'] .footer {
+  padding-bottom: 8px;
+}
+.rail {
+  width: 72px;
+  flex: none;
+  background: var(--bg-0);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: max(12px, env(safe-area-inset-top)) 0 12px;
+  gap: 8px;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+}
+.rail-item {
+  position: relative;
+  width: 72px;
+  display: grid;
+  place-items: center;
+}
+.rail-guild {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: var(--bg-3);
+  color: var(--text-strong);
+  font: 600 15px/1 var(--font);
+  letter-spacing: 0.02em;
+  transition:
+    border-radius var(--move) var(--ease-out),
+    background var(--move);
+}
+.rail-item.active .rail-guild {
+  border-radius: 12px;
+  background: var(--accent);
+  color: #000;
+}
+@media (hover: hover) {
+  .rail-item:hover .rail-guild {
+    border-radius: 12px;
+  }
+}
+/* The pip on the left edge: short for unread, tall for the open server */
+.rail-pip {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 4px;
+  height: 0;
+  border-radius: 0 4px 4px 0;
+  background: var(--text-strong);
+  transform: translateY(-50%);
+  transition: height var(--move) var(--ease-out);
+}
+.rail-item.unread .rail-pip {
+  height: 8px;
+}
+.rail-item.active .rail-pip {
+  height: 40px;
+}
+.rail-badge {
+  position: absolute;
+  right: 12px;
+  bottom: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--danger);
+  color: #fff;
+  font: 700 12px/16px var(--font);
+  text-align: center;
+  box-shadow: 0 0 0 3px var(--bg-1);
+}
+
+/* Sidebar */
+.sidebar {
+  width: var(--sidebar);
+  flex: none;
+  background: var(--bg-1);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+}
+.sidebar.with-rail {
+  width: calc(var(--sidebar) + 72px);
+}
+.side-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding-top: env(safe-area-inset-top);
+  position: relative;
+}
+.side-head {
+  padding: 12px 12px 8px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: none;
+}
+.side-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 600 16px/22px var(--font);
+  color: var(--text-strong);
+  min-width: 0;
+}
+.side-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.side-title .offline {
+  margin-left: auto;
+  font: 500 12px/16px var(--font);
+  color: var(--warn);
+  white-space: nowrap;
+}
+.search {
+  height: var(--control);
+  border-radius: var(--r-control);
+  background: var(--bg-3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  color: var(--text-muted);
+}
+.search input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: 0;
+  outline: none;
+  font: 500 14px/20px var(--font);
+}
+.search input::placeholder {
+  color: var(--text-muted);
+}
+.channel-list {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: clip;
+  padding: 4px 8px 12px 12px;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+.channel-list::-webkit-scrollbar {
+  display: none;
+}
+.category {
+  margin-top: 16px;
+}
+.category:first-child {
+  margin-top: 4px;
+}
+.category-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 0 8px 4px;
+  font: 600 12px/16px var(--font);
+  color: var(--text-faint);
+  text-align: left;
+}
+.category-name svg {
+  transition: transform var(--fast) var(--ease-out);
+}
+.category-name.collapsed svg {
+  transform: rotate(-90deg);
+}
+@media (hover: hover) {
+  .category-name:hover {
+    color: var(--text-muted);
+  }
+}
+.channel {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: var(--row);
+  padding: 0 8px;
+  border-radius: var(--r-control);
+  color: var(--text-muted);
+  font: 500 var(--row-font) / var(--row-line) var(--font);
+  text-align: left;
+  white-space: nowrap;
+  transition: background var(--fast) var(--ease-out);
+}
+@media (hover: hover) {
+  .channel:hover {
+    background: var(--hover);
+    color: var(--text);
+  }
+}
+.channel.active {
+  background: var(--fill-selected);
+  color: var(--text-strong);
+}
+.channel:active:not(.active) {
+  background: var(--fill-press);
+}
+.channel.unread {
+  color: var(--text-strong);
+  font-weight: 600;
+}
+.channel.unread::after {
+  content: '';
+  position: absolute;
+  left: -12px;
+  top: 50%;
+  width: 4px;
+  height: 8px;
+  margin-top: -4px;
+  border-radius: 0 4px 4px 0;
+  background: var(--text-strong);
+}
+.channel .hash {
+  color: var(--text-faint);
+  width: 14px;
+  text-align: center;
+  flex: none;
+}
+.channel-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+.channel .meta {
+  font: 500 12px/16px var(--font);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.tree {
+  position: relative;
+  margin-left: 15px;
+}
+.tree .trunk {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 2px;
+  background: var(--spine);
+  border-radius: 1px;
+}
+.tree .channel {
+  margin-left: 18px;
+  width: calc(100% - 18px);
+  font-weight: 400;
+  /* Threads sit under their channel: a step smaller, like Discord's. */
+  font-size: var(--thread-font);
+}
+.tree .channel.unread {
+  font-weight: 600;
+}
+.tree .channel::before {
+  content: '';
+  position: absolute;
+  left: -18px;
+  top: 0;
+  height: 50%;
+  width: 10px;
+  border-left: 2px solid var(--spine);
+  border-bottom: 2px solid var(--spine);
+  border-bottom-left-radius: 6px;
+}
+.tree .channel.unread::after {
+  left: -45px;
+}
+.tree .channel.older {
+  color: var(--text-faint);
+  font: 400 13px/18px var(--font);
+}
+.tree .channel.dim {
+  color: var(--text-faint);
+}
+/* ===== Dock =====
+   The user panel and the desktop composer float as one pair: the same height
+   (--dock-h, border included), corner, surface and rule, 8px from every edge,
+   and the same inner inset: control boxes sit 9px in (1px border + 4px padding +
+   4px), their 22px glyphs and the avatar 14px in, on both sides of both. Tested. */
+.user-panel {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: max(8px, env(safe-area-inset-bottom));
+  height: var(--dock-h);
+  padding: 4px;
+  border-radius: var(--r-control);
+  background: var(--bg-3);
+  border: 1px solid var(--line-card);
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  z-index: 7;
+  text-align: left;
+}
+.sidebar .rail,
+.side-main {
+  padding-bottom: calc(var(--dock-h) + 16px + env(safe-area-inset-bottom));
+}
+.user-panel-me {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 9px;
+  border-radius: var(--r-inline);
+  text-align: left;
+}
+.user-panel > .icon-button {
+  align-self: center;
+  min-width: 32px;
+  height: 32px;
+  margin: 0 4px;
+  padding: 0 5px;
+  border-radius: var(--r-control);
+}
+.user-panel-me:hover {
+  background: var(--hover);
+}
+.user-panel-name {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  font: 600 14px/18px var(--font);
+  color: var(--text-strong);
+}
+.user-panel-name small {
+  font: 400 12px/16px var(--font);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.avatar {
+  border-radius: 50%;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  background: var(--bg-4);
+  color: var(--text-strong);
+  font-weight: 600;
+  overflow: hidden;
+  object-fit: cover;
+}
+.avatar.panel {
+  width: 32px;
+  height: 32px;
+  font-size: 14px;
+}
+.avatar.inline {
+  width: 20px;
+  height: 20px;
+  font-size: 11px;
+}
+.menu-pop {
+  position: absolute;
+  left: -1px;
+  right: -1px;
+  bottom: calc(100% + 9px);
+  background: var(--sheet);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  box-shadow: var(--shadow-float);
+  padding: 8px;
+  z-index: 40;
+}
+.menu-pop .menu-label {
+  font: 600 12px/16px var(--font);
+  color: var(--text-faint);
+  padding: 8px 8px 4px;
+}
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: var(--control);
+  padding: 0 8px;
+  border-radius: var(--r-control);
+  font: 500 14px/20px var(--font);
+  color: var(--text);
+  text-align: left;
+}
+.menu-item:hover {
+  background: var(--active);
+  color: var(--text-strong);
+}
+.menu-item.on {
+  color: var(--text-strong);
+}
+.menu-item.on::after {
+  content: '';
+  margin-left: auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.menu-item.red {
+  color: var(--danger-text);
+}
+.swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: none;
+}
+
+/* Chat */
+.chat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  /* One backdrop for the whole chat, so the floating composer sits on it too. */
+  background:
+    radial-gradient(900px 520px at 100% 0%, rgb(var(--wall) / 0.1), transparent 70%),
+    radial-gradient(circle at 1px 1px, rgb(255 255 255 / 0.045) 1px, transparent 1.5px) 0 0 / 22px 22px,
+    var(--bg-2);
+}
+.chat.empty {
+  align-items: center;
+  justify-content: center;
+}
+.chat-header {
+  height: calc(var(--header) + env(safe-area-inset-top));
+  padding-top: env(safe-area-inset-top);
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-left: 24px;
+  padding-right: 12px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line-strong);
+  z-index: 2;
+}
+.chat-titles {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+.chat-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  font: 600 14px/20px var(--font);
+  color: var(--text-strong);
+  white-space: nowrap;
+  min-width: 0;
+  text-align: left;
+}
+.chat-title .title-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.chat-title .parent {
+  flex: none;
+}
+.chat-title svg {
+  flex: none;
+  color: var(--text-faint);
+}
+.chat-title .parent {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.chat-sub {
+  font: 400 12px/16px var(--font);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.chat-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+  flex: none;
+}
+.icon-button {
+  width: var(--hit);
+  height: var(--hit);
+  display: inline-grid;
+  place-items: center;
+  border-radius: var(--r-control);
+  color: var(--text-muted);
+  flex: none;
+  transition: color var(--fast), background var(--fast);
+}
+/* Icon buttons: a clear filled square on hover (Discord's +), a step more when pressed. */
+@media (hover: hover) {
+  .icon-button:hover {
+    color: var(--text-strong);
+    background: rgb(255 255 255 / 0.08);
+  }
+}
+.icon-button:active {
+  background: rgb(255 255 255 / 0.12);
+}
+.menu {
+  display: none;
+}
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 16px 0 16px;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.channel-start {
+  padding: 8px 24px 16px;
+  font: 400 12px/16px var(--font);
+  color: var(--text-faint);
+}
+
+/* Messages */
+.message {
+  position: relative;
+  padding: 2px 24px;
+  margin-top: 14px;
+}
+.message.compact {
+  margin-top: 2px;
+}
+.message > * {
+  max-width: var(--measure-wide);
+}
+.message.needs {
+  background: linear-gradient(90deg, rgb(var(--accent-rgb) / 0.09), transparent 85%);
+  box-shadow: inset 2px 0 0 var(--accent);
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+.message.highlight {
+  background: rgb(var(--accent-rgb) / 0.12);
+}
+@media (hover: hover) {
+  .message:not(.needs):hover {
+    background: rgb(255 255 255 / 0.02);
+  }
+}
+.message-body {
+  min-width: 0;
+}
+.message-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+  line-height: 20px;
+}
+.author {
+  font: 600 14px/20px var(--font);
+  color: var(--text-strong);
+}
+.message-time {
+  font: 400 12px/16px var(--font);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.edited {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.message.system {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-faint);
+  font: 400 12px/16px var(--font);
+  margin-top: 8px;
+}
+.message.system strong {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.message.system .clip {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.reply-preview {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 400 12px/16px var(--font);
+  color: var(--text-muted);
+  padding-left: 22px;
+  position: relative;
+  white-space: nowrap;
+  overflow: hidden;
+  cursor: pointer;
+}
+.reply-preview strong {
+  color: var(--text);
+  font-weight: 500;
+}
+.reply-preview span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.reply-spine {
+  position: absolute;
+  left: 9px;
+  top: 8px;
+  width: 10px;
+  height: 10px;
+  border-left: 1.5px solid var(--spine);
+  border-top: 1.5px solid var(--spine);
+  border-top-left-radius: 4px;
+}
+.message-actions {
+  position: absolute;
+  right: 16px;
+  top: -14px;
+  display: none;
+  background: var(--sheet);
+  border-radius: var(--r-float);
+  box-shadow: var(--shadow-float);
+  padding: 2px;
+  z-index: 3;
+}
+@media (hover: hover) {
+  .message:hover .message-actions,
+  .message:focus-within .message-actions {
+    display: flex;
+  }
+}
+.message-actions > button {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+  border-radius: var(--r-control);
+}
+.message-actions > button:hover {
+  background: var(--active);
+  color: var(--text-strong);
+}
+.steps {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 400 12px/16px var(--font);
+  color: var(--text-muted);
+  padding: 2px 0;
+  text-align: left;
+  max-width: 100%;
+}
+.steps b {
+  font-weight: 500;
+  color: var(--text);
+}
+.steps .what {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.steps svg {
+  transition: transform var(--fast) var(--ease-out);
+  flex: none;
+}
+.steps.open svg {
+  transform: rotate(90deg);
+}
+.steps-list {
+  padding: 2px 0 4px 20px;
+}
+.steps-list .subtext {
+  line-height: 18px;
+}
+
+/* Markdown */
+.markdown {
+  font-size: var(--body);
+  line-height: var(--body-line);
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+  max-width: var(--measure);
+}
+.paragraph {
+  white-space: pre-wrap;
+  text-wrap: pretty;
+}
+.markdown h1,
+.markdown h2,
+.markdown h3 {
+  color: var(--text-strong);
+  font-weight: 600;
+  margin: 8px 0 2px;
+  text-wrap: balance;
+}
+.markdown h1 {
+  font-size: 24px;
+  line-height: 30px;
+}
+.markdown h2 {
+  font-size: 20px;
+  line-height: 26px;
+}
+.markdown h3 {
+  font-size: 16px;
+  line-height: 22px;
+}
+.subtext {
+  font: 400 12px/16px var(--font);
+  color: var(--text-faint);
+  white-space: pre-wrap;
+  font-variant-numeric: tabular-nums;
+}
+.subtext em {
+  font-style: italic;
+}
+.subtext strong {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.markdown ul,
+.markdown ol {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+.markdown blockquote {
+  margin: 4px 0;
+  padding-left: 12px;
+  /* Discord's quote bar: 4px, rounded, clearly visible. */
+  box-shadow: inset 4px 0 0 #3a3a42;
+  border-radius: var(--r-inline);
+}
+.markdown code {
+  background: var(--bg-3);
+  border-radius: var(--r-inline);
+  padding: 1px 4px;
+  font-family: var(--mono);
+  font-size: 85%;
+  font-variant-ligatures: none;
+}
+.codeblock {
+  position: relative;
+  margin: 6px 0 8px;
+  max-width: var(--measure-wide);
+}
+.codeblock pre {
+  margin: 0;
+  background: #050507;
+  border-radius: var(--r-control);
+  padding: var(--card-pad);
+  overflow-x: auto;
+}
+.codeblock pre code {
+  background: none;
+  padding: 0;
+  font-size: 13px;
+  line-height: 20px;
+  white-space: pre;
+}
+.codeblock-copy {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  font: 500 12px/16px var(--font);
+  padding: 2px 8px;
+  border-radius: var(--r-control);
+  background: var(--bg-4);
+  color: var(--text);
+  opacity: 0;
+  transition: opacity var(--fast);
+}
+.codeblock:hover .codeblock-copy,
+.codeblock-copy:focus {
+  opacity: 1;
+}
+@media (hover: none) {
+  .codeblock-copy {
+    opacity: 1;
+  }
+}
+.mention {
+  color: var(--accent);
+  font-weight: 500;
+  cursor: pointer;
+}
+.timestamp-mention {
+  color: var(--text-strong);
+}
+.spoiler {
+  background: var(--bg-4);
+  color: transparent;
+  border-radius: var(--r-inline);
+  cursor: pointer;
+}
+.spoiler.shown {
+  background: rgb(255 255 255 / 0.06);
+  color: inherit;
+}
+
+/* Components */
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 4px;
+}
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--control);
+  padding: 0 14px;
+  border-radius: var(--r-control);
+  font: 500 14px/20px var(--font);
+  color: var(--text-strong);
+  /* Filled like fields and the search box: one surface language for controls. */
+  background: var(--bg-3);
+  transition: background var(--fast), box-shadow var(--fast), opacity var(--fast);
+  text-decoration: none !important;
+  white-space: nowrap;
+}
+@media (hover: hover) {
+  .button:hover:not(:disabled) {
+    background: var(--bg-4);
+  }
+}
+.button.primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: none;
+  font-weight: 600;
+}
+@media (hover: hover) {
+  .button.primary:hover:not(:disabled) {
+    background: rgb(var(--accent-rgb) / 0.86);
+    box-shadow: none;
+  }
+}
+.button.danger {
+  color: var(--danger-text);
+}
+.button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.button.busy {
+  opacity: 0.7;
+}
+.button.wide {
+  width: 100%;
+  height: 44px;
+}
+.select {
+  position: relative;
+  width: 100%;
+  max-width: 400px;
+  margin-top: 8px;
+}
+.select-trigger {
+  width: 100%;
+  height: var(--control);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px 0 12px;
+  background: var(--bg-3);
+  border-radius: var(--r-field);
+  text-align: left;
+  font: 400 14px/20px var(--font);
+  box-shadow: inset 0 0 0 1px transparent;
+  transition: box-shadow var(--fast);
+}
+.select.open .select-trigger {
+  box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / 0.55);
+}
+.select-menu {
+  position: absolute;
+  z-index: 10;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  background: var(--sheet);
+  border-radius: var(--r-float);
+  box-shadow: var(--shadow-float);
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 4px;
+}
+.select-option {
+  width: 100%;
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  border-radius: var(--r-control);
+  text-align: left;
+  font-size: 14px;
+}
+.select-option:hover,
+.select-option.on {
+  background: var(--active);
+}
+.option-description {
+  display: block;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.select-done {
+  width: 100%;
+  margin-top: 4px;
+}
+/* Components V2 container: a content-width card, Discord's geometry (r8, 1px rule,
+   16px inset, 8px between children), accent as a 4px bar on the left. */
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: fit-content;
+  min-width: min(280px, 100%);
+  max-width: min(100%, var(--measure));
+  margin: 4px 0;
+  padding: 12px 16px;
+  border-radius: 8px;
+  border: 1px solid rgb(255 255 255 / 0.08);
+  background: rgb(255 255 255 / 0.03);
+}
+.container.accented {
+  border-left: 4px solid var(--bar);
+  padding-left: 14px;
+}
+.container > .action-row {
+  margin: 0;
+}
+.container .markdown > :first-child,
+.container .markdown h1:first-child,
+.container .markdown h2:first-child,
+.container .markdown h3:first-child {
+  margin-top: 0;
+}
+.container > .separator {
+  margin: 2px 0;
+  background: rgb(255 255 255 / 0.08);
+}
+.container > .separator.large {
+  margin: 8px 0;
+}
+.section {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.section-body {
+  flex: 1;
+  min-width: 0;
+}
+.separator {
+  height: 1px;
+  background: var(--line-strong);
+  margin: 4px 0;
+}
+.separator.invisible {
+  background: transparent;
+}
+.separator.large {
+  margin: 12px 0;
+}
+.thumbnail {
+  width: 85px;
+  height: 85px;
+  object-fit: cover;
+  border-radius: var(--r-control);
+}
+.gallery {
+  display: grid;
+  gap: 4px;
+  max-width: 640px;
+}
+.gallery-2,
+.gallery-4 {
+  grid-template-columns: 1fr 1fr;
+}
+.gallery-3 {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+.media {
+  max-width: min(640px, 100%);
+  max-height: 360px;
+  border-radius: var(--r-control);
+  display: block;
+  object-fit: contain;
+  outline: 1px solid var(--line);
+  outline-offset: -1px;
+  background: var(--bg-1);
+}
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+  align-items: flex-start;
+}
+.file-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: var(--card-pad);
+  border-radius: var(--r-control);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  max-width: 420px;
+  color: var(--text-strong);
+  font-size: 14px;
+  min-width: 0;
+}
+.file-card .file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-card .file-size {
+  color: var(--text-faint);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.file-card .file-open {
+  color: var(--link);
+  font: 500 13px/18px var(--font);
+  margin-left: 6px;
+}
+.voice-message {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 340px;
+  max-width: 100%;
+}
+.voice-play {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--bg-4);
+  color: var(--text-strong);
+  flex: none;
+  display: grid;
+  place-items: center;
+}
+.voice-wave {
+  flex: 1;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.voice-wave span {
+  flex: 1;
+  background: var(--text-faint);
+  border-radius: 1px;
+}
+.voice-wave span.played {
+  background: var(--text-strong);
+}
+.voice-time,
+.voice-speed {
+  font: 400 12px/16px var(--font);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.voice-speed {
+  font-weight: 500;
+  min-width: 28px;
+}
+.embed {
+  background: rgb(var(--tint, 255 255 255) / 0.06);
+  border-radius: var(--r-control);
+  padding: var(--card-pad);
+  margin-top: 6px;
+  max-width: 520px;
+}
+.embed-title {
+  font-weight: 600;
+  color: var(--text-strong);
+}
+.embed-field-name {
+  font-weight: 600;
+  font-size: 13px;
+  margin-top: 6px;
+}
+.ephemeral {
+  font: 400 12px/16px var(--font);
+  color: var(--text-faint);
+  margin-top: 4px;
+}
+
+/* Footer: the whole bottom is the input */
+.footer {
+  flex: none;
+  position: relative;
+  background: var(--bg-3);
+  border-top: 1px solid var(--line-strong);
+  /* Even space above and below the input. */
+  padding: 4px 8px calc(4px + env(safe-area-inset-bottom));
+  transition: border-color var(--fast);
+}
+.footer:focus-within {
+  border-top-color: rgb(var(--accent-rgb) / 0.55);
+}
+.footer-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  padding: 2px 8px 0;
+  font: 400 12px/16px var(--font);
+  color: var(--text-muted);
+}
+.footer-line strong {
+  color: var(--text);
+  font-weight: 500;
+}
+.footer-line .icon-button {
+  margin-left: auto;
+  width: 24px;
+  height: 24px;
+}
+.busy-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--busy);
+  box-shadow: 0 0 0 3px rgb(var(--busy-rgb) / 0.22);
+  animation: breathe 2.4s ease-in-out infinite;
+  flex: none;
+}
+@keyframes breathe {
+  50% {
+    box-shadow: 0 0 0 5px rgb(var(--busy-rgb) / 0.08);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .busy-dot {
+    animation: none;
+  }
+}
+.composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  min-height: 44px;
+}
+.composer textarea {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  outline: none;
+  resize: none;
+  padding: 11px 4px;
+  font-size: 16px;
+  line-height: 22px;
+  max-height: 33dvh;
+  min-width: 0;
+}
+.composer textarea::placeholder {
+  color: var(--text-faint);
+}
+.composer .icon-button {
+  width: 44px;
+  height: 44px;
+}
+.composer .send {
+  color: var(--accent);
+}
+/* Dock, desktop half: after the base composer rules so it wins without tricks. */
+@media (min-width: 768px) {
+  .footer {
+    margin: 0 8px max(8px, env(safe-area-inset-bottom));
+    min-height: var(--dock-h);
+    padding: 4px;
+    background: var(--bg-3);
+    border: 1px solid var(--line-card);
+    border-radius: var(--r-control);
+  }
+  .footer:focus-within {
+    border-color: rgb(var(--accent-rgb) / 0.45);
+  }
+  .composer {
+    min-height: calc(var(--dock-h) - 10px);
+    gap: 0;
+  }
+  .composer .icon-button {
+    width: 32px;
+    height: 32px;
+    margin: 8px 4px;
+    border-radius: var(--r-control);
+  }
+  .composer textarea {
+    padding: 13px 8px;
+  }
+  /* Only the rail showing: the panel shrinks to your avatar. */
+  html[data-side-collapsed='true'] .user-panel-name,
+  html[data-side-collapsed='true'] .user-panel > .services-button {
+    display: none;
+  }
+  html[data-side-collapsed='true'] .user-panel-me {
+    justify-content: center;
+    padding: 0;
+  }
+  html[data-side-collapsed='true'][data-rail-collapsed='true'] .user-panel {
+    display: none;
+  }
+}
+.mic {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.mic.live {
+  color: var(--danger);
+}
+.recording-label {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 4px;
+  font-size: 14px;
+  color: var(--text);
+}
+.rec-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: breathe 1.2s infinite;
+}
+.palette {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: calc(100% + 8px);
+  background: var(--sheet);
+  border-radius: var(--r-float);
+  box-shadow: var(--shadow-float);
+  padding: 4px;
+  max-height: 340px;
+  overflow-y: auto;
+  z-index: 20;
+}
+.slash-item {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  width: 100%;
+  padding: 8px;
+  border-radius: var(--r-control);
+  text-align: left;
+}
+.slash-item.on {
+  background: var(--active);
+}
+.slash-item .muted {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.slash-name {
+  font-weight: 600;
+  color: var(--text-strong);
+  white-space: nowrap;
+}
+.tab {
+  padding: 6px 0;
+  font: 500 13px/18px var(--font);
+  color: var(--text-muted);
+  box-shadow: inset 0 -2px 0 transparent;
+}
+.tab.on {
+  color: var(--text-strong);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.autocomplete {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.autocomplete-menu {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  max-height: 200px;
+  overflow-y: auto;
+  padding-bottom: 4px;
+}
+.autocomplete-menu button {
+  display: block;
+  width: 100%;
+  padding: 8px;
+  text-align: left;
+  border-radius: var(--r-control);
+}
+.autocomplete-menu button:hover {
+  background: var(--active);
+}
+.required {
+  color: var(--danger-text);
+  margin-left: 2px;
+}
+.uploads {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 4px 0;
+}
+.upload {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  padding: 2px 4px;
+  position: relative;
+  color: var(--text);
+}
+.upload.failed {
+  color: var(--danger-text);
+}
+.upload .upload-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.upload .progress {
+  position: absolute;
+  left: 4px;
+  right: 40px;
+  bottom: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--accent), transparent);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+.upload .icon-button {
+  width: 28px;
+  height: 28px;
+}
+.archived-bar {
+  flex: none;
+  background: var(--bg-3);
+  border-top: 1px solid var(--line-strong);
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.edit-box textarea {
+  width: 100%;
+  max-width: var(--measure);
+  background: var(--bg-3);
+  border: 0;
+  border-radius: var(--r-field);
+  padding: 8px 10px;
+  outline: none;
+  resize: vertical;
+  box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / 0.55);
+}
+.snackbar {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: calc(100% + 8px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--sheet);
+  box-shadow: var(--shadow-float);
+  border-radius: var(--r-float);
+  padding: 8px 6px 8px 12px;
+  font-size: 13px;
+  color: var(--text);
+  z-index: 25;
+}
+.snackbar > svg {
+  color: var(--danger);
+  flex: none;
+}
+.snackbar span {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Modal: centred on desktop, a bottom sheet on phones */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 0.72);
+  display: grid;
+  place-items: center;
+  z-index: 50;
+  padding: 16px;
+  animation: fade var(--fast) var(--ease-out);
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+.modal {
+  width: 100%;
+  max-width: 460px;
+  background: var(--sheet);
+  border-radius: var(--r-float);
+  box-shadow: var(--shadow-float);
+  overflow: hidden;
+  max-height: 90dvh;
+  display: flex;
+  flex-direction: column;
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 12px 4px 16px;
+}
+.modal-header h2 {
+  margin: 0;
+  font: 600 17px/22px var(--font);
+  color: var(--text-strong);
+}
+.modal-body {
+  padding: 8px 16px 8px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.field-label {
+  font: 500 13px/18px var(--font);
+  color: var(--text-muted);
+}
+.field-description {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.field input,
+.field textarea {
+  background: var(--bg-3);
+  border: 0;
+  border-radius: var(--r-field);
+  padding: 10px 12px;
+  outline: none;
+  font-size: 16px;
+  box-shadow: inset 0 0 0 1px transparent;
+  transition: box-shadow var(--fast);
+}
+.field input:focus,
+.field textarea:focus {
+  box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / 0.55);
+}
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px 16px;
+}
+.grab {
+  display: none;
+}
+
+/* Login */
+.login {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  background: var(--bg-0);
+  padding: 24px;
+}
+.login-card {
+  width: 100%;
+  max-width: 320px;
+  text-align: center;
+}
+.login-card h1 {
+  margin: 0;
+  font: 600 18px/26px var(--font);
+  color: var(--text-strong);
+}
+.login-card p {
+  margin: 2px 0 24px;
+  font-size: 14px;
+}
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 24px 0 14px;
+  font: 500 12px/16px var(--font);
+  color: var(--text-faint);
+}
+.login-divider::before,
+.login-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--line-strong);
+}
+.code-input {
+  width: 100%;
+  background: var(--bg-3);
+  border: 0;
+  border-radius: var(--r-field);
+  padding: 12px;
+  margin-bottom: 8px;
+  text-align: center;
+  letter-spacing: 0.12em;
+  font: 500 16px/22px var(--mono);
+  outline: none;
+  box-shadow: inset 0 0 0 1px transparent;
+}
+.code-input:focus {
+  box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / 0.55);
+}
+.code-input::placeholder {
+  letter-spacing: 0;
+  font-family: var(--font);
+  color: var(--text-faint);
+}
+.login-card .help {
+  margin-top: 16px;
+  font: 400 12px/16px var(--font);
+  color: var(--text-faint);
+}
+.login-card .help code {
+  font-family: var(--mono);
+  color: var(--text-muted);
+}
+
+/* Phones: a stack. The session list is a full screen, a thread pushes over it. */
+@media (max-width: 767px) {
+  .sidebar.with-rail {
+    width: 100%;
+  }
+  .sidebar {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    z-index: 30;
+    border: 0;
+    transform: translateX(-100%);
+    transition: transform var(--move) var(--ease-out);
+  }
+  .sidebar.open {
+    transform: translateX(0);
+  }
+  .side-title {
+    font-size: 22px;
+    line-height: 28px;
+  }
+  .search {
+    height: 36px;
+  }
+  .search input {
+    font-size: 16px;
+  }
+  .menu {
+    display: inline-grid;
+  }
+  .chat-header {
+    padding-left: 4px;
+    padding-right: 4px;
+    gap: 4px;
+  }
+  .chat-titles {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+  }
+  .chat-title {
+    font-size: 15px;
+  }
+  .chat-title .parent {
+    display: none;
+  }
+  .message {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .panel-fresh {
+    padding: 0 16px;
+  }
+  .day-divider,
+  .run-fold {
+    margin-left: 16px;
+    margin-right: 16px;
+  }
+  .action-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .action-row .button {
+    height: var(--control);
+    font-size: 15px;
+  }
+  .select-trigger {
+    height: var(--control);
+    font-size: 16px;
+  }
+  .codeblock pre code {
+    font-size: 12px;
+    line-height: 18px;
+  }
+  .overlay {
+    place-items: end stretch;
+    padding: 0;
+  }
+  .modal {
+    max-width: none;
+    border-radius: var(--r-sheet) var(--r-sheet) 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+    animation: sheet-in 280ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  .modal-header .icon-button {
+    display: none;
+  }
+  .grab {
+    display: block;
+    width: 40px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--group-line);
+    margin: 8px auto 0;
+  }
+  .modal-footer .button {
+    flex: 1;
+    height: var(--control);
+  }
+}
+@keyframes sheet-in {
+  from {
+    transform: translateY(100%);
+  }
+}
+@media (pointer: coarse) {
+  *:hover {
+    transition: none;
+  }
+}
+
+/* Session status dots */
+.st {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  display: inline-block;
+}
+.st.waiting {
+  background: var(--accent);
+}
+.st.failed {
+  background: var(--danger);
+}
+.st.busy {
+  background: var(--busy);
+  box-shadow: 0 0 0 3px rgb(var(--busy-rgb) / 0.22);
+  animation: breathe 2.4s ease-in-out infinite;
+}
+.st.done {
+  background: var(--text-muted);
+}
+.st.idle {
+  background: var(--spine);
+}
+@media (prefers-reduced-motion: reduce) {
+  .st.busy {
+    animation: none;
+  }
+}
+.channel .st {
+  margin-left: 2px;
+}
+.overview-row {
+  margin-bottom: 4px;
+}
+.overview-row svg {
+  color: var(--text-faint);
+  flex: none;
+}
+.channel .meta.need {
+  color: var(--accent);
+}
+.category-name.static {
+  cursor: default;
+  padding-left: 8px;
+}
+.category-name .health {
+  margin-left: auto;
+  font-weight: 400;
+  color: var(--text-faint);
+}
+.category-name .health.off {
+  color: var(--warn);
+}
+.category-name .health.bad {
+  color: var(--danger-text);
+}
+.chat-titles .rename {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-3);
+  border: 0;
+  border-radius: var(--r-field);
+  padding: 4px 8px;
+  font: 600 14px/20px var(--font);
+  color: var(--text-strong);
+  outline: none;
+  box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / 0.55);
+}
+@media (pointer: coarse) {
+  .message,
+  .channel {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+  .message .markdown {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+}
+
+/* Action sheet: bottom sheet on phones, menu at the pointer on desktop */
+.sheet-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+}
+.sheet-layer.phone {
+  background: rgb(0 0 0 / 0.72);
+  animation: fade var(--fast) var(--ease-out);
+}
+.sheet {
+  position: fixed;
+  min-width: 240px;
+  max-width: 320px;
+  background: var(--sheet);
+  border-radius: var(--r-float);
+  box-shadow: var(--shadow-float);
+  padding: 4px;
+}
+.sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 6px;
+}
+.sheet-badge {
+  display: none;
+}
+.sheet-titles {
+  min-width: 0;
+}
+.sheet-title {
+  font: 600 13px/18px var(--font);
+  color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sheet-sub {
+  font: 400 12px/16px var(--font);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sheet-group + .sheet-group {
+  border-top: 1px solid var(--line-strong);
+  margin-top: 4px;
+  padding-top: 4px;
+}
+.sheet-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: var(--control);
+  padding: 0 8px;
+  border-radius: var(--r-control);
+  font: 500 14px/20px var(--font);
+  color: var(--text);
+  text-align: left;
+}
+.sheet-item svg {
+  color: var(--text-muted);
+}
+.sheet-item:hover {
+  background: var(--active);
+  color: var(--text-strong);
+}
+.sheet-item.red,
+.sheet-item.red svg {
+  color: var(--danger-text);
+}
+.sheet-layer.phone .sheet {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-width: none;
+  border-radius: var(--r-sheet) var(--r-sheet) 0 0;
+  padding: 8px 16px max(24px, env(safe-area-inset-bottom));
+  box-shadow: none;
+  touch-action: none;
+  transition: transform 280ms cubic-bezier(0.32, 0.72, 0, 1);
+  animation: sheet-in 280ms cubic-bezier(0.32, 0.72, 0, 1);
+  max-height: 92dvh;
+  overflow-y: auto;
+}
+.sheet-layer.phone .grab {
+  display: block;
+  width: 40px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--group-line);
+  margin: 0 auto 14px;
+}
+.sheet-layer.phone .sheet-head {
+  padding: 0 0 16px;
+  gap: 12px;
+}
+.sheet-layer.phone .sheet-badge {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: var(--bg-1);
+  flex: none;
+}
+.sheet-layer.phone .sheet-badge .st {
+  width: 10px;
+  height: 10px;
+}
+.sheet-layer.phone .sheet-title {
+  font: 600 17px/22px var(--font);
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.sheet-layer.phone .sheet-sub {
+  font-size: 13px;
+  line-height: 18px;
+}
+.sheet-layer.phone .sheet-group {
+  background: var(--group);
+  border-radius: var(--r-group);
+  margin: 0 0 16px;
+  padding: 0;
+  border: 0;
+}
+.sheet-layer.phone .sheet-item {
+  height: 52px;
+  padding: 0 16px;
+  gap: 16px;
+  border-radius: 0;
+  font: 400 17px/22px var(--font);
+  position: relative;
+}
+.sheet-layer.phone .sheet-item + .sheet-item::before {
+  content: '';
+  position: absolute;
+  left: 54px;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: var(--group-line);
+}
+.sheet-layer.phone .sheet-item:hover {
+  background: none;
+}
+.sheet-layer.phone .sheet-item:active {
+  background: var(--active);
+}
+
+/* Overview */
+.overview .messages {
+  background: var(--bg-2);
+}
+.ov {
+  padding: 8px 24px 24px;
+  max-width: 980px;
+}
+.ov-machines {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  font: 400 13px/18px var(--font);
+  color: var(--text-muted);
+  margin: 8px 0 8px;
+}
+.ov-machines span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.ov-machines b {
+  color: var(--text-strong);
+  font-weight: 500;
+}
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+  display: inline-block;
+}
+.dot.off {
+  background: var(--text-faint);
+}
+.ov-section h3 {
+  font: 600 12px/16px var(--font);
+  color: var(--text-faint);
+  margin: 24px 0 6px;
+}
+.ov-item {
+  padding: 8px 12px 10px;
+  border-radius: var(--r-control);
+  margin: 0 -12px;
+}
+@media (hover: hover) {
+  .ov-item:hover {
+    background: var(--hover);
+  }
+}
+.ov-main {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: baseline;
+  width: 100%;
+  text-align: left;
+}
+.ov-main .st {
+  transform: translateY(-1px);
+}
+.ov-title {
+  font: 500 14px/20px var(--font);
+  color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ov-where {
+  font: 400 12px/16px var(--font);
+  color: var(--text-faint);
+  margin-left: 8px;
+}
+.ov-age {
+  font: 400 12px/16px var(--font);
+  color: var(--text-faint);
+}
+.ov-line {
+  margin: 2px 0 0 28px;
+  font: 400 13px/18px var(--font);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.ov-choices {
+  margin: 8px 0 0 28px;
+}
+.ov-open {
+  margin: 6px 0 0 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: 500 13px/18px var(--font);
+  color: var(--accent);
+}
+.ov-empty {
+  margin: 24px 0;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+@media (max-width: 767px) {
+  .ov {
+    padding: 8px 16px 24px;
+  }
+  .ov-title {
+    white-space: normal;
+  }
+  .ov-where {
+    display: block;
+    margin: 0;
+  }
+}
+
+/* Side panels: search and pins, docked beside the thread on desktop */
+.side-panel {
+  width: 380px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-1);
+  border-left: 1px solid var(--line);
+}
+.panel-head {
+  height: var(--header);
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 16px;
+  border-bottom: 1px solid var(--line-strong);
+  background: var(--bg-2);
+}
+.panel-title {
+  flex: 1;
+  font: 600 14px/20px var(--font);
+  color: var(--text-strong);
+}
+.panel-back {
+  display: none;
+}
+.panel-search {
+  padding: 12px 12px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tokens {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 2px 4px 8px;
+}
+.token {
+  font: 500 12px/16px var(--mono);
+  color: var(--text-muted);
+  padding: 4px 0;
+}
+.token:hover {
+  color: var(--accent);
+}
+.panel-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px;
+  font: 400 12px/16px var(--font);
+  color: var(--text-muted);
+}
+.panel-tabs {
+  display: flex;
+  gap: 14px;
+}
+.panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 8px 16px;
+  overscroll-behavior: contain;
+}
+.panel-pad {
+  padding: 8px;
+}
+.panel-empty {
+  padding: 16px 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+  margin: 0;
+}
+.result {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  text-align: left;
+  padding: 10px 8px;
+  border-radius: var(--r-control);
+}
+@media (hover: hover) {
+  .result:hover {
+    background: var(--hover);
+  }
+}
+.result + .result {
+  box-shadow: 0 -1px 0 var(--line);
+}
+.result-where {
+  font: 400 12px/16px var(--font);
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.result-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: 400 12px/16px var(--font);
+  color: var(--text-faint);
+}
+.result-head b {
+  font: 600 13px/18px var(--font);
+  color: var(--text-strong);
+}
+.snippet {
+  font: 400 14px/20px var(--font);
+  color: var(--text);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+mark {
+  background: rgb(var(--accent-rgb) / 0.2);
+  color: var(--text-strong);
+  border-radius: var(--r-inline);
+  padding: 0 1px;
+}
+.button.more {
+  width: 100%;
+  margin-top: 8px;
+}
+.pin {
+  padding: 10px 8px;
+}
+.pin + .pin {
+  box-shadow: 0 -1px 0 var(--line);
+}
+.pin-actions {
+  margin-left: auto;
+  display: flex;
+}
+.pin-actions .icon-button {
+  width: 28px;
+  height: 28px;
+}
+.pin-body {
+  margin-top: 4px;
+  max-height: 220px;
+  overflow: hidden;
+}
+.pin-body .markdown {
+  font-size: 14px;
+  line-height: 20px;
+}
+.badge {
+  font: 600 12px/16px var(--font);
+  color: var(--danger);
+  min-width: 14px;
+  text-align: right;
+}
+.channel .badge + .st {
+  margin-left: 0;
+}
+.link-button {
+  color: var(--text-muted);
+  font: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 2px;
+}
+.mention-row {
+  display: block;
+  width: calc(100% + 24px);
+  text-align: left;
+}
+.mention-row.unread .ov-title {
+  font-weight: 600;
+}
+@media (max-width: 1100px) and (min-width: 768px) {
+  .side-panel {
+    position: fixed;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 35;
+    box-shadow: var(--shadow-float);
+  }
+}
+@media (max-width: 767px) {
+  .side-panel {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    z-index: 35;
+    border: 0;
+  }
+  .panel-head {
+    height: calc(var(--header) + env(safe-area-inset-top));
+    padding-top: env(safe-area-inset-top);
+    padding-left: 4px;
+  }
+  .panel-back {
+    display: inline-grid;
+  }
+  .panel-close {
+    display: none;
+  }
+  .search input {
+    font-size: 16px;
+  }
+}
+.side-panel .markdown,
+.side-panel .codeblock {
+  max-width: 100%;
+}
+.pin-body {
+  overflow-x: hidden;
+}
+
+/* Linked sessions: nested under the open thread, and the panel */
+.linked {
+  margin: 0 0 2px 14px;
+}
+.tree .linked .channel.linked-row,
+.channel.linked-row {
+  min-height: 30px;
+  margin-left: 18px;
+  width: calc(100% - 18px);
+  gap: 8px;
+  font: 400 13px/18px var(--font);
+  color: var(--text-muted);
+}
+.channel.linked-row svg {
+  flex: none;
+  color: var(--text-faint);
+}
+.more-links .channel-name {
+  color: var(--text-faint);
+}
+.icon-button.with-count {
+  width: auto;
+  padding: 0 8px;
+  gap: 4px;
+  display: inline-flex;
+  align-items: center;
+  font: 500 12px/16px var(--font);
+  color: var(--text-muted);
+}
+.link-item {
+  padding: 0;
+}
+.link-open {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  padding: 10px 8px 4px;
+  width: 100%;
+}
+.link-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: 600 14px/20px var(--font);
+  color: var(--text-strong);
+  min-width: 0;
+}
+.link-title b {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.link-kind {
+  font: 400 12px/16px var(--font);
+  color: var(--text-muted);
+}
+.link-jump {
+  align-self: flex-start;
+  margin: 0 8px 10px;
+  font-size: 12px;
+}
+
+/* Status lines in messages: a dot instead of the emoji */
+.status-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0;
+}
+.status-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.status-row > i {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  transform: translateY(-1px);
+  background: var(--ok);
+}
+.status-row.warn > i {
+  background: var(--warn);
+}
+.status-row.bad > i {
+  background: var(--danger);
+}
+
+/* Output-only view: a panel on top, a feed below, no composer */
+.output-panel {
+  flex: none;
+  max-height: min(55vh, 520px);
+  overflow-y: auto;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+  padding: 8px 0 6px;
+}
+.output-panel .message {
+  background: none;
+}
+.panel-fresh {
+  padding: 0 24px;
+  font: 400 12px/16px var(--font);
+  color: var(--text-faint);
+}
+.day-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.day-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.day-divider .num {
+  font-weight: 400;
+}
+.run-fold {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 24px 0;
+  padding: 2px 0;
+  font: 400 12px/16px var(--font);
+  color: var(--text-faint);
+}
+.run-fold svg {
+  transition: transform 0.15s;
+}
+.run-fold[aria-expanded='true'] svg {
+  transform: rotate(90deg);
+}
+@media (hover: hover) {
+  .run-fold:hover {
+    color: var(--text-muted);
+  }
+}
+.output-bar {
+  flex: none;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line);
+  background: var(--bg-0);
+  color: var(--text-faint);
+  font-size: 13px;
+}
+.output-bar .snackbar {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(100% + 8px);
+}
+
+/* Services */
+.st.ok {
+  background: var(--ok);
+}
+.services-button {
+  width: auto;
+  min-width: 36px;
+  gap: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.services-button.bad {
+  color: var(--danger-text);
+}
+.services-button .num {
+  font: 600 12px/16px var(--font);
+}
+.panel-section {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin: 14px 8px 4px;
+  font: 600 12px/16px var(--font);
+  color: var(--text-muted);
+  text-align: left;
+}
+.panel-section .num {
+  font-weight: 400;
+  color: var(--text-faint);
+}
+.panel-section.fold svg {
+  transition: transform 0.15s;
+}
+.panel-section.fold[aria-expanded='true'] svg {
+  transform: rotate(90deg);
+}
+.service-row {
+  padding: 8px;
+  gap: 2px;
+}
+.service-row + .service-row {
+  box-shadow: none;
+}
+.service-meta {
+  margin-left: auto;
+  flex: none;
+  font: 400 12px/16px var(--font);
+  color: var(--text-faint);
+}
+.service-row .result-where {
+  padding-left: 16px;
+}
+.service-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: -8px;
+}
+.service-detail {
+  padding: 8px 16px 24px;
+}
+.service-desc {
+  margin: 4px 0 10px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 12px 0;
+  font-size: 13px;
+}
+.facts dt {
+  color: var(--text-faint);
+}
+.facts dd {
+  margin: 0;
+  color: var(--text);
+}
+.service-actions {
+  display: flex;
+  gap: 8px;
+  margin: 4px 0 8px;
+}
+.service-detail .panel-section {
+  margin-left: 0;
+}
+.service-detail .channel.linked-row {
+  margin-left: 0;
+  width: 100%;
+}
+.history {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 13px;
+}
+.history li {
+  display: grid;
+  grid-template-columns: 116px 1fr;
+  gap: 12px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--text);
+}
+.history li .num {
+  color: var(--text-faint);
+}
+.history li.bad span:last-child {
+  color: var(--danger-text);
+}
+
+/* Links to hub channels and session IDs: the thread's name, opens in place */
+.channel-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  max-width: min(100%, 320px);
+  vertical-align: bottom;
+  padding: 0 4px;
+  border-radius: var(--r-inline);
+  background: rgb(var(--accent-rgb) / 0.1);
+  text-decoration: none;
+}
+.channel-chip svg {
+  flex: none;
+  align-self: center;
+}
+.channel-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (hover: hover) {
+  .channel-chip:hover {
+    background: rgb(var(--accent-rgb) / 0.18);
+  }
+}
+.markdown a {
+  -webkit-touch-callout: none;
+}
+.new-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 16px 4px;
+  font: 600 11px/14px var(--font);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--danger-text);
+}
+.new-divider::before,
+.new-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgb(255 77 94 / 0.45);
+}
+.icon-button.menu {
+  position: relative;
+}
+.back-badge {
+  position: absolute;
+  left: 18px;
+  bottom: 2px;
+  min-width: 18px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--danger);
+  color: #fff;
+  font: 700 10px/16px var(--font);
+  text-align: center;
+  box-shadow: 0 0 0 2px var(--bg-0);
+}
+.sub-parent {
+  display: none;
+}
+@media (max-width: 767px) {
+  .sub-parent {
+    display: inline;
+  }
+  .sub-parent + .sub-topic {
+    display: none;
+  }
+}
+
+@media (max-width: 767px) {
+  .desk-only {
+    display: none !important;
+  }
+  .chat-title {
+    font-size: 17px;
+    line-height: 22px;
+  }
+}
+@media (max-width: 767px) {
+  .chat.swiping {
+    position: relative;
+    z-index: 31;
+    box-shadow: -12px 0 32px rgb(0 0 0 / 0.6);
+  }
+}
+.steps b {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* Voice note: timer, live level, cancel */
+.recording-label .num {
+  font-variant-numeric: tabular-nums;
+  min-width: 34px;
+}
+.recording-label {
+  min-width: 0;
+  overflow: hidden;
+}
+.rec-level {
+  flex: 1 1 60px;
+  min-width: 48px;
+  max-width: 220px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.rec-level i {
+  flex: 1;
+  min-height: 2px;
+  border-radius: 1px;
+  background: var(--danger);
+  opacity: 0.85;
+  transition: height 80ms linear;
+}
+.rec-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rec-cancel {
+  margin-left: auto;
+  font-size: 13px;
+}
+/* Holding the mic must not turn into a scroll: the browser would cancel the press. */
+.icon-button.mic {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* Desktop columns: the rail and the channel list resize, fold and open.
+   Widths come from columns.ts as CSS variables; only width animates. */
+.desk-only-icon {
+  display: none;
+}
+@media (min-width: 768px) {
+  .sidebar {
+    position: relative;
+    width: var(--side-w, var(--sidebar));
+    transition: width var(--move) var(--ease-out);
+    contain: layout style;
+    /* Containment makes a stacking context: lift it so the edge handle stays on top of the chat. */
+    z-index: 6;
+  }
+  .sidebar.with-rail {
+    width: calc(var(--rail-w, 72px) + var(--side-w, var(--sidebar)));
+  }
+  .sidebar .rail {
+    width: var(--rail-w, 72px);
+    overflow: hidden;
+    transition: width var(--move) var(--ease-out);
+  }
+  .sidebar .rail > * {
+    flex: none;
+  }
+  .side-main {
+    flex: none;
+    width: var(--side-w, var(--sidebar));
+    overflow: hidden;
+    transition: width var(--move) var(--ease-out);
+  }
+  /* Content keeps its open width while folding: it clips, it does not reflow. */
+  .side-main > * {
+    width: var(--side-w-open, var(--sidebar));
+  }
+  html[data-side-collapsed='true'] .sidebar,
+  html[data-rail-collapsed='true'] .sidebar .rail {
+    border-right: 0;
+  }
+  html[data-resizing] .sidebar,
+  html[data-resizing] .sidebar .rail,
+  html[data-resizing] .side-main {
+    transition: none;
+  }
+  html[data-resizing] {
+    cursor: col-resize;
+    user-select: none;
+  }
+  /* Below the header row, so it never sits on the chat header's buttons. */
+  .col-handle {
+    position: absolute;
+    top: var(--header);
+    bottom: 0;
+    width: 8px;
+    z-index: 5;
+    cursor: col-resize;
+    touch-action: none;
+  }
+  /* Centred on the edge; folded, it sits just right of it so it can still be grabbed. */
+  .col-handle.col-side {
+    right: -4px;
+  }
+  html[data-side-collapsed='true'] .col-handle.col-side {
+    right: -8px;
+  }
+  .col-handle.col-rail {
+    left: calc(var(--rail-w, 72px) - 4px);
+  }
+  html[data-rail-collapsed='true'] .col-handle.col-rail {
+    left: 0;
+  }
+  /* A hairline shows only on hover (after a beat, so passing over it stays quiet) and while dragging. */
+  .col-handle::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 3px;
+    width: 2px;
+    background: var(--accent);
+    opacity: 0;
+    transition: opacity var(--fast);
+  }
+  .col-handle:hover::after {
+    opacity: 0.6;
+    transition-delay: 150ms;
+  }
+  html[data-resizing='side'] .col-handle.col-side::after,
+  html[data-resizing='rail'] .col-handle.col-rail::after {
+    opacity: 1;
+    transition-delay: 0s;
+  }
+  /* Folded channel list: the header's list button brings it back. */
+  html[data-side-collapsed='true'] .menu {
+    display: inline-grid;
+  }
+  html[data-side-collapsed='true'] .menu .desk-only-icon {
+    display: block;
+  }
+  html[data-side-collapsed='true'] .menu .phone-only {
+    display: none;
+  }
+}
+@media (max-width: 767px) {
+  .menu .desk-only-icon {
+    display: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .sidebar .rail,
+  .side-main {
+    transition: none !important;
+  }
+}
+
+/* Header crumbs, like Discord's: "# channel  ›  thread". The channel is a link back. */
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.crumb-parent {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 48px;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font: 600 14px/20px var(--font);
+  color: var(--text-muted);
+  text-decoration: none;
+  border-radius: var(--r-inline);
+  padding: 2px 4px;
+  margin-left: -4px;
+  white-space: nowrap;
+}
+.crumb-parent:hover {
+  color: var(--text-strong);
+  background: var(--hover);
+}
+.crumb-parent svg,
+.chat-title .title-icon,
+.crumb-sep {
+  flex: none;
+  color: var(--text-faint);
+}
+.chat-header .phone-only-button {
+  display: none;
+}
+@media (max-width: 767px) {
+  .chat-header .phone-only-button {
+    display: inline-grid;
+  }
+  .chat-title .title-icon {
+    display: none;
+  }
+}
+/* The desktop search: field-shaped, the same filled surface as every field. */
+.search-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 200px;
+  height: 28px;
+  margin-left: 4px;
+  padding: 0 8px;
+  border-radius: var(--r-control);
+  background: var(--bg-3);
+  color: var(--text-faint);
+  font: 400 13px/16px var(--font);
+  transition: width var(--move) var(--ease-out), background var(--fast);
+}
+.search-field:hover {
+  background: var(--bg-4);
+}
+.search-field span {
+  flex: 1;
+  text-align: left;
+}
+.search-field kbd {
+  font: 500 11px/14px var(--font);
+  color: var(--text-faint);
+}
+
+/* The top of a channel or session: what it is, in words, like Discord's welcome. */
+.channel-start {
+  padding: 24px 24px 8px;
+  font: inherit;
+  color: inherit;
+}
+.channel-start .start-icon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--bg-3);
+  color: var(--text-strong);
+  margin-bottom: 12px;
+}
+.channel-start h2 {
+  margin: 0 0 4px;
+  font: 700 24px/30px var(--font);
+  color: var(--text-strong);
+  overflow-wrap: anywhere;
+}
+.channel-start p {
+  margin: 0;
+  font: 400 14px/20px var(--font);
+  color: var(--text-muted);
+}
+
+/* Day dividers: the date centred on a hairline, in conversations and feeds alike. */
+.day-divider {
+  justify-content: center;
+  margin: 20px 24px 4px;
+  font: 600 12px/16px var(--font);
+  color: var(--text-faint);
+}
+.day-divider::before {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+/* A thread card: under a starter message or a "started a thread" notice. */
+.message.system.thread-created {
+  align-items: flex-start;
+}
+.message.system.thread-created > svg {
+  margin-top: 1px;
+}
+.message.thread-created .clip {
+  display: block;
+  white-space: normal;
+}
+.message.thread-created .message-time {
+  margin-left: 6px;
+}
+.thread-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: fit-content;
+  min-width: 240px;
+  max-width: min(520px, 100%);
+  margin-top: 6px;
+  padding: var(--card-pad);
+  border-radius: var(--r-control);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+.thread-card:hover {
+  background: var(--bg-3);
+}
+a.thread-card:hover,
+a.crumb-parent:hover {
+  text-decoration: none;
+}
+.thread-card-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font: 600 14px/20px var(--font);
+  color: var(--text-strong);
+}
+.thread-card-name > :not(.thread-card-count):not(i) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.thread-card-name {
+  white-space: nowrap;
+  overflow: hidden;
+}
+.thread-card-count {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  padding-left: 12px;
+  font: 600 13px/18px var(--font);
+  color: var(--accent);
+}
+.thread-card-meta {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  font: 400 13px/18px var(--font);
+  color: var(--text-muted);
+}
+.thread-card-last {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.thread-card-meta .muted {
+  flex: none;
+  color: var(--text-faint);
+}
+
+/* Members: avatar with a presence dot, name, what they're doing here. */
+.member {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 16px;
+}
+.member.away {
+  opacity: 0.45;
+}
+.member-avatar {
+  position: relative;
+  flex: none;
+}
+.presence {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  box-shadow: 0 0 0 3px var(--bg-1);
+}
+.presence.online {
+  background: var(--ok);
+}
+.presence.idle {
+  background: var(--warn);
+}
+.member-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 6px;
+  min-width: 0;
+}
+.member-name b {
+  font: 500 15px/20px var(--font);
+  color: var(--text-strong);
+}
+.member-tag {
+  font: 500 11px/14px var(--font);
+  color: var(--text-faint);
+}
+.member-note {
+  flex-basis: 100%;
+  font: 400 12px/16px var(--font);
+  color: var(--text-muted);
+}
+.thread-row .result-where {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (min-width: 768px) {
+  .chat-title {
+    cursor: default;
+  }
+}
+
+/* Desktop, as Discord: the rail sits on the base; the list and the chat form one
+   framed workspace (1px rule on top and left, 12px top-left corner) with a 1px
+   rule between them; one header row; composer and user panel float, both 12px. */
+@media (min-width: 768px) {
+  .sidebar {
+    border-right: 0;
+    background: var(--bg-0);
+  }
+  .sidebar .rail {
+    border-right: 0;
+    background: var(--bg-0);
+    padding-top: 8px;
+  }
+  .side-main {
+    background: var(--bg-1);
+    border-top: 1px solid var(--line-strong);
+    border-left: 1px solid var(--line-strong);
+    border-top-left-radius: var(--r-control);
+  }
+  .sidebar:not(.with-rail) .side-main {
+    border-left: 0;
+    border-top-left-radius: 0;
+  }
+  .chat {
+    border-top: 1px solid var(--line-strong);
+  }
+  html[data-side-collapsed='true'] .chat {
+    border-left: 1px solid var(--line-strong);
+    border-top-left-radius: var(--r-control);
+  }
+  html[data-side-collapsed='true'] .side-main {
+    border: 0;
+  }
+  .side-panel {
+    border-top: 1px solid var(--line-strong);
+    border-left-color: var(--line-strong);
+  }
+  .side-head {
+    padding: 0 8px 8px;
+    gap: 8px;
+  }
+  .side-title {
+    height: calc(var(--header) - 1px);
+    margin: 0 -8px;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .chat-header {
+    background: var(--bg-2);
+    height: calc(var(--header) - 1px);
+  }
+}
+
+/* Bots carry a small tag after their name, as in Discord, instead of tinting your own messages. */
+.bot-tag {
+  display: inline-block;
+  padding: 0 4px;
+  border-radius: var(--r-inline);
+  background: rgb(var(--accent-rgb) / 0.16);
+  color: var(--accent);
+  font: 700 10px/16px var(--font);
+  letter-spacing: 0.02em;
+  vertical-align: 1px;
+}
+.icon-button.muted-bell {
+  color: var(--text-faint);
+}
+
+/* A narrow chat (a side panel open, a small window): the search bar becomes its icon
+   and the title keeps the room. */
+@media (min-width: 768px) {
+  .chat {
+    container: chat / inline-size;
+  }
+  .crumbs {
+    flex: 1;
+  }
+  .chat-title {
+    flex: 1 1 auto;
+    min-width: 80px;
+  }
+}
+@container chat (max-width: 760px) {
+  .search-field {
+    width: 32px;
+    padding: 0;
+    justify-content: center;
+    background: transparent;
+  }
+  .search-field span,
+  .search-field kbd {
+    display: none;
+  }
+}
+@container chat (max-width: 600px) {
+  .crumb-parent,
+  .crumb-sep {
+    display: none;
+  }
+}
+
+.sheet.plain .sheet-head {
+  display: none;
+}
+
+/* ===== Discord metrics (measured from the desktop app) =====
+   Our colours and fonts, Discord's geometry. Desktop unless stated. */
+:root {
+  --gutter: 72px; /* message content column: 16 + 40 avatar + 16 */
+}
+.app {
+  background: var(--bg-1);
+}
+@media (min-width: 768px) {
+  /* Rail and list are one colour; the frame line is the only rule between them. */
+  .sidebar,
+  .sidebar .rail {
+    background: var(--bg-1);
+  }
+  .side-main {
+    background: var(--bg-1);
+    border-right: 0;
+  }
+  .side-title {
+    font: 700 16px/20px var(--font);
+    border-bottom-color: var(--line-strong);
+  }
+  .chat-header {
+    border-bottom: 1px solid var(--line-strong);
+    padding-left: 16px;
+  }
+
+  /* Channel list: 32px rows on a 34px pitch, 8px side margins, 8px corners. */
+  .channel-list {
+    padding: 4px 8px 12px;
+  }
+  .channel {
+    height: 32px;
+    margin-bottom: 2px;
+    padding: 0 8px;
+    font: 500 16px/20px var(--font);
+  }
+  .tree .channel {
+    font: 400 14px/18px var(--font);
+  }
+  .tree .channel.unread {
+    font-weight: 600;
+  }
+  .category-name {
+    padding: 0 8px 6px;
+    font: 500 14px/18px var(--font);
+    color: var(--text-muted);
+  }
+
+  /* Header: 16px semibold title, 32px tool buttons 8px apart, 20px glyphs, 244x32 search. */
+  .chat-title {
+    font: 600 16px/20px var(--font);
+  }
+  .crumb-parent {
+    font: 600 16px/20px var(--font);
+  }
+  .chat-sub {
+    font: 400 14px/18px var(--font);
+  }
+  .chat-actions {
+    gap: 8px;
+  }
+  .chat-actions .icon-button {
+    width: 32px;
+    height: 32px;
+  }
+  .search-field {
+    width: 244px;
+    height: 32px;
+    margin-left: 8px;
+    background: var(--bg-1);
+    border: 1px solid var(--line-strong);
+    font: 400 14px/18px var(--font);
+  }
+}
+
+
+/* Messages: 40px avatar in a gutter, content at 72px, 16/22 body, 16 medium author. */
+.message {
+  padding: 2px 16px 2px var(--gutter);
+  margin-top: 16px;
+}
+.message.compact {
+  margin-top: 0;
+}
+.message-head .avatar.inline {
+  position: absolute;
+  left: 16px;
+  top: 4px;
+  width: 40px;
+  height: 40px;
+  font-size: 16px;
+}
+.message:has(.reply-preview) .message-head .avatar.inline {
+  top: 27px;
+}
+.author {
+  font: 500 16px/22px var(--font);
+}
+.message-head {
+  line-height: 22px;
+  margin-bottom: 0;
+}
+.message-time {
+  font: 400 12px/16px var(--font);
+}
+.markdown,
+.message .markdown {
+  font-size: 16px;
+  line-height: 22px;
+}
+@media (hover: hover) {
+  .message:not(.needs):hover {
+    background: rgb(255 255 255 / 0.035);
+  }
+}
+.message.system {
+  padding-left: var(--gutter);
+  font: 400 14px/20px var(--font);
+  gap: 0;
+}
+.message.system > svg {
+  position: absolute;
+  left: 28px;
+  top: 4px;
+  width: 16px;
+  height: 16px;
+}
+.message.system.thread-created > svg {
+  top: 4px;
+  margin: 0;
+}
+.channel-start,
+.day-divider,
+.new-divider,
+.run-fold {
+  margin-left: 16px;
+  margin-right: 16px;
+}
+.channel-start {
+  padding-left: 0;
+  padding-right: 0;
+}
+.day-divider {
+  font: 600 12px/16px var(--font);
+}
+
+/* Thread card: Discord's 4px corners, 14px semibold title and count. */
+.thread-card {
+  min-width: 0;
+  width: min(498px, 100%);
+  padding: 8px 12px;
+  border-radius: var(--r-inline);
+  background: var(--bg-3);
+  border-color: var(--line-strong);
+}
+.thread-card-name {
+  font: 600 14px/20px var(--font);
+}
+.thread-card-count {
+  font: 600 14px/20px var(--font);
+}
+.thread-card-meta {
+  font: 400 14px/20px var(--font);
+}
+
+/* Menus (desktop): 1px rule, 8px corners and padding, 34px items, 4px item corners. */
+@media (min-width: 768px) {
+  .sheet {
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-control);
+    padding: 8px;
+  }
+  .sheet-item {
+    height: 34px;
+    padding: 0 8px;
+    border-radius: var(--r-inline);
+    font: 500 14px/18px var(--font);
+  }
+  .sheet-group + .sheet-group {
+    margin: 8px 0 0;
+    padding-top: 8px;
+  }
+}
+
+/* Members: 40px rows on a 42px pitch, 32px avatars, 16px medium names. */
+.member {
+  height: 40px;
+  margin: 0 8px 2px;
+  padding: 0 8px;
+  border-radius: var(--r-control);
+}
+@media (hover: hover) {
+  .member:hover {
+    background: var(--hover);
+  }
+}
+.member-name b {
+  font: 500 16px/20px var(--font);
+}
+.member-note {
+  font: 400 12px/14px var(--font);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.member-name {
+  flex-wrap: nowrap;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.member-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+/* The BOT tag: 16px tall, 4px corners, solid accent. */
+.bot-tag {
+  height: 16px;
+  padding: 0 5px;
+  border-radius: var(--r-inline);
+  background: var(--accent);
+  color: var(--on-accent, #001018);
+  font: 700 10px/16px var(--font);
+  vertical-align: 2px;
+}
+
+/* Phones keep their own spacing; only the gutter narrows. */
+@media (max-width: 767px) {
+  :root {
+    --gutter: 60px;
+  }
+  .message {
+    padding-left: var(--gutter);
+    padding-right: 16px;
+  }
+  .message-head .avatar.inline {
+    left: 12px;
+    width: 36px;
+    height: 36px;
+  }
+}
+
+/* System light on your avatar: Discord's status dot, telling the system's state. */
+.system-light {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--bg-3);
+  cursor: help;
+  outline-offset: 1px;
+}
+.system-light > i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+.system-light.amber > i {
+  background: var(--warn);
+}
+.system-light.red > i {
+  background: var(--danger);
+}
+.system-pop {
+  position: fixed;
+  left: 8px;
+  bottom: calc(var(--dock-h) + 16px + env(safe-area-inset-bottom));
+  width: min(320px, calc(100vw - 16px));
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border-radius: var(--r-control);
+  border: 1px solid var(--line-strong);
+  background: var(--sheet);
+  box-shadow: var(--shadow-float);
+  font: 400 13px/18px var(--font);
+  color: var(--text);
+  text-align: left;
+  cursor: default;
+  z-index: 60;
+}
+.system-pop b {
+  font: 600 14px/18px var(--font);
+  color: var(--text-strong);
+}
+.system-light:hover .system-pop,
+.system-light:focus-visible .system-pop {
+  display: flex;
+}
+.sys-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sys-row > i {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.sys-row > i.ok {
+  background: var(--ok);
+}
+.sys-row > i.warn {
+  background: var(--warn);
+}
+.sys-row > i.bad {
+  background: var(--danger);
+}
+.category-name.down {
+  opacity: 0.5;
+}
+
+/* Message hover toolbar: Discord's 34px bar, 1px rule, 8px corners; quick reactions, a rule, then actions. */
+.message-actions {
+  top: -25px;
+  right: 14px;
+  align-items: center;
+  height: 34px;
+  padding: 0 2px;
+  background: var(--bg-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.3);
+}
+.message-actions > button {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--r-inline);
+}
+.message-actions > button.quick {
+  width: 28px;
+  font-size: 18px;
+  line-height: 1;
+}
+.actions-rule {
+  width: 1px;
+  height: 22px;
+  margin: 0 4px;
+  background: var(--line-strong);
+}
+
+/* The server name opens the server menu, as in Discord. */
+.side-title {
+  width: 100%;
+  text-align: left;
+}
+@media (min-width: 768px) {
+  .side-title {
+    width: calc(100% + 16px);
+  }
+}
+@media (hover: hover) {
+  .side-title:hover {
+    background: var(--hover);
+  }
+}
+.side-title svg {
+  flex: none;
+  color: var(--text-muted);
+}
+
+
+/* ===== Review pass. Last in the file on purpose:
+   these settle conflicts with earlier blocks. ===== */
+@media (min-width: 768px) {
+  /* One 48px header row (border included) across list, chat and side panel; one surface. */
+  .side-title,
+  .chat-header,
+  .panel-head {
+    height: var(--header);
+  }
+  .side-panel {
+    background: var(--bg-2);
+  }
+  .panel-title {
+    font: 600 16px/20px var(--font);
+  }
+  .chat-header {
+    padding-right: 8px;
+  }
+  /* The topic follows the title (24px), and truncates before the title does. */
+  .chat-titles {
+    gap: 24px;
+  }
+  .crumbs {
+    flex: 0 1 auto;
+  }
+  .chat-sub {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  /* Menus: Discord's single shape, the lightest surface, no title block. */
+  .sheet,
+  .menu-pop,
+  .system-pop {
+    background: var(--bg-4);
+  }
+  .sheet .sheet-head {
+    display: none;
+  }
+  /* Output-only bar floats where the composer would. */
+  .output-bar {
+    margin: 0 8px 8px;
+    height: var(--dock-h);
+    padding: 0 16px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-control);
+    background: var(--bg-3);
+  }
+  .output-panel {
+    border-bottom-color: var(--line-strong);
+  }
+}
+/* A narrow chat: the search bar becomes its icon, then the crumb goes. After the metrics block. */
+@container chat (max-width: 760px) {
+  .chat-header .search-field {
+    width: 32px;
+    padding: 0;
+    justify-content: center;
+    background: transparent;
+    border-color: transparent;
+  }
+  .chat-header .search-field span,
+  .chat-header .search-field kbd {
+    display: none;
+  }
+}
+@container chat (max-width: 600px) {
+  .chat-header .crumb-parent,
+  .chat-header .crumb-sep {
+    display: none;
+  }
+}
+html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
+  border-left: 0;
+  border-top-left-radius: 0;
+}
+/* Phones: the header is the chat's surface with one rule, never a black band. */
+@media (max-width: 767px) {
+  .chat-header,
+  .panel-head {
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--line-strong);
+  }
+}
+/* Threads line up with channel names; Discord's 8px tick. */
+@media (min-width: 768px) {
+  .tree .channel {
+    margin-left: 11px;
+    width: calc(100% - 11px);
+  }
+  .tree .channel::before {
+    left: -11px;
+    width: 8px;
+  }
+}
+/* Members in the side panel: rows grow for a note line, 8px insets. */
+.side-panel .member {
+  margin: 0 0 2px;
+  min-height: 40px;
+  height: auto;
+  padding: 4px 8px;
+}
+.panel-section {
+  font: 500 14px/18px var(--font);
+}
+/* Threads panel rows are cards, as in Discord's Threads popout. */
+.side-panel .thread-row {
+  background: var(--bg-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  padding: 12px;
+  margin-bottom: 8px;
+}
+@media (hover: hover) {
+  .side-panel .thread-row:hover {
+    background: var(--bg-4);
+  }
+  .message:not(.needs):hover {
+    background: var(--active);
+  }
+}
+.thread-card:hover {
+  background: var(--bg-4);
+}
+.message-actions > button.quick {
+  font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
+}
+/* One rule colour on dark surfaces. */
+.day-divider {
+  color: var(--text-muted);
+}
+.day-divider::before,
+.day-divider::after {
+  background: var(--line-strong);
+}
+.thread-card {
+  border-color: var(--line-strong);
+}
+/* Server name: the hover is an inset pill, not a square over the frame corner. */
+.side-title:hover {
+  background: none;
+}
+.side-title-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 8px;
+  margin-left: -8px;
+  border-radius: var(--r-control);
+}
+.side-title-pill > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (hover: hover) {
+  .side-title:hover .side-title-pill {
+    background: var(--hover);
+  }
+}
+/* Radio choices in menus (bell levels), right-aligned like Discord's. */
+.sheet-item .sheet-radio {
+  margin-left: auto;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--text-muted);
+}
+.sheet-item .sheet-radio.on {
+  border-color: var(--accent);
+  background: radial-gradient(circle, var(--accent) 0 4px, transparent 4.5px);
+}
+.sheet-item .sheet-sub-label {
+  display: block;
+  font: 400 12px/14px var(--font);
+  color: var(--text-muted);
+}
+.sheet-item.two-line {
+  height: 44px;
+}
+.sheet-item-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* The gear on a channel row: shown on hover or when selected, like Discord's. */
+.row-gear {
+  display: none;
+  margin-left: auto;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border-radius: var(--r-inline);
+  color: var(--text-muted);
+}
+.row-gear:hover {
+  color: var(--text-strong);
+}
+@media (min-width: 768px) {
+  .channel.active .row-gear,
+  .channel:hover .row-gear {
+    display: inline-grid;
+  }
+  .channel .badge + .row-gear {
+    margin-left: 6px;
+  }
+}
+@media (min-width: 768px) {
+  .chat-titles {
+    align-items: center;
+  }
+}
+
+/* Borders on raised pieces step up from their own surface, not from the page. */
+.thread-card,
+.side-panel .thread-row,
+.search-field,
+.output-bar {
+  border-color: var(--line-card);
+}
+.sheet,
+.menu-pop,
+.system-pop,
+.message-actions {
+  border-color: var(--line-raised);
+}
+.sheet-group + .sheet-group {
+  border-top-color: var(--line-raised);
+}
+.actions-rule {
+  background: var(--line-raised);
+}
+@media (min-width: 768px) {
+  /* The frame's left rule stops where the floating user panel begins: a 1px patch
+     over the rule below the panel (side-main clips its own children, so it lives on the nav). */
+  .sidebar.with-rail::after {
+    content: '';
+    position: absolute;
+    left: var(--rail-w, 72px);
+    bottom: 0;
+    width: 1px;
+    height: calc(8px + env(safe-area-inset-bottom));
+    background: var(--bg-1);
+    pointer-events: none;
+    z-index: 6;
+  }
+}
+
+/* Split view: a thread beside its channel, a full chat in the side panel's slot. */
+.side-panel.split-panel {
+  width: clamp(380px, 38vw, 560px);
+}
+.split-panel > .chat {
+  border: 0;
+  border-radius: 0;
+}
+.chat.split .chat-header {
+  padding-left: 16px;
+}
+.chat.split .chat-actions {
+  gap: 4px;
+}
+
+/* Column rules take no room: a side panel's left rule is drawn over its edge, so every
+   column's dock piece sits the same 8px in and the gaps between pieces are all 16px. */
+@media (min-width: 1101px) {
+  .side-panel {
+    position: relative;
+  }
+}
+.side-panel {
+  border-left: 0;
+}
+.side-panel::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line-strong);
+  z-index: 3;
+  pointer-events: none;
+}
+
+/* Raised pieces are a fixed step above whatever they float on (--backdrop), so the user
+   panel over the list and the composer over the chat read with the same contrast. One
+   equal step, not one shared colour: the same colour looks recessed on the lighter chat. */
+.sidebar {
+  --backdrop: var(--bg-1);
+}
+.chat {
+  --backdrop: var(--bg-2);
+}
+.user-panel,
+.output-bar {
+  background: color-mix(in srgb, var(--backdrop, var(--bg-1)), #fff 5%);
+  border-color: color-mix(in srgb, var(--backdrop, var(--bg-1)), #fff 9%);
+}
+.system-light {
+  background: color-mix(in srgb, var(--backdrop, var(--bg-1)), #fff 5%);
+}
+@media (min-width: 768px) {
+  .footer {
+    background: color-mix(in srgb, var(--backdrop), #fff 5%);
+    border-color: color-mix(in srgb, var(--backdrop), #fff 9%);
+  }
+  .footer:focus-within {
+    border-color: rgb(var(--accent-rgb) / 0.45);
+  }
+}
+
+/* Machine pictures: the Discord server icon by its category, the bot avatar in the status card. */
+.category-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: var(--r-inline);
+  object-fit: cover;
+  flex: none;
+}
+.sys-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: none;
+}
+
+/* ===== States. One spec per kind of control. ===== */
+:root {
+  --t-fast: 120ms var(--ease-out);
+  --t-move: 220ms var(--ease-out);
+}
+/* Icon button: 32px, 8px corners; hover fill, pressed/open stronger, open panel = bright glyph. */
+.icon-button {
+  transition: background-color var(--t-fast), color var(--t-fast);
+}
+@media (hover: hover) {
+  .icon-button:hover:not(:disabled) {
+    background: var(--fill-control-hover);
+    color: var(--text-strong);
+  }
+}
+.icon-button:active:not(:disabled),
+.icon-button[aria-expanded='true'] {
+  background: var(--fill-control-press);
+  color: var(--text-strong);
+}
+.icon-button[aria-pressed='true'] {
+  color: var(--text-strong);
+}
+.icon-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.icon-button:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: not-allowed;
+}
+/* Glyph sizes by role, matched to Discord's ink (about 14px in chrome): chrome 22,
+   menus and the hover toolbar 20, fields and rows 18. */
+.chat-actions .icon-button > svg,
+.composer .icon-button > svg,
+.user-panel > .icon-button > svg,
+.panel-head .icon-button > svg,
+.menu > svg {
+  width: 22px;
+  height: 22px;
+}
+.message-actions > button > svg,
+.sheet-item > svg {
+  width: 20px;
+  height: 20px;
+}
+/* Rows: channels, threads, settings nav, members, results, your identity in the panel. */
+.channel,
+.category-name,
+.user-panel-me,
+.member,
+.result,
+.side-panel .thread-row,
+.thread-card,
+.crumb-parent,
+.sheet-item,
+.menu-item,
+.rail-guild,
+.rail-pip,
+.button,
+.search {
+  transition: background-color var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+@media (hover: hover) {
+  .channel:hover:not(.active),
+  .user-panel-me:hover,
+  .member:hover,
+  .result:hover {
+    background: var(--fill-hover);
+    color: var(--text);
+  }
+  .category-name:hover,
+  .category-name:hover svg {
+    color: var(--text);
+  }
+  .crumb-parent:hover {
+    background: none;
+    color: var(--text-strong);
+  }
+}
+.user-panel-me:active,
+.result:active {
+  background: var(--fill-press);
+}
+.channel:focus-visible,
+.category-name:focus-visible,
+.user-panel-me:focus-visible,
+.member:focus-visible,
+.result:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.category-name {
+  border-radius: var(--r-inline);
+}
+/* Members don't open anything yet: no hover promise. */
+@media (hover: hover) {
+  .member:hover {
+    background: none;
+  }
+}
+/* Cards: a lift on hover, more when pressed. */
+@media (hover: hover) {
+  .thread-card:hover,
+  .side-panel .thread-row:hover {
+    background: color-mix(in srgb, var(--bg-3), #fff 6%);
+  }
+}
+.thread-card:active,
+.side-panel .thread-row:active {
+  background: color-mix(in srgb, var(--bg-3), #fff 10%);
+}
+/* Menu items: hover and keyboard focus look the same; icons follow the label. */
+.sheet-item,
+.menu-item {
+  height: 34px;
+  border-radius: var(--r-inline);
+}
+@media (hover: hover) {
+  .sheet-item:hover,
+  .menu-item:hover {
+    background: var(--fill-menu-hover);
+    color: var(--text-strong);
+  }
+  .sheet-item:hover > svg,
+  .menu-item:hover > svg {
+    color: currentColor;
+  }
+  .sheet-item.red:hover,
+  .menu-item.red:hover {
+    background: var(--danger);
+    color: #fff;
+  }
+}
+.sheet-item:focus-visible,
+.menu-item:focus-visible {
+  outline: none;
+  background: var(--fill-menu-hover);
+  color: var(--text-strong);
+}
+.sheet-item:focus-visible > svg {
+  color: currentColor;
+}
+.sheet-item:active,
+.menu-item:active {
+  background: var(--fill-press);
+}
+.menu-item .swatch {
+  margin: 0 4px;
+}
+.menu-pop .menu-item {
+  gap: 12px;
+}
+/* Fields: darker than their surface with a 1px rule; the rule brightens on hover and turns accent on focus. */
+.search {
+  background: color-mix(in srgb, var(--backdrop, var(--bg-1)), #000 30%);
+  border: 1px solid var(--line-raised);
+}
+@media (hover: hover) {
+  .search:hover {
+    border-color: color-mix(in srgb, var(--line-raised), #fff 12%);
+  }
+}
+.search:focus-within {
+  border-color: rgb(var(--accent-rgb) / 0.6);
+}
+.side-panel {
+  --backdrop: var(--bg-2);
+}
+@media (min-width: 768px) {
+  .footer:focus-within {
+    border-color: rgb(var(--accent-rgb) / 0.6);
+  }
+}
+/* Buttons: one weight; secondary is a white overlay (not a field); primary darkens. */
+.button {
+  padding: 0 16px;
+  font: 500 14px/20px var(--font);
+  background: var(--fill-control-hover);
+}
+@media (hover: hover) {
+  .button:hover:not(:disabled) {
+    background: rgb(255 255 255 / 0.14);
+  }
+  .button.primary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent), #000 12%);
+  }
+}
+.button:active:not(:disabled) {
+  background: rgb(255 255 255 / 0.18);
+}
+.button.primary {
+  font-weight: 500;
+}
+.button.primary:active:not(:disabled) {
+  background: color-mix(in srgb, var(--accent), #000 20%);
+}
+.button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.button:disabled {
+  opacity: var(--disabled-opacity);
+}
+/* One radio: 20px, filled accent disc with a dark centre when on. */
+.sheet-item .sheet-radio {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  box-shadow: inset 0 0 0 2px var(--text-muted);
+  background: none;
+}
+.sheet-item .sheet-radio.on {
+  background: var(--accent);
+  box-shadow: inset 0 0 0 5px var(--accent), inset 0 0 0 10px var(--accent-ink);
+}
+/* Server rail: a 20px pip and a lighter icon on hover; pressed nudges; focus ring on the icon. */
+@media (hover: hover) {
+  .rail-item:hover:not(.active) .rail-pip {
+    height: 20px;
+    opacity: 1;
+  }
+  .rail-item:hover:not(.active) .rail-guild {
+    background: color-mix(in srgb, var(--bg-3), #fff 8%);
+  }
+  .rail-item:hover .rail-guild img {
+    filter: brightness(1.08);
+  }
+}
+.rail-item:active .rail-guild {
+  transform: translateY(1px);
+}
+.rail-item:focus-visible {
+  outline: none;
+}
+.rail-item:focus-visible .rail-guild,
+.side-title:focus-visible .side-title-pill {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.side-title:focus-visible {
+  outline: none;
+}
+/* Hover toolbar: small buttons, corners nested in the bar. */
+.message-actions > button {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  margin: 0 1px;
+  transition: background-color var(--t-fast), color var(--t-fast);
+}
+@media (hover: hover) {
+  .message-actions > button:hover {
+    background: var(--fill-control-hover);
+    color: var(--text-strong);
+  }
+}
+.message-actions > button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+/* Phone sheets: a real tap response. */
+.sheet-layer.phone .sheet-item:active {
+  background: var(--fill-press);
+}
+/* Tooltip (replaces native titles on chrome controls). */
+.tip {
+  position: fixed;
+  z-index: 100;
+  pointer-events: none;
+  padding: 6px 10px;
+  border-radius: var(--r-control);
+  border: 1px solid var(--line-raised);
+  background: var(--bg-4);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.4);
+  font: 500 14px/18px var(--font);
+  color: var(--text-strong);
+  white-space: nowrap;
+  transform: translate(-50%, calc(-100% - 8px));
+}
+.tip::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -5px;
+  width: 8px;
+  height: 8px;
+  margin-left: -4px;
+  background: var(--bg-4);
+  border-right: 1px solid var(--line-raised);
+  border-bottom: 1px solid var(--line-raised);
+  transform: rotate(45deg);
+}
+.tip.below {
+  transform: translate(-50%, 8px);
+}
+.tip.below::after {
+  top: -5px;
+  bottom: auto;
+  transform: rotate(225deg);
+}
+.tip kbd {
+  margin-left: 8px;
+  font: inherit;
+  color: var(--text-muted);
+}
+/* Reduced motion: no transitions or animations anywhere, including hard-coded ones. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0s !important;
+    animation-duration: 0s !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+/* Panel header: Discord's popout header, icon + title, a quiet count. */
+.panel-head .panel-icon {
+  flex: none;
+  color: var(--text-muted);
+  margin-right: 2px;
+}
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font: 600 16px/20px var(--font);
+  color: var(--text-strong);
+}
+.panel-count {
+  font: 500 12px/16px var(--font);
+  color: var(--text-muted);
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--fill-hover);
+}
+/* Empty states: centred, an icon in a soft disc, a short title, one line. */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin: 48px auto 24px;
+  max-width: 260px;
+  text-align: center;
+  font: 400 14px/20px var(--font);
+  color: var(--text-muted);
+}
+.empty b {
+  font: 600 15px/20px var(--font);
+  color: var(--text-strong);
+}
+.empty-icon {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 8px;
+  border-radius: 50%;
+  background: var(--fill-hover);
+  color: var(--text-muted);
+}
+.panel-note {
+  margin: 0;
+  padding: 8px 16px;
+  font: 400 13px/18px var(--font);
+  color: var(--text-faint);
+}
+
+.chat-sub {
+  text-align: left;
+}
+.chat-title .title-icon {
+  color: var(--text-muted);
+}
+/* Empty copy wraps evenly instead of leaving one word alone. */
+.empty span {
+  text-wrap: balance;
+}
+.empty {
+  max-width: 280px;
+}
+/* A page title (not in crumbs) doesn't grow, so its subtitle follows it. */
+.chat-titles > .chat-title {
+  flex: 0 1 auto;
+}
+
+/* Discord's button colours carry meaning: success green, danger red, primary accent, secondary neutral. */
+.button.success {
+  background: var(--ok);
+  color: #04130d;
+}
+.button.danger {
+  background: var(--danger);
+  color: #fff;
+}
+@media (hover: hover) {
+  .button.success:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--ok), #000 12%);
+  }
+  .button.danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--danger), #000 12%);
+  }
+}
+/* Messages: every row, first or follow-up, has the same 3px inside the hover band above
+   and below, so lines in a group are evenly spaced and every band has the same breathing
+   room. The last thing in a message adds no margin of its own below the band. */
+.message:not(.needs),
+.message.compact:not(.needs),
+.message.system {
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+.message {
+  margin-top: 13px;
+}
+.message.compact {
+  margin-top: 0;
+}
+.message-head .avatar.inline {
+  top: 5px;
+}
+.message.system > svg {
+  top: 5px;
+}
+.message-body > :last-child,
+.message-body > :last-child > :last-child,
+.message-body .markdown > :last-child {
+  margin-bottom: 0;
+}
+.message-body > :first-child,
+.message-body > :first-child > :first-child,
+.message-body .markdown > :first-child {
+  margin-top: 0;
+}
+/* Overview items can be dismissed. */
+.ov-item {
+  position: relative;
+}
+.ov-dismiss {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  opacity: 0;
+}
+.ov-item:hover .ov-dismiss,
+.ov-dismiss:focus-visible {
+  opacity: 1;
+}
+@media (hover: none) {
+  .ov-dismiss {
+    opacity: 1;
+  }
+}
+.ov-item:hover .ov-age {
+  visibility: hidden;
+}
+
+/* A first message is never shorter than its avatar: the band always holds the 40px
+   picture plus the same 3px below it (Discord's row min-height). With a reply line
+   above, the picture sits 22px lower, so the row grows by that much. */
+.message:not(.compact):not(.system):not(.needs) {
+  min-height: calc(5px + 40px + 3px);
+}
+.message:not(.compact):not(.system):not(.needs):has(.reply-preview) {
+  min-height: calc(27px + 40px + 3px);
+}
+
+/* Reactions: Discord's chips. Yours carries the accent; click to add or remove yours. */
+.reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.reaction {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--r-control);
+  border: 1px solid transparent;
+  background: var(--fill-hover);
+  color: var(--text-muted);
+  font: 600 14px/18px var(--font);
+  transition: background-color var(--t-fast), border-color var(--t-fast), color var(--t-fast);
+}
+.reaction-emoji {
+  font-size: 16px;
+  line-height: 1;
+  font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
+}
+.reaction.me {
+  background: rgb(var(--accent-rgb) / 0.14);
+  border-color: rgb(var(--accent-rgb) / 0.55);
+  color: var(--accent);
+}
+@media (hover: hover) {
+  .reaction:hover {
+    border-color: var(--line-raised);
+    background: var(--fill-control-hover);
+  }
+  .reaction.me:hover {
+    border-color: var(--accent);
+  }
+}
+.reaction.add {
+  padding: 0 6px;
+  opacity: 0;
+}
+.message:hover .reaction.add,
+.reaction.add:focus-visible {
+  opacity: 1;
+}
+@media (hover: none) {
+  .reaction.add {
+    opacity: 1;
+  }
+}
+.message-actions > button.quick.on {
+  background: rgb(var(--accent-rgb) / 0.16);
+}
+/* Emoji picker: a raised popover with search, groups and a name strip. */
+.emoji-picker {
+  position: fixed;
+  z-index: 80;
+  width: 352px;
+  height: 400px;
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+  gap: 8px;
+  background: var(--bg-4);
+  border: 1px solid var(--line-raised);
+  border-radius: var(--r-control);
+  box-shadow: var(--shadow-float);
+}
+.emoji-picker .search input {
+  flex: 1;
+  background: none;
+  border: 0;
+  outline: none;
+  color: var(--text);
+  font: 400 14px/20px var(--font);
+}
+.emoji-scroll {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+.emoji-scroll h4 {
+  margin: 8px 4px 4px;
+  font: 600 12px/16px var(--font);
+  color: var(--text-muted);
+}
+.emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+}
+.emoji-cell {
+  height: 36px;
+  border-radius: var(--r-inline);
+  font: 22px/1 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
+}
+@media (hover: hover) {
+  .emoji-cell:hover {
+    background: var(--fill-control-hover);
+  }
+}
+.emoji-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 4px;
+  border-top: 1px solid var(--line-raised);
+  font: 500 13px/18px var(--font);
+  color: var(--text-muted);
+}
+.emoji-big {
+  font: 22px/1 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
+}
+@media (max-width: 767px) {
+  .emoji-picker {
+    left: 8px !important;
+    right: 8px;
+    width: auto;
+  }
+}
+
+/* Slash commands inline, like Discord: the command chip, then "name: value" fields. */
+.slash-line-wrap {
+  position: relative;
+}
+.slash-line-wrap > .palette {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+}
+.palette-head {
+  padding: 6px 8px;
+  font: 600 12px/16px var(--font);
+  color: var(--text-muted);
+}
+.slash-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 48px;
+  padding: 6px 4px 6px 8px;
+}
+.slash-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--r-inline);
+  background: rgb(var(--accent-rgb) / 0.16);
+  color: var(--accent);
+  font: 600 15px/20px var(--font);
+}
+.slash-sub {
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--r-inline);
+  color: var(--text-muted);
+  font: 500 14px/18px var(--font);
+}
+.slash-sub.on {
+  background: var(--fill-selected);
+  color: var(--text-strong);
+}
+.slash-arg {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 4px 0 8px;
+  border-radius: var(--r-inline);
+  background: var(--fill-hover);
+  border: 1px solid transparent;
+}
+.slash-arg.focus {
+  border-color: rgb(var(--accent-rgb) / 0.6);
+}
+.slash-arg-name {
+  font: 600 14px/18px var(--font);
+  color: var(--text-muted);
+  margin-right: 6px;
+}
+.slash-arg input {
+  background: none;
+  border: 0;
+  outline: none;
+  color: var(--text-strong);
+  font: 400 15px/20px var(--font);
+  min-width: 0;
+}
+.slash-arg input::placeholder {
+  color: var(--text-faint);
+}
+.slash-hint {
+  margin-left: auto;
+  font: 400 12px/16px var(--font);
+}
+.slash-error {
+  padding: 0 12px 8px;
+}
+
+/* An icon button in a warning state keeps the same 32px rounded container, tinted, like
+   Discord's muted mic: the colour is on the container, not just the glyph. */
+.icon-button.bad,
+.services-button.bad {
+  background: rgb(255 77 94 / 0.14);
+  color: var(--danger-text);
+}
+@media (hover: hover) {
+  .icon-button.bad:hover:not(:disabled),
+  .services-button.bad:hover:not(:disabled) {
+    background: rgb(255 77 94 / 0.22);
+    color: var(--danger-text);
+  }
+}
+
+.tip.right {
+  transform: translate(12px, -50%);
+}
+.tip.right::after {
+  left: -5px;
+  top: 50%;
+  bottom: auto;
+  margin: -4px 0 0;
+  transform: rotate(135deg);
+}
+.rail-guild.has-icon {
+  overflow: hidden;
+  background: none;
+}
+.rail-guild img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* The inbox bell in the user panel: same control as the services button; the count is red. */
+.user-panel > .inbox-button {
+  gap: 2px;
+}
+.inbox-button .num {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--danger);
+  color: #fff;
+  font: 700 11px/16px var(--font);
+  text-align: center;
+}
+html[data-side-collapsed='true'] .user-panel > .inbox-button {
+  display: none;
+}
+/* Icons never squash when a narrow header shrinks a counted button. */
+.icon-button > svg {
+  flex: none;
+}
+.icon-button.with-count {
+  flex: none;
+  width: auto;
+  min-width: 32px;
+  padding: 0 6px;
+  gap: 4px;
+}
+
+/* Errors: a bot message that starts with a cross reads red; when it still needs you
+   (a Retry), the band is red too and its first button is the solid red action. */
+.message.failed .markdown {
+  color: var(--danger-text);
+}
+.message.failed.needs {
+  background: linear-gradient(90deg, rgb(255 77 94 / 0.1), transparent 85%);
+  box-shadow: inset 2px 0 0 var(--danger);
+}
+.message.failed.needs .action-row > .button:first-child {
+  background: var(--danger);
+  color: #fff;
+}
+@media (hover: hover) {
+  .message.failed.needs .action-row > .button:first-child:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--danger), #000 12%);
+  }
+}
+
+/* Code colours: calm on near-black, no purple. Keywords accent, strings green,
+   numbers amber, functions blue, types sand, comments faint. */
+.tk-kw { color: #5ee3ff; }
+.tk-lit { color: #f0a35e; }
+.tk-str { color: #9fd49a; }
+.tk-num { color: #f0b45b; }
+.tk-com { color: #6b6f7a; font-style: italic; }
+.tk-fn { color: #8ab4ff; }
+.tk-type { color: #e8c88a; }
+.tk-prop { color: #c9d1e0; }
+.tk-tag { color: #ff8a9a; }
+.tk-attr { color: #e8c88a; }
+.diff-line { display: block; margin: 0 -12px; padding: 0 12px; }
+.diff-add { color: #8fd48f; background: rgb(63 182 139 / 0.1); }
+.diff-del { color: #ff8a8a; background: rgb(255 77 94 / 0.1); }
+.diff-hunk { color: #6b6f7a; }
+
+/* Machine tokens in prose. */
+.sem-id {
+  font-family: var(--mono);
+  font-size: 0.86em;
+  color: var(--text-muted);
+}
+.sem-path {
+  font-family: var(--mono);
+  font-size: 0.88em;
+}
+.sem-num {
+  font-variant-numeric: tabular-nums;
+}
+.sem-key {
+  color: var(--text-muted);
+}
+
+/* Status gutter shapes: ● ok, ▲ warning, ■ problem, ◆ tool, quiet dots for the rest. */
+.status-row > i {
+  margin-top: 0;
+}
+.status-row.warn > i {
+  border-radius: 0;
+  width: 9px;
+  height: 8px;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+.status-row.bad > i {
+  border-radius: 2px;
+}
+.status-row.tool > i {
+  border-radius: 1px;
+  width: 7px;
+  height: 7px;
+  transform: translateY(-1px) rotate(45deg);
+  background: var(--accent);
+}
+.status-row.think > i,
+.status-row.say > i,
+.status-row.info > i {
+  background: var(--text-faint);
+  width: 6px;
+  height: 6px;
+}
+.status-row.say > i {
+  background: var(--text-muted);
+}
+.status-row.think .status-text {
+  color: var(--text-muted);
+  font-style: italic;
+}
+.status-row.bad .status-text {
+  color: var(--danger-text);
+}
+.status-text {
+  flex: 1;
+  min-width: 0;
+}
+.status-time {
+  flex: none;
+  margin-left: auto;
+  padding-left: 12px;
+  font: 400 12px/16px var(--mono);
+  color: var(--text-faint);
+}
+
+/* Loading: the V draws itself once, then flips left and right around its upright
+   axis, on a loop. Transform and stroke offset only, no layout. Reduced motion
+   shows the finished mark, still. */
+.splash {
+  height: 100%;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: var(--bg-1);
+}
+.splash .mark {
+  width: 56px;
+  height: 56px;
+}
+.loading-mark {
+  display: inline-grid;
+  place-items: center;
+}
+.loading-mark .mark {
+  width: 100%;
+  height: 100%;
+}
+.loading-inline {
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.mark {
+  animation: mark-flip 1.8s cubic-bezier(0.65, 0, 0.35, 1) 0.6s infinite;
+}
+.mark-v {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 4.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 52;
+  stroke-dashoffset: 52;
+  animation: mark-draw 0.6s var(--ease-out) forwards;
+}
+@keyframes mark-draw {
+  to { stroke-dashoffset: 0; }
+}
+/* Flip one way, rest, flip back, rest. The far side is a touch dimmer, like a card turning. */
+@keyframes mark-flip {
+  0% { transform: perspective(160px) rotateY(0deg); opacity: 1; }
+  35% { transform: perspective(160px) rotateY(180deg); opacity: 0.85; }
+  50% { transform: perspective(160px) rotateY(180deg); opacity: 0.85; }
+  85% { transform: perspective(160px) rotateY(360deg); opacity: 1; }
+  100% { transform: perspective(160px) rotateY(360deg); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mark { animation: none; }
+  .mark-v { stroke-dashoffset: 0; animation: none; }
+}
+
+/* "**Label** value" lines: a two-column grid, labels quiet, values aligned. */
+.kv dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 16px;
+  row-gap: 2px;
+  margin: 0;
+}
+.kv-row {
+  display: contents;
+}
+.kv dt {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.kv dd {
+  margin: 0;
+  color: var(--text-strong);
+  font-variant-numeric: tabular-nums;
+}
+.kv-title {
+  font-weight: 600;
+  color: var(--text-strong);
+  margin-bottom: 2px;
+}
+
+/* Grouped stats side by side. */
+.kv-table-wrap {
+  overflow-x: auto;
+  margin: -2px 0;
+}
+.kv-table {
+  border-collapse: collapse;
+  font-size: var(--body);
+  line-height: 20px;
+  font-variant-numeric: tabular-nums;
+}
+.kv-table th,
+.kv-table td {
+  padding: 5px 0;
+  text-align: left;
+  vertical-align: top;
+}
+.kv-table th + th,
+.kv-table th + td,
+.kv-table td + td {
+  padding-left: 24px;
+}
+.kv-table thead th {
+  font-weight: 600;
+  color: var(--text-strong);
+  padding-top: 0;
+  padding-bottom: 7px;
+}
+.kv-table tbody th {
+  font-weight: 500;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.kv-table td {
+  color: var(--text-strong);
+}
+.kv-table tbody tr {
+  border-top: 1px solid rgb(255 255 255 / 0.06);
+}
+.kv-table tbody tr:last-child td,
+.kv-table tbody tr:last-child th {
+  padding-bottom: 0;
+}
+
+/* Relayed prompt: one quiet line, the chevron opens the rest. */
+.relay {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: var(--measure);
+  font: 400 12px/16px var(--font);
+  color: var(--text-faint);
+}
+.relay-text {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.relay:not(.open) .relay-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.relay:not(.open) .relay-text > div + div {
+  display: none;
+}
+.relay:not(.open) .relay-text > div {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.relay.open .relay-text > div + div {
+  margin-top: 4px;
+}
+.relay strong {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.relay-toggle {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.relay-toggle:hover {
+  background: var(--fill-control-hover);
+  color: var(--text-strong);
+}
+.relay-toggle svg {
+  transform: rotate(90deg);
+  transition: transform var(--t-fast);
+}
+.relay.open .relay-toggle svg {
+  transform: rotate(-90deg);
+}
+
+/* Discord markdown parity: headings 24/20/16 bold with 16px above, mentions as tinted
+   chips, inline code with a hairline, live time chips, large emoji-only messages. */
+.markdown h1,
+.markdown h2,
+.markdown h3 {
+  font-weight: 700;
+  margin: 16px 0 8px;
+}
+.markdown > h1:first-child,
+.markdown > h2:first-child,
+.markdown > h3:first-child {
+  margin-top: 4px;
+}
+.markdown .mention {
+  padding: 0 2px;
+  border-radius: 3px;
+  color: var(--accent);
+  background: rgb(var(--accent-rgb) / 0.14);
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.markdown .mention:hover {
+  background: rgb(var(--accent-rgb) / 0.9);
+  color: var(--accent-ink);
+}
+.markdown .role-mention {
+  color: rgb(var(--role));
+  background: rgb(var(--role) / 0.14);
+}
+.markdown .role-mention:hover {
+  background: rgb(var(--role) / 0.9);
+  color: #0b0b0e;
+}
+.markdown .muted-mention {
+  color: var(--text-muted);
+  background: rgb(255 255 255 / 0.06);
+}
+.markdown .channel-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  vertical-align: bottom;
+  text-decoration: none;
+}
+.markdown .channel-chip svg {
+  flex: none;
+}
+.markdown code {
+  border: 1px solid var(--line-raised);
+  padding: 0 3px;
+}
+.markdown pre code {
+  border: 0;
+  padding: 0;
+}
+.timestamp-mention {
+  padding: 0 2px;
+  border-radius: 3px;
+  background: rgb(255 255 255 / 0.06);
+  font-variant-numeric: tabular-nums;
+}
+.spoiler:not(.shown):hover {
+  background: var(--bg-5, #23232a);
+}
+img.emoji {
+  width: 22px;
+  height: 22px;
+  vertical-align: bottom;
+  object-fit: contain;
+}
+.markdown.jumbo .paragraph {
+  font-size: 48px;
+  line-height: 56px;
+}
+img.emoji.jumbo {
+  width: 48px;
+  height: 48px;
+}
+
+/* Run footer: project, branch, time, context and model in one quiet line. */
+.meta-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 0;
+  margin-top: 4px;
+  font: 400 12px/16px var(--font);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.meta-line > span + span::before {
+  content: '';
+  display: inline-block;
+  width: 3px;
+  height: 3px;
+  margin: 0 7px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.6;
+  vertical-align: middle;
+}
+.meta-line .sem-num,
+.meta-line .sem-id {
+  font-size: inherit;
+  color: inherit;
+  font-family: inherit;
+}
+
+/* Code block: Discord wraps long lines in a hairline card; ours adds the language,
+   an icon copy button and a fold for long pastes. */
+.codeblock pre {
+  background: rgb(255 255 255 / 0.03);
+  border: 1px solid rgb(255 255 255 / 0.08);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+.codeblock pre code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.codeblock-tools {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity var(--t-fast);
+}
+.codeblock:hover .codeblock-tools,
+.codeblock-tools:focus-within {
+  opacity: 1;
+}
+@media (hover: none) {
+  .codeblock-tools {
+    opacity: 1;
+  }
+}
+.codeblock-lang {
+  font: 500 11px/16px var(--mono);
+  color: var(--text-faint);
+  padding: 0 4px;
+  text-transform: lowercase;
+}
+.codeblock .codeblock-copy {
+  position: static;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line-raised);
+  border-radius: 6px;
+  background: var(--bg-4);
+  color: var(--text-muted);
+  opacity: 1;
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.codeblock .codeblock-copy:hover {
+  background: var(--bg-5, #23232a);
+  color: var(--text-strong);
+}
+.codeblock.folded pre {
+  max-height: calc(24 * 20px + 16px);
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(#000 calc(100% - 48px), transparent);
+  mask-image: linear-gradient(#000 calc(100% - 48px), transparent);
+}
+.codeblock-fold {
+  display: block;
+  margin-top: 4px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  font: 500 12px/16px var(--font);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.codeblock-fold:hover {
+  color: var(--text-strong);
+  text-decoration: underline;
+}
+
+/* Composer typing aids: @ # : suggestions, the formatting bar, emoji button, drop target,
+   character count. */
+.suggest-glyph {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  color: var(--text-faint);
+  font: 500 15px/20px var(--font);
+}
+.suggest-glyph.emoji {
+  font-size: 18px;
+  color: inherit;
+}
+.format-bar {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  transform: translate(-50%, calc(-100% - 8px));
+  background: var(--bg-4);
+  border: 1px solid var(--line-raised);
+  border-radius: 8px;
+  box-shadow: var(--shadow-float);
+}
+.format-button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-muted);
+  font: 400 16px/1 var(--font);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.format-button b {
+  font-weight: 800;
+}
+.format-button:hover {
+  background: var(--fill-control-hover);
+  color: var(--text-strong);
+}
+.format-button:active {
+  background: var(--fill-control-press);
+}
+.format-button.gap {
+  margin-left: 9px;
+  position: relative;
+}
+.format-button.gap::before {
+  content: '';
+  position: absolute;
+  left: -6px;
+  top: 6px;
+  bottom: 6px;
+  width: 1px;
+  background: var(--line-raised);
+}
+.composer.dropping {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 0.18);
+}
+.char-count {
+  align-self: center;
+  flex: none;
+  padding: 0 4px;
+  font: 500 12px/16px var(--font);
+  color: var(--text-faint);
+}
+.char-count.over {
+  color: var(--danger-text, #ff6b6b);
+}
+@media (pointer: coarse) {
+  .composer .emoji-button {
+    display: none;
+  }
+}
+
+/* "More threads" popout from the sidebar's older row: Discord's popout shape. */
+.threads-popout {
+  position: fixed;
+  z-index: 60;
+  width: 280px;
+  padding: 8px;
+  background: var(--bg-4);
+  border: 1px solid var(--line-raised);
+  border-radius: 8px;
+  box-shadow: var(--shadow-float);
+}
+.threads-popout-title {
+  padding: 4px 8px 8px;
+  font: 600 12px/16px var(--font);
+  color: var(--text-muted);
+}
+.threads-popout-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 34px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--text);
+  font: 500 14px/18px var(--font);
+  text-align: left;
+  cursor: pointer;
+}
+.threads-popout-row svg {
+  flex: none;
+  color: var(--text-faint);
+}
+.threads-popout-row:hover {
+  background: var(--fill-menu-hover);
+  color: var(--text-strong);
+}
+.threads-popout-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.threads-popout-age {
+  flex: none;
+  font: 400 12px/16px var(--font);
+  color: var(--text-faint);
+}
+.threads-popout-all {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px;
+  border: 0;
+  border-top: 1px solid var(--line-raised);
+  border-radius: 0 0 4px 4px;
+  background: none;
+  color: var(--accent);
+  font: 600 13px/16px var(--font);
+  text-align: left;
+  cursor: pointer;
+}
+.threads-popout-all:hover {
+  text-decoration: underline;
+}
+
+/* An opened relay keeps the subtext voice: small, quiet, lists and code included. */
+.relay .markdown {
+  font: inherit;
+  color: inherit;
+  max-width: none;
+}
+.relay .markdown ul,
+.relay .markdown ol {
+  margin: 2px 0;
+  padding-left: 16px;
+}
+.relay .markdown li + li {
+  margin-top: 2px;
+}
+.relay .markdown code {
+  font-size: 11px;
+}
+.relay .markdown strong {
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.tool-name {
+  font: 500 12px/1 var(--mono);
+  color: var(--text-muted);
+  margin-right: 2px;
+}
+.status-row.tool .status-text em {
+  color: var(--text-muted);
+}
+
+/* The relay's chevron leads, as a disclosure: › closed, ⌄ open. */
+.relay {
+  gap: 2px;
+}
+.relay-toggle {
+  order: -1;
+  margin-left: -2px;
+}
+.relay-toggle svg {
+  transform: none;
+}
+.relay.open .relay-toggle svg {
+  transform: rotate(90deg);
+}
+
+/* Workspace panel (phase 1): Now, Waiting on you, Outputs, Linked, Services; Look opens an
+   output at full size. Discord's category labels, 34px rows, no cards inside the panel. */
+.side-panel.workspace {
+  width: 400px;
+}
+.side-panel.workspace.look {
+  width: clamp(560px, 42vw, 900px);
+}
+.ws-body {
+  padding: 8px 8px 16px;
+}
+.ws-section + .ws-section {
+  margin-top: 16px;
+}
+.ws-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 4px;
+  padding: 0 8px;
+  font: 600 12px/16px var(--font);
+  color: var(--text-muted);
+}
+.ws-label .num {
+  font-weight: 500;
+  color: var(--text-faint);
+}
+.ws-now {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 4px 8px;
+}
+.ws-now > .st {
+  margin-top: 7px;
+  flex: none;
+}
+.ws-now-text {
+  min-width: 0;
+  flex: 1;
+}
+.ws-link {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  color: var(--text-strong);
+  cursor: pointer;
+}
+.ws-now-line {
+  font: 400 14px/20px var(--font);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ws-link:hover .ws-now-line {
+  text-decoration: underline;
+  text-decoration-color: var(--text-faint);
+}
+.ws-meta {
+  font: 400 12px/16px var(--font);
+  color: var(--text-faint);
+}
+.ws-pad {
+  padding: 8px;
+}
+.ws-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--text);
+  font: 500 14px/18px var(--font);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--t-fast);
+}
+.ws-row:hover {
+  background: var(--fill-hover);
+  color: var(--text-strong);
+}
+.ws-row > svg {
+  flex: none;
+  color: var(--text-faint);
+}
+.ws-row-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.ws-row-text.mono {
+  font: 500 13px/18px var(--mono);
+}
+.ws-versions {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--fill-selected);
+  font: 600 11px/16px var(--font);
+  color: var(--text-muted);
+}
+.ws-waiting {
+  position: relative;
+  background: rgb(var(--accent-rgb) / 0.06);
+  margin-bottom: 2px;
+}
+.ws-waiting::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+.ws-shots {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  padding: 0 8px 6px;
+}
+.ws-shot {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  padding: 0;
+  border: 1px solid var(--line-raised);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg-0);
+  cursor: zoom-in;
+}
+.ws-shot img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform 200ms var(--ease-out);
+}
+.ws-shot:hover img {
+  transform: scale(1.04);
+}
+.ws-badge {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgb(0 0 0 / 0.7);
+  font: 600 11px/16px var(--font);
+  color: #fff;
+}
+.icon-button.with-dot {
+  position: relative;
+}
+.icon-button.with-dot::after {
+  content: '';
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg-2);
+}
+svg.flip {
+  transform: scaleX(-1);
+}
+
+/* Look: one output at full size. */
+.look .panel-head {
+  gap: 4px;
+}
+.look-title {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+  line-height: 18px;
+}
+.look-name {
+  font: 600 15px/18px var(--font);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.look-versions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font: 600 12px/16px var(--font);
+  color: var(--text-muted);
+}
+.look-versions .icon-button:disabled {
+  opacity: 0.35;
+}
+.look-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.look-image {
+  display: block;
+  max-width: 100%;
+  margin: 0 auto;
+  cursor: zoom-in;
+}
+.look-image,
+.look-compare {
+  background: var(--bg-0);
+}
+.look-compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--line-raised);
+}
+.look-compare figure {
+  margin: 0;
+  background: var(--bg-0);
+}
+.look-compare img {
+  display: block;
+  width: 100%;
+  cursor: zoom-in;
+}
+.look-compare figcaption {
+  padding: 6px 12px;
+  font: 600 12px/16px var(--font);
+  color: var(--text-muted);
+}
+.look-media,
+.look-pdf {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 60vh;
+  border: 0;
+  background: var(--bg-0);
+}
+.look-audio {
+  width: calc(100% - 32px);
+  margin: 16px;
+}
+.look-file {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px;
+  color: var(--text-strong);
+}
+.look-doc {
+  padding: 16px 24px 32px;
+}
+.look-doc .markdown {
+  max-width: 72ch;
+}
+.look-code {
+  margin: 0;
+  padding: 12px 16px;
+  font: 400 13px/20px var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ws-table-wrap {
+  overflow: auto;
+  max-height: 100%;
+}
+.ws-table {
+  border-collapse: collapse;
+  font: 400 13px/18px var(--font);
+  min-width: 100%;
+}
+.ws-table th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-3);
+  text-align: left;
+  border-bottom: 1px solid var(--line-raised);
+}
+.ws-table th button {
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  background: none;
+  font: 600 12px/16px var(--font);
+  color: var(--text-muted);
+  text-align: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ws-table td {
+  padding: 6px 12px;
+  border-bottom: 1px solid rgb(255 255 255 / 0.05);
+  color: var(--text);
+  white-space: nowrap;
+}
+.ws-table .n {
+  text-align: right;
+}
+.ws-table tbody tr:hover td {
+  background: var(--fill-hover);
+}
+@media (max-width: 767px) {
+  .side-panel.workspace,
+  .side-panel.workspace.look {
+    width: 100%;
+  }
+}
+
+/* Pipe tables from agents' markdown: the comparison table's look, first column plain. */
+.md-table-wrap {
+  margin: 8px 0;
+}
+.md-table tbody td:first-child,
+.md-table thead th:first-child {
+  color: var(--text-strong);
+}
+.md-table th + th,
+.md-table td + td {
+  padding-left: 24px;
+}
+.md-table tbody tr:first-child {
+  border-top: 1px solid rgb(255 255 255 / 0.12);
+}
+.look-title {
+  align-items: flex-start;
+  text-align: left;
+}
+
+/* ===== Discord block rhythm, measured from the desktop app.
+   Last in the file on purpose: these are the numbers, and they beat the earlier
+   "first child has no margin" rule, which made code blocks touch the name line.
+   Guarded by the browser test "spacing: every block kind sits where Discord puts it". */
+.message-body .markdown > .codeblock {
+  margin: 6px 0 0;
+}
+.codeblock pre {
+  border-radius: 4px;
+  padding: 7px;
+}
+.codeblock pre code {
+  font-size: 14px;
+  line-height: 18px;
+}
+.message-body .markdown > h1,
+.message-body .markdown > h2,
+.message-body .markdown > h3 {
+  margin: 16px 0 8px;
+}
+.message-body .markdown > h1:first-child,
+.message-body .markdown > h2:first-child,
+.message-body .markdown > h3:first-child {
+  margin-top: 8px;
+}
+.markdown h2 {
+  line-height: 27.5px;
+}
+.message-body .markdown > ul,
+.message-body .markdown > ol,
+.message-body .markdown > ul:first-child,
+.message-body .markdown > ol:first-child {
+  margin: 4px 0 0;
+  padding-left: 16px;
+}
+.markdown li {
+  margin-bottom: 4px;
+}
+.markdown li > ul,
+.markdown li > ol {
+  margin-top: 4px;
+}
+.message-body .markdown > blockquote,
+.message-body .markdown > blockquote:first-child,
+.message-body .markdown > blockquote:last-child {
+  margin: 4px 0;
+  padding-left: 16px;
+}
+.message-body .attachments,
+.message-body .embeds {
+  margin-top: 2px;
+}
+/* Containers: 16px inside a 1px rule, accent as a 4px band inside the left rule (text
+   stays at 17px either way), 14px text on 19.25px lines, 8px around separators, 2px
+   above, up to 600px wide. */
+.container,
+.container.accented {
+  margin: 2px 0 0;
+  padding: 16px;
+  border: 1px solid rgb(255 255 255 / 0.08);
+  max-width: min(100%, 600px);
+}
+.container.accented {
+  box-shadow: inset 4px 0 0 var(--bar);
+}
+.container > .separator {
+  margin: 0;
+}
+.container > .separator.large {
+  margin: 8px 0;
+}
+.container .markdown {
+  font-size: 14px;
+  line-height: 19.25px;
+}
+.message-body .container .markdown > h1:first-child,
+.message-body .container .markdown > h2:first-child,
+.message-body .container .markdown > h3:first-child {
+  margin-top: 0;
+}
+/* Discord's -# subtext is 13px; Kimaki's relays and run footers use the same voice. */
+.subtext,
+.relay,
+.meta-line {
+  font-size: 13px;
+  line-height: 18px;
+}
+.message-body .markdown > .subtext:only-child {
+  line-height: 22px;
+}
+
+/* Cards in messages are solid (one raised step over the chat, --card-bg/--card-line from
+   media.css), and an accent is a straight 4px bar: the left corners are square so the bar
+   runs straight up and down instead of bending round the radius. */
+.container,
+.codeblock pre {
+  background: var(--card-bg, var(--bg-3));
+  border-color: var(--card-line, var(--line-raised));
+}
+.container.accented {
+  box-shadow: none;
+  border-left: 4px solid var(--bar);
+  border-radius: 4px 8px 8px 4px;
+  padding-left: 13px;
+}
+.embed-card {
+  border-radius: 0 4px 4px 0;
+}
+/* Quotes: Discord's bar is its own 4px element, as tall as the text, with rounded ends;
+   the quote itself has no box, so nothing curves into a bracket. */
+.markdown blockquote {
+  position: relative;
+  box-shadow: none;
+  border-radius: 0;
+}
+.markdown blockquote::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  border-radius: 4px;
+  background: #45454d;
+}
+
+/* Markdown source (```md blocks, .md file previews): JetBrains' editor look. */
+.md-mark {
+  color: var(--text-faint);
+  font-weight: 400;
+  font-style: normal;
+}
+.md-h {
+  color: var(--text-strong);
+  font-weight: 700;
+}
+.md-h1,
+.md-h2 {
+  color: #8ab4ff;
+}
+.md-strong {
+  font-weight: 700;
+  color: var(--text-strong);
+}
+.md-em {
+  font-style: italic;
+}
+.md-strike {
+  text-decoration: line-through;
+  text-decoration-color: var(--text-faint);
+}
+.md-code {
+  color: #9fd49a;
+  background: rgb(255 255 255 / 0.05);
+  border-radius: 3px;
+}
+.md-link {
+  color: var(--link);
+}
+.md-url {
+  color: var(--text-faint);
+  text-decoration: underline;
+  text-decoration-color: rgb(255 255 255 / 0.15);
+}
+.md-bullet {
+  color: var(--accent);
+}
+.md-quote {
+  color: var(--text-muted);
+  font-style: italic;
+}
+.md-bar {
+  color: var(--accent);
+  font-style: normal;
+}
+
+/* Run footer as Discord shows it: italic quiet subtext, separators as text (copies as typed). */
+.meta-line {
+  font-style: italic;
+}
+.meta-line > span + span::before {
+  content: none;
+}
+.meta-sep {
+  font-style: normal;
+  white-space: pre;
+}
+
+/* Discord parity, from a side-by-side comparison: */
+.md-gap {
+  height: 22px;
+}
+.container .md-gap {
+  height: 19.25px;
+}
+/* Numbered lists: the number sits on the content edge, text after it. */
+.message-body .markdown > ol,
+.message-body .markdown > ol:first-child {
+  padding-left: 0;
+  list-style-position: inside;
+}
+/* Quoted text is a step quieter than the message, as in Discord. */
+.markdown blockquote {
+  color: color-mix(in srgb, var(--text-strong) 82%, var(--bg-2));
+}
+.meta-line,
+.meta-line * {
+  font-variant-numeric: normal;
+}
+.message-body .text-file-body {
+  background: var(--card-bg, var(--bg-3));
+}
+/* Discord's tones, sampled from a screen capture: body #efeff1, while quoted text
+   (bold included), -# subtext, step lines and the run footer are #abacb2, our --text-muted. */
+.markdown blockquote,
+.markdown blockquote strong,
+.markdown blockquote em,
+.subtext,
+.subtext strong,
+.relay,
+.relay strong,
+.meta-line {
+  color: var(--text-muted);
+}
+/* Inside quiet lines, machine tokens keep the line's own font and tone (Discord has none). */
+.subtext :is(.sem-path, .sem-id, .sem-num, .sem-key),
+.relay :is(.sem-path, .sem-id, .sem-num, .sem-key),
+.meta-line :is(.sem-path, .sem-id, .sem-num, .sem-key) {
+  font: inherit;
+  color: inherit;
+}
+
+/* Channel list pills (Discord's NEW MENTIONS / NEW UNREADS): sticky to the list's edge. */
+.list-pill-dock {
+  position: sticky;
+  z-index: 3;
+  height: 0;
+  display: flex;
+  justify-content: center;
+}
+.list-pill-dock.top {
+  top: 0;
+}
+.list-pill-dock.bottom {
+  bottom: 0;
+}
+.list-pill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 24px;
+  border-radius: 12px;
+  font: 700 11px/24px var(--font);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  text-align: center;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.45);
+  transition: filter var(--t-fast);
+}
+.list-pill-dock.top .list-pill {
+  top: 4px;
+}
+.list-pill-dock.bottom .list-pill {
+  bottom: 8px;
+}
+.list-pill.mentions {
+  background: var(--danger);
+  color: #fff;
+  border: 0;
+}
+.list-pill.unreads {
+  background: var(--bg-4);
+  color: var(--text-strong);
+  border: 1px solid var(--line-raised);
+}
+.list-pill:hover {
+  filter: brightness(1.15);
+}
+
+/* Step lines: Discord's tree glyphs, coloured by what the step does. */
+.step-line {
+  --tool: var(--text-faint);
+}
+.step-line.tool-shell { --tool: var(--accent); }
+.step-line.tool-write { --tool: #3fb68b; }
+.step-line.tool-read { --tool: #8ab4ff; }
+.step-line.tool-web { --tool: #e5a50a; }
+.step-line.tool-agent { --tool: #ff7ab8; }
+.step-glyph {
+  color: var(--tool);
+  white-space: pre;
+}
+.step-tool {
+  color: color-mix(in srgb, var(--tool) 80%, var(--text-muted));
+  font-weight: 500;
+}
+/* ⬥: an accent diamond drawn in CSS over the (kept, invisible) character. */
+.text-mark {
+  position: relative;
+  display: inline-block;
+  width: 0.6em;
+  color: transparent;
+}
+.text-mark::before {
+  content: '';
+  position: absolute;
+  left: 0.08em;
+  top: 50%;
+  width: 0.42em;
+  height: 0.42em;
+  background: var(--accent);
+  border-radius: 1px;
+  transform: translateY(-55%) rotate(45deg);
+}
+/* Measured on Discord: the list pills are 26px tall (1px rule inside) and sit 6px above
+   the user panel. */
+.list-pill {
+  box-sizing: border-box;
+  height: 26px;
+  border-radius: 13px;
+  line-height: 24px;
+}
+.list-pill.mentions {
+  border: 1px solid transparent;
+}
+
+/* Discord 1:1: an accent never paints over the card's own rule. The 1px border runs all
+   the way round; the 4px bar sits inside it, following the inner corner, and the text
+   stays 17px in (1px rule + 16px padding, the bar inside the padding). */
+.container.accented {
+  position: relative;
+  border-left: 1px solid var(--card-line, var(--line-raised));
+  border-radius: 8px;
+  padding-left: 16px;
+}
+.container.accented::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  border-radius: 7px 0 0 7px;
+  background: var(--bar);
+  pointer-events: none;
+}
+/* The bottom pill lives outside the scrolling list (so nothing clips it), anchored to
+   the foot of the sidebar column and lifted to 6px above the user panel. */
+.side-main > .list-pill-dock.bottom {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 0;
+}
