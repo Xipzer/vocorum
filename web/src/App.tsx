@@ -11,7 +11,7 @@ import { Chat } from './Chat.tsx'
 import { Overview } from './Overview.tsx'
 import { SettingsHost } from './Settings.tsx'
 import { can, P } from './perms.ts'
-import { Inbox, InboxPanel, LinksPanel, MembersPanel, PinsPanel, SearchPanel, ServicesPanel, ThreadsPanel } from './Panels.tsx'
+import { Empty, Inbox, InboxPanel, LinksPanel, MembersPanel, PinsPanel, SearchPanel, ServicesPanel, ThreadsPanel } from './Panels.tsx'
 import { below, Sheet, sessionActions, usePress, type SheetSpec } from './Sheet.tsx'
 import type { MarkdownContext } from './markdown.tsx'
 import { ModalDialog, type OpenModal } from './Modal.tsx'
@@ -22,11 +22,12 @@ import { NativeLogin } from './NativeLogin.tsx'
 import { loginError } from './login.ts'
 import { Tooltips } from './Tooltip.tsx'
 import { WorkspacePanel } from './Workspace.tsx'
+import { QuickSwitcher, rememberVisit, ShortcutSheet } from './Switcher.tsx'
 import { LoadingMark } from './components.tsx'
 import { initColumns, keys, startResize, toggleColumn, useColumnKeys, useColumns, type ColumnId } from './columns.ts'
 
 initColumns()
-import { Icon } from './icons.tsx'
+import { Icon, type IconName } from './icons.tsx'
 import { plain, machineLabel } from './text.ts'
 
 const LIVE_THREADS = 5
@@ -379,7 +380,7 @@ function ThreadRow({ thread, title, current, unread, session, favourite, mention
     })
   })
   return (
-    <button className={`channel${current ? ' active' : ''}${unread ? ' unread' : ''}${thread.thread_metadata?.archived ? ' dim' : ''}`} onClick={() => onOpen(thread.id)} {...press}>
+    <button data-nav={thread.id} className={`channel${current ? ' active' : ''}${unread ? ' unread' : ''}${thread.thread_metadata?.archived ? ' dim' : ''}`} onClick={() => onOpen(thread.id)} {...press}>
       <span className="channel-name">{title}</span>
       {state === 'busy' && session && elapsed(session.since) && <span className="meta">{elapsed(session.since)}</span>}
       {mentions > 0 && <span className="badge num" aria-label={`${mentions} mentions`}>{mentions}</span>}
@@ -442,7 +443,7 @@ function ProjectRow({ channel, current, unread, threads, mentions, onOpen, onShe
     }),
   )
   return (
-    <button className={`channel${current ? ' active' : ''}${unread ? ' unread' : ''}`} onClick={() => onOpen(channel.id)} {...press}>
+    <button data-nav={channel.id} className={`channel${current ? ' active' : ''}${unread ? ' unread' : ''}`} onClick={() => onOpen(channel.id)} {...press}>
       <span className="hash">#</span>
       <span className="channel-name">{channel.name}</span>
       {mentions > 0 && <span className="badge num" aria-label={`${mentions} mentions`}>{mentions}</span>}
@@ -640,16 +641,6 @@ function Sidebar({ state, current, open, onOpen, ctx, guild, onGuild, onThreads 
     setCollapsed(next)
     localStorage.setItem('collapsed', JSON.stringify(next))
   }
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault()
-        search.current?.focus()
-      }
-    }
-    window.addEventListener('keydown', onKey, { capture: true })
-    return () => window.removeEventListener('keydown', onKey, { capture: true })
-  }, [])
   const title = (c: Channel) => plain(c.name ?? '', ctx.userName, ctx.channelName) || 'untitled'
   const unread = (c: Channel) => snowflakeGt(c.last_message_id, seen[c.id]) && c.id !== current
   const q = query.trim().toLowerCase()
@@ -803,6 +794,46 @@ function Sidebar({ state, current, open, onOpen, ctx, guild, onGuild, onThreads 
   )
 }
 
+// A new server: what to do first, as Discord's welcome checklist. Commands copy on click.
+function Welcome({ name }: { name: string }) {
+  const [copied, setCopied] = useState<string | null>(null)
+  const copy = (text: string) => {
+    void navigator.clipboard?.writeText(text)
+    setCopied(text)
+    window.setTimeout(() => setCopied((c) => (c === text ? null : c)), 1500)
+  }
+  const steps: { icon: IconName; title: string; note: ReactNode; run: () => void; copies?: string }[] = [
+    { icon: 'server', title: 'Connect a machine', note: <code>vocorum kimaki setup &lt;machine&gt;</code>, copies: 'vocorum kimaki setup ', run: () => copy('vocorum kimaki setup ') },
+    { icon: 'download', title: 'Move from Discord', note: <code>vocorum discord import all</code>, copies: 'vocorum discord import all', run: () => copy('vocorum discord import all') },
+    { icon: 'phone', title: 'Pair another device', note: 'Your phone or another computer', run: () => sessionActions.settings?.('devices') },
+    { icon: 'members', title: 'Invite people', note: 'They get their own account', run: () => sessionActions.settings?.('members') },
+  ]
+  return (
+    <div className="welcome">
+      <h1>
+        Welcome to
+        <br />
+        {name}
+      </h1>
+      <p>Agents post here once a machine is connected. Run the commands on the hub machine.</p>
+      <div className="welcome-steps">
+        {steps.map((s) => (
+          <button key={s.title} className="welcome-step" onClick={s.run}>
+            <span className="welcome-icon">
+              <Icon name={s.icon} size={20} />
+            </span>
+            <span className="welcome-text">
+              <b>{s.title}</b>
+              <span>{s.copies && copied === s.copies ? 'Copied' : s.note}</span>
+            </span>
+            <Icon name={s.copies ? 'copy' : 'chevron'} size={16} />
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function Main() {
   const state = useStore((d) => d.state)
   const [current, setCurrent] = useRoute()
@@ -851,6 +882,56 @@ function Main() {
   sessionActions.services = () => setPanel((p) => (p?.kind === 'services' ? null : { kind: 'services' }))
   sessionActions.inbox = () => setPanel((p) => (p?.kind === 'inbox' ? null : { kind: 'inbox' }))
   const [jumpTo, setJumpTo] = useState<{ channelId: string; messageId: string; nonce: number } | null>(null)
+  // A message link (#/c/<channel>/<message>) opens the channel and jumps to the message.
+  useEffect(() => {
+    const onHash = () => {
+      const m = /^#\/c\/(\d+)\/(\d+)/.exec(location.hash)
+      if (!m) return
+      setJumpTo({ channelId: m[1]!, messageId: m[2]!, nonce: Date.now() })
+      history.replaceState(null, '', `#/c/${m[1]}`)
+    }
+    onHash()
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+  const [switcher, setSwitcher] = useState<'switcher' | 'shortcuts' | null>(null)
+  useEffect(() => {
+    if (current && current !== 'overview' && current !== 'inbox') rememberVisit(current)
+  }, [current])
+  // Discord's navigation keys. Alt+arrows walk the sidebar rows in the order shown.
+  useEffect(() => {
+    // From the URL, not React state: the route updates a task after the hash changes.
+    const routeNow = () => /^#\/c\/(\d+)/.exec(location.hash)?.[1] ?? null
+    const typing = (e: KeyboardEvent) => e.target instanceof HTMLElement && (e.target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName))
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey
+      if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setSwitcher((s) => (s === 'switcher' ? null : 'switcher'))
+      } else if (mod && e.key === '/') {
+        e.preventDefault()
+        setSwitcher((s) => (s === 'shortcuts' ? null : 'shortcuts'))
+      } else if (e.altKey && !mod && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+        const rows = [...document.querySelectorAll<HTMLElement>('.sidebar [data-nav]')].filter((r) => !e.shiftKey || r.classList.contains('unread') || r.dataset['nav'] === routeNow())
+        const at = rows.findIndex((r) => r.dataset['nav'] === routeNow())
+        const next = rows[at < 0 ? (e.key === 'ArrowDown' ? 0 : rows.length - 1) : at + (e.key === 'ArrowDown' ? 1 : -1)]
+        if (next?.dataset['nav']) {
+          e.preventDefault()
+          setCurrent(next.dataset['nav'])
+          next.scrollIntoView({ block: 'nearest' })
+        }
+      } else if (e.key === 'Escape' && !e.defaultPrevented && !mod && !e.altKey && (!typing(e) || (e.target as HTMLTextAreaElement).value === '') && !document.querySelector('.overlay, .sheet, .side-panel .panel-head')) {
+        const id = routeNow()
+        if (!id) return
+        if (e.shiftKey) {
+          const guildId = store.channel(id)?.guild_id ?? store.data.state?.guild.id
+          store.markAllSeen([...(store.data.state?.channels ?? []), ...(store.data.state?.threads ?? [])].filter((c) => (c.guild_id ?? store.data.state?.guild.id) === guildId).map((c) => c.id))
+        } else store.markSeen(id)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [setCurrent])
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'f') {
@@ -897,6 +978,18 @@ function Main() {
         return null
       },
       sessionThread: (sessionId) => state?.sessionThreads?.[sessionId] ?? null,
+      selectOptions: (type, channelTypes) => {
+        if (!state) return []
+        const users = state.users.map((u) => ({ label: u.global_name ?? u.username, value: u.id, description: u.bot ? 'App' : `@${u.username}` }))
+        const roles = Object.entries(state.roles ?? {}).flatMap(([guildId, list]) => list.filter((r) => r.id !== guildId).map((r) => ({ label: `@${r.name}`, value: r.id, description: 'Role' })))
+        if (type === 5) return users
+        if (type === 6) return roles
+        if (type === 7) return [...users, ...roles]
+        const wanted = channelTypes?.length ? new Set(channelTypes) : new Set([0, 2, 5, 10, 11, 12, 13, 15, 16])
+        return [...state.channels, ...state.threads]
+          .filter((c) => wanted.has(c.type) && !c.thread_metadata?.archived)
+          .map((c) => ({ label: `${c.type >= 10 && c.type <= 12 ? '' : '#'}${plain(c.name ?? '')}`, value: c.id, description: state.channels.find((p) => p.id === c.parent_id)?.name ?? undefined }))
+      },
       linkMenu: ({ url, channelId }, at) =>
         setLinkSheet({
           at,
@@ -977,11 +1070,15 @@ function Main() {
           onWorkspace={() => togglePanel({ kind: 'workspace', channelId: channel.id })}
         />
       ) : (
-        <section className="chat empty">
+        <section className="chat no-channel">
           <button className="icon-button menu" onClick={() => setDrawer(true)} aria-label="Channels">
             <Icon name="back" />
           </button>
-          <p className="muted">No channels yet. Connect a bot and let it create some.</p>
+          {can(P.MANAGE_GUILD, null, activeGuild) ? (
+            <Welcome name={state.guilds?.find((g) => g.id === activeGuild)?.name ?? state.guild.name} />
+          ) : (
+            <Empty icon="hash" title="No channels yet">Channels shared with you show here.</Empty>
+          )}
         </section>
       )}
       {panel?.kind === 'search' && <SearchPanel key="search" initial={panel.q} onClose={() => setPanel(null)} onJump={jump} />}
@@ -1028,6 +1125,8 @@ function Main() {
       {panel?.kind === 'workspace' && <WorkspacePanel key={`w${panel.channelId}`} channelId={panel.channelId} ctx={ctx} onClose={() => setPanel(null)} onJump={jump} onOpen={(id) => { setCurrent(id); setDrawer(false) }} onServices={() => setPanel({ kind: 'services', threadId: panel.channelId })} />}
       {panel?.kind === 'members' && <MembersPanel key={`m${panel.channelId}`} channelId={panel.channelId} onClose={() => setPanel(null)} />}
       {panel?.kind === 'pins' && <PinsPanel key={`p${panel.channelId}`} channelId={panel.channelId} ctx={ctx} onClose={() => setPanel(null)} onJump={jump} />}
+      {switcher === 'switcher' && <QuickSwitcher current={channel?.id ?? null} onOpen={open} onGuild={pickGuild} onClose={() => setSwitcher(null)} />}
+      {switcher === 'shortcuts' && <ShortcutSheet onClose={() => setSwitcher(null)} />}
       {modal && modal.channelId === channel?.id && (
         <ModalDialog
           modal={modal}

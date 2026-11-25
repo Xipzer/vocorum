@@ -10,7 +10,7 @@ This product includes third-party software:
   MIT License. Vendored from https://github.com/remorses/kimaki and modified
   (dispatch observers, HTTP/WebSocket extension hooks, attachment store,
   client revocation, user reactions, thread archive, message flags, connected
-  gateway tokens). MIT code cannot be relicensed: that folder stays under its
+  gateway tokens, user/role/channel select menus with resolved objects). MIT code cannot be relicensed: that folder stays under its
   own MIT LICENSE and is not subject to the Commons Clause.
 
 - Inter font (web/public/fonts), Copyright (c) 2016 The Inter Project Authors,

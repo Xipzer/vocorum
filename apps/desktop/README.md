@@ -70,12 +70,32 @@ What each system needs:
   (no admin needed). WebView2 ships with Windows 10 and 11.
 - **macOS and iPhone:** Xcode. Builds a `.app` and a `.dmg`, and the iPhone app.
 
+The Windows installer can also be built on Linux with
+[cargo-xwin](https://github.com/rust-cross/cargo-xwin) (it fetches Microsoft's
+CRT and SDK, under Microsoft's licence), clang, lld and NSIS:
+
+```bash
+XWIN_ACCEPT_LICENSE=1 cargo tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis
+```
+
+## Known limits
+
+- **iPhone alerts:** iOS suspends an app's connection soon after it leaves the
+  screen, and the hub holds alerts while any of your windows is in front, so
+  the iPhone app alone shows none yet. Use the PWA's Web Push on the phone
+  until the hub can send through Apple's push service.
+- **Approvals on Linux:** there is no OS check before a key is used, so Linux
+  apps approve with a passkey in a browser.
+
 ## Per system notes
 
 - **Windows (WebView2):** Chromium based, so it behaves like Chrome.
 - **macOS and iPhone (WebKit):** behaves like Safari. The microphone needs the
   usage text in `Info.plist`, which is included.
 - **Linux (WebKitGTK):** the most fragile engine. The app turns on WebKitGTK's
-  media stream setting so voice notes work. Without a Secret Service (for
+  media stream setting so voice notes work. It also turns off WebKitGTK's GPU
+  compositing, which falls back to software GL on many machines and then costs
+  whole cores per animation (`VOCORUM_GPU=1` turns it back on), and looping
+  animations step at a few frames a second. Without a Secret Service (for
   example on WSL or a bare window manager) the device key falls back to a 0600
   file in the app's config folder.

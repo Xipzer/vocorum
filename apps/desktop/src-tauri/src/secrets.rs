@@ -41,7 +41,7 @@ pub fn put(dir: &Path, account: &str, secret: &[u8]) -> Result<(), String> {
       eprintln!("[vocorum] no Secret Service ({error}); keeping the device key in a 0600 file");
       write_private(&fallback_file(dir, account), secret)
     }
-    Err(error) => Err(format!("Could not save the device key in the system keychain: {error}")),
+    Err(error) => Err(format!("Couldn't save this device's key in the keychain: {error}")),
   }
 }
 

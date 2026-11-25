@@ -226,7 +226,7 @@ function ComponentView({ c, ctx, interact, disabled }: { c: Component; ctx: Mark
     case 6:
     case 7:
     case 8:
-      return <Select c={c} interact={interact} disabled={disabled} />
+      return <Select c={c.type === 3 ? c : { ...c, options: ctx.selectOptions?.(c.type, c['channel_types']) ?? [] }} interact={interact} disabled={disabled} />
     case 9:
       return (
         <div className="section">

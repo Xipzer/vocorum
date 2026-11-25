@@ -228,6 +228,15 @@ function MessageItem({
 }) {
   const [editing, setEditing] = useState<string | null>(null)
   const [picker, setPicker] = useState<DOMRect | null>(null)
+  useEffect(() => {
+    const onEdit = (e: Event) => {
+      if ((e as CustomEvent<string>).detail !== message.id) return
+      setEditing(message.content)
+      document.getElementById(`m-${message.id}`)?.scrollIntoView({ block: 'nearest' })
+    }
+    window.addEventListener('vocorum:edit', onEdit)
+    return () => window.removeEventListener('vocorum:edit', onEdit)
+  }, [message.id, message.content])
   // Reactions toggle like Discord's: yours lights up; clicking it again (on the message or
   // the toolbar) takes it off.
   const mineOn = (emoji: string) => Boolean(message.reactions_summary?.find((r) => r.emoji === emoji)?.me)
@@ -270,7 +279,9 @@ function MessageItem({
         ],
         [
           ...(message.content ? [{ label: 'Copy text', icon: 'copy' as const, run: () => void navigator.clipboard?.writeText(message.content) }] : []),
-          { label: 'Copy link', icon: 'link', run: () => void navigator.clipboard?.writeText(`${shareOrigin()}/#/c/${channelId}`) },
+          { label: 'Mark unread', icon: 'eye', run: () => store.markUnread(channelId, message.id) },
+          { label: 'Copy message link', icon: 'link', run: () => void navigator.clipboard?.writeText(`${shareOrigin()}/#/c/${channelId}/${message.id}`) },
+          { label: 'Copy message ID', icon: 'copy', run: () => void navigator.clipboard?.writeText(message.id) },
           ...(pinOk ? [{ label: message.pinned ? 'Unpin' : 'Pin', icon: 'pin' as const, run: () => void api.pin(channelId, message.id, !message.pinned).catch((e: Error) => onError(e.message)) }] : []),
         ],
         mine && message.content ? [{ label: 'Edit', icon: 'pencil', run: () => setEditing(message.content) }] : [],
@@ -287,6 +298,12 @@ function MessageItem({
       groups: [[{ label: 'Delete', icon: 'trash', red: true, run: () => void api.remove(channelId, message.id).catch((e: Error) => onError(e.message)) }]],
     })
   const press = usePress(openMenu)
+  // Alt+click marks unread from here, as in Discord.
+  const markOnAlt = (e: React.MouseEvent) => {
+    if (!e.altKey || (e.target as HTMLElement).closest('a, button')) return
+    e.preventDefault()
+    store.markUnread(channelId, message.id)
+  }
   if (message.type === 6) {
     const target = message.message_reference?.message_id
     return (
@@ -328,7 +345,7 @@ function MessageItem({
     )
   }
   return (
-    <div id={`m-${message.id}`} className={`message${compact ? ' compact' : ''}${mine ? ' you' : ''}${needs ? ' needs' : ''}${failed ? ' failed' : ''}`} {...press}>
+    <div id={`m-${message.id}`} className={`message${compact ? ' compact' : ''}${mine ? ' you' : ''}${needs ? ' needs' : ''}${failed ? ' failed' : ''}`} {...press} onClick={markOnAlt}>
       {replyId &&
         (reference ? (
           <div className="reply-preview" onClick={() => onJump(reference.id)}>
@@ -729,7 +746,11 @@ export function Chat({
   const output = useStore((d) => d.output[channel.id] ?? Boolean(channel.thread_metadata?.locked))
   const panel = usePanel(channel.id, output)
   // Read up to here when the thread was opened: the "New messages" line goes after it.
-  const seenAtOpen = useMemo(() => store.data.seen[channel.id], [channel.id])
+  // Marking a message unread moves the line to it.
+  const heldAt = useStore((d) => d.held[channel.id])
+  const seenAtOpen = useMemo(() => store.data.seen[channel.id], [channel.id, heldAt])
+  useEffect(() => setNewRead(false), [heldAt])
+  useEffect(() => () => store.release(channel.id), [channel.id])
   const parent = isThread ? state.channels.find((c) => c.id === channel.parent_id) : undefined
   const project = parent ?? channel
   const list = entry?.list ?? []
@@ -857,10 +878,18 @@ export function Chat({
 
   const byId = new Map(list.map((m) => [m.id, m]))
   // Only the current turn can still be waiting: an answer from the owner settles everything above it.
-  const firstNew = seenAtOpen ? list.find((m) => snowflakeGt(m.id, seenAtOpen) && m.author.id !== state.me.id)?.id : undefined
-  const newCount = seenAtOpen ? list.filter((m) => snowflakeGt(m.id, seenAtOpen) && m.author.id !== state.me.id).length : 0
+  const firstNew = seenAtOpen ? list.find((m) => snowflakeGt(m.id, seenAtOpen) && (m.author.id !== state.me.id || heldAt))?.id : undefined
+  const newCount = seenAtOpen ? list.filter((m) => snowflakeGt(m.id, seenAtOpen) && (m.author.id !== state.me.id || heldAt)).length : 0
   const firstNewAt = firstNew ? byId.get(firstNew)?.timestamp : undefined
   const lastOwnerId = list.findLast((m) => m.author.id === state.me.id && (m.type === 0 || m.type === 19))?.id
+  const lastEditable = list.findLast((m) => m.author.id === state.me.id && (m.type === 0 || m.type === 19) && m.content && !((m.flags ?? 0) & IS_VOICE))?.id
+  useEffect(() => {
+    const onEditLast = (e: Event) => {
+      if ((e as CustomEvent<string>).detail === channel.id && lastEditable) window.dispatchEvent(new CustomEvent('vocorum:edit', { detail: lastEditable }))
+    }
+    window.addEventListener('vocorum:edit-last', onEditLast)
+    return () => window.removeEventListener('vocorum:edit-last', onEditLast)
+  }, [channel.id, lastEditable])
   const now = Date.now()
   const typers = Object.entries(typing ?? {}).filter(([, until]) => until > now)
   for (const [id] of typers) typingSince.current[id] ??= now
@@ -992,7 +1021,14 @@ export function Chat({
             <button className="new-bar-jump" onClick={() => void jump(firstNew)}>
               {newCount} new {newCount === 1 ? 'message' : 'messages'} since {firstNewAt ? `${clock(firstNewAt)}${dayLabel(firstNewAt) === 'Today' ? '' : ` ${when(firstNewAt)}`}` : 'you were last here'}
             </button>
-            <button className="new-bar-read" onClick={() => setNewRead(true)}>
+            <button
+              className="new-bar-read"
+              onClick={() => {
+                setNewRead(true)
+                store.release(channel.id)
+                store.markSeen(channel.id)
+              }}
+            >
               Mark as read
               <Icon name="check" size={16} />
             </button>

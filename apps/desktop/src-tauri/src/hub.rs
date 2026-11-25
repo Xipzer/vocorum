@@ -115,7 +115,7 @@ fn unreachable(error: reqwest::Error) -> HubError {
   }
   eprintln!("[vocorum] hub request failed: {text}");
   if text.contains("certificate") || text.contains("UnknownIssuer") || text.contains("NotValidForName") {
-    return HubError::Other("The hub's certificate does not match the one this app was paired with.".into());
+    return HubError::Other("The hub's certificate has changed since this app was paired. If you didn't change the hub, don't continue. Otherwise pair the app again.".into());
   }
   HubError::Unreachable("Can't reach the hub. Check the connection and try again.".into())
 }
@@ -176,7 +176,7 @@ impl Hub {
       challenge: String,
     }
     let Some(tag) = self.config.approval_tag.clone() else {
-      return Err(HubError::Other("This device cannot approve requests. Approve with a passkey in a browser instead.".into()));
+      return Err(HubError::Other("This device can't approve requests. Approve with a passkey in a browser instead.".into()));
     };
     if request_id.is_empty() || !request_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
       return Err(HubError::Other("Bad request id".into()));
@@ -247,7 +247,7 @@ impl Hub {
       return Err(HubError::Removed(message));
     }
     if status == reqwest::StatusCode::NOT_FOUND {
-      return Err(HubError::Other("This hub does not support the app yet. Update Vocorum on the hub.".into()));
+      return Err(HubError::Other("This hub is too old for the app. Update Vocorum on the hub machine.".into()));
     }
     Err(HubError::Other(message))
   }
@@ -288,7 +288,7 @@ pub struct PairLink {
 }
 
 pub fn parse_link(text: &str) -> Result<PairLink, String> {
-  let bad = || "That is not a Vocorum pairing link. Run `vocorum pair <device> --app` on the hub and paste the vocorum://pair link it prints.".to_string();
+  let bad = || "That isn't a Vocorum pairing link. On the hub machine, run `vocorum pair <device> --app` and paste the link it prints.".to_string();
   let url = url::Url::parse(text.trim()).map_err(|_| bad())?;
   if url.scheme() != "vocorum" || url.host_str() != Some("pair") {
     return Err(bad());
@@ -332,7 +332,7 @@ async fn fetch_ca(link: &PairLink) -> Result<Vec<u8>, String> {
     .get(format!("http://{host}:{}/vocorum-ca.crt", link.http_port))
     .send()
     .await
-    .map_err(|_| "Can't reach the hub's enrolment page. Check the address and that this device is on the hub's network.".to_string())?;
+    .map_err(|_| "Can't reach the hub. Check this device is on the hub's network.".to_string())?;
   if !response.status().is_success() {
     return Err(format!("The hub's enrolment page answered {}", response.status()));
   }
@@ -341,7 +341,7 @@ async fn fetch_ca(link: &PairLink) -> Result<Vec<u8>, String> {
     return Err("The hub's CA is too large".into());
   }
   if hex(&Sha256::digest(&der)) != link.fingerprint {
-    return Err("The hub's certificate does not match the pairing link. Do not continue: someone may be in the middle.".into());
+    return Err("The hub's certificate doesn't match the pairing link, so pairing stopped. Someone may be intercepting the connection. Make a new link on the hub and try again.".into());
   }
   Ok(der.to_vec())
 }
@@ -377,7 +377,10 @@ pub async fn pair(dir: &Path, link: &PairLink) -> Result<HubConfig, String> {
   let hub = Hub::new(draft.clone(), dir)?;
   // Only at pairing: the hub never lets a signed in app add an approval key later.
   let tag = hex(&seed[..8]);
-  let approval = {
+  // VOCORUM_NO_APPROVAL_KEY=1 pairs without one (unattended test setups, where nobody answers Windows Hello).
+  let approval = if std::env::var("VOCORUM_NO_APPROVAL_KEY").is_ok_and(|v| v == "1") {
+    Err("VOCORUM_NO_APPROVAL_KEY is set".to_string())
+  } else {
     let tag = tag.clone();
     tokio::task::spawn_blocking(move || crate::approval::create(&tag)).await.map_err(|e| e.to_string())?
   };

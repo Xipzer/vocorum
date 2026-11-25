@@ -1287,6 +1287,7 @@ export class DigitalDiscord {
     customId,
     values,
     guildId,
+    componentType = ComponentType.StringSelect,
   }: {
     channelId: string
     userId: string
@@ -1294,7 +1295,11 @@ export class DigitalDiscord {
     customId: string
     values: string[]
     guildId?: string
+    // User, role, mentionable and channel selects carry `resolved` objects for
+    // the picked ids, like Discord.
+    componentType?: ComponentType
   }): Promise<{ id: string; token: string }> {
+    const resolved = componentType === ComponentType.StringSelect ? undefined : await this.resolveSelectValues(componentType, values, guildId ?? (await this.prisma.channel.findUnique({ where: { id: channelId } }))?.guildId ?? this.guildId)
     return this.simulateInteraction({
       type: InteractionType.MessageComponent,
       channelId,
@@ -1303,10 +1308,26 @@ export class DigitalDiscord {
       messageId,
       data: {
         custom_id: customId,
-        component_type: ComponentType.StringSelect,
+        component_type: componentType,
         values,
+        ...(resolved && { resolved }),
       },
     })
+  }
+
+  private async resolveSelectValues(componentType: ComponentType, values: string[], guildId: string | null) {
+    const wantUsers = componentType === ComponentType.UserSelect || componentType === ComponentType.MentionableSelect
+    const wantRoles = componentType === ComponentType.RoleSelect || componentType === ComponentType.MentionableSelect
+    const users = wantUsers ? await this.prisma.user.findMany({ where: { id: { in: values } } }) : []
+    const members = wantUsers && guildId ? await this.prisma.guildMember.findMany({ where: { guildId, userId: { in: values } }, include: { user: true } }) : []
+    const roles = wantRoles && guildId ? await this.prisma.role.findMany({ where: { guildId, id: { in: values } } }) : []
+    const channels = componentType === ComponentType.ChannelSelect ? await this.prisma.channel.findMany({ where: { id: { in: values } } }) : []
+    return {
+      ...(users.length && { users: Object.fromEntries(users.map((u) => [u.id, userToAPI(u)])) }),
+      ...(members.length && { members: Object.fromEntries(members.map((m) => { const { user: _, ...rest } = memberToAPI(m); return [m.userId, rest] })) }),
+      ...(roles.length && { roles: Object.fromEntries(roles.map((r) => [r.id, roleToAPI(r)])) }),
+      ...(channels.length && { channels: Object.fromEntries(channels.map((c) => { const api = channelToAPI(c) as unknown as Record<string, unknown>; return [c.id, { id: api['id'], name: api['name'], type: api['type'], parent_id: api['parent_id'], ...(api['thread_metadata'] ? { thread_metadata: api['thread_metadata'] } : {}), permissions: '0' }] })) }),
+    }
   }
 
   async simulateModalSubmit({

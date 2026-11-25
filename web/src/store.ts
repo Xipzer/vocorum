@@ -18,6 +18,8 @@ type Data = {
   machines: MachineSummary[]
   favourites: string[]
   mentions: Record<string, number>
+  // Channels marked unread by hand, to the message: they stay unread while open.
+  held: Record<string, string>
   links: Record<string, number>
   output: Record<string, boolean>
   services: Service[] | null
@@ -35,7 +37,7 @@ export function snowflakeGt(a: string | null | undefined, b: string | null | und
 }
 
 class Store {
-  data: Data = { state: null, messages: {}, typing: {}, online: false, seen: JSON.parse(localStorage.getItem('seen') ?? '{}'), sessions: {}, machines: [], favourites: [], mentions: {}, links: {}, output: {}, services: null, linked: {}, requests: [] }
+  data: Data = { state: null, messages: {}, typing: {}, online: false, seen: JSON.parse(localStorage.getItem('seen') ?? '{}'), sessions: {}, machines: [], favourites: [], mentions: {}, links: {}, output: {}, services: null, linked: {}, requests: [], held: {} }
   private unsentRead: Record<string, string> = {}
   private readTimer: number | undefined
   private accessTimer: number | undefined
@@ -54,7 +56,9 @@ class Store {
   async loadState() {
     const state = await api.state()
     // Read state lives on the hub so every device agrees; localStorage is the offline copy.
-    let seen = mergeSeen(this.data.seen, state.read ?? {})
+    // The hub's positions win (one may have moved back: mark unread), except reads this
+    // device has not sent yet.
+    let seen = mergeSeen({ ...this.data.seen, ...(state.read ?? {}) }, this.unsentRead)
     // First sight is read: an owner who has never read anything starts with nothing unread.
     if (Object.keys(state.read ?? {}).length === 0 && Object.keys(this.data.seen).length === 0) {
       seen = {}
@@ -126,7 +130,31 @@ class Store {
     this.set({ messages: { ...this.data.messages, [channelId]: value } })
   }
 
+  // Discord's Mark Unread: read up to just before the message, here and on every device.
+  markUnread(channelId: string, messageId: string) {
+    this.setSeen(channelId, String(BigInt(messageId) - 1n))
+    delete this.unsentRead[channelId]
+    this.set({ held: { ...this.data.held, [channelId]: messageId } })
+    void api.markUnread(channelId, messageId).catch(() => {})
+  }
+
+  // Leaving a channel marked unread lets reading it count again.
+  release(channelId: string) {
+    if (!(channelId in this.data.held)) return
+    const { [channelId]: _, ...held } = this.data.held
+    this.set({ held })
+  }
+
+  private setSeen(channelId: string, messageId: string | null) {
+    const seen = { ...this.data.seen }
+    if (messageId) seen[channelId] = messageId
+    else delete seen[channelId]
+    localStorage.setItem('seen', JSON.stringify(seen))
+    this.set({ seen })
+  }
+
   markSeen(channelId: string, messageId?: string) {
+    if (channelId in this.data.held) return
     const last = messageId ?? this.channel(channelId)?.last_message_id
     if (!last || !snowflakeGt(last, this.data.seen[channelId])) return
     const seen = { ...this.data.seen, [channelId]: last }
@@ -176,6 +204,19 @@ class Store {
   // Applies one gateway dispatch from the event socket.
   apply(t: string, d: any) {
     switch (t) {
+      // Another of this person's devices read, or marked unread, a channel.
+      case 'MESSAGE_ACK': {
+        const { channel_id: id, message_id: at, manual } = d as { channel_id: string; message_id: string | null; manual: boolean }
+        if (manual) this.setSeen(id, at)
+        else if (at && snowflakeGt(at, this.data.seen[id])) {
+          this.setSeen(id, at)
+          if (!snowflakeGt(this.channel(id)?.last_message_id, at)) {
+            const { [id]: _, ...mentions } = this.data.mentions
+            this.set({ mentions })
+          }
+        }
+        break
+      }
       case 'MESSAGE_CREATE': {
         const message = d as Message
         const me = this.data.state?.me.id

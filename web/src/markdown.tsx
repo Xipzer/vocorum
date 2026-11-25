@@ -21,6 +21,8 @@ export type MarkdownContext = {
   linkMenu?: (link: { url: string; channelId?: string }, at: { x: number; y: number }) => void
   // Set by Markdown for emoji-only messages: emoji render large.
   jumbo?: boolean
+  // Choices for user (5), role (6), mentionable (7) and channel (8) menus.
+  selectOptions?: (type: number, channelTypes?: number[]) => Array<{ label: string; value: string; description?: string }>
 }
 
 const INLINE =

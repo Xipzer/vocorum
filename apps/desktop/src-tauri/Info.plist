@@ -3,6 +3,6 @@
 <plist version="1.0">
 <dict>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Vocorum uses the microphone only while you hold the record button for a voice note.</string>
+  <string>Vocorum uses the microphone only while you record a voice note.</string>
 </dict>
 </plist>

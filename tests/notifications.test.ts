@@ -6,7 +6,7 @@ import http from 'node:http'
 import type net from 'node:net'
 import { afterAll, beforeAll, expect, test } from 'vitest'
 import WebSocket from 'ws'
-import { Client, GatewayIntentBits, type TextChannel } from 'discord.js'
+import { Client, GatewayIntentBits, MessageFlags, type TextChannel } from 'discord.js'
 import { effectiveSetting, shouldNotify, type PushPayload } from '../src/notifications.ts'
 import { encryptPayload, isPushEndpoint, vapidAuthorization } from '../src/push.ts'
 import { LOGIN, pairedDevice, startTestHub, waitFor, type TestDevice } from './helpers.ts'
@@ -189,8 +189,11 @@ test('Web Push: mentions and needs-you reach the device, encrypted; levels, mute
   // "All messages" on the channel.
   await phone.json(`/client/notifications/${general.id}`, { method: 'PUT', json: { level: 'all' } })
   await new Promise((r) => setTimeout(r, REPEAT_GAP))
+  await general.send({ content: 'a silent status line', flags: MessageFlags.SuppressNotifications })
   await general.send('now every message counts')
   expect((await expectPush('message')).payload.body).toBe('now every message counts')
+  await settle()
+  expect(received).toEqual([])
 
   // Muted: plain messages stop, mentions still come.
   await phone.json(`/client/notifications/${general.id}`, { method: 'PUT', json: { muted_until: Date.now() + 60_000 } })

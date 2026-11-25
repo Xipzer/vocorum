@@ -282,7 +282,8 @@ async fn set_alerts(app: AppHandle, state: tauri::State<'_, State>, on: bool) ->
   use tauri_plugin_notification::{NotificationExt, PermissionState};
   if on && app.notification().permission_state().map_err(|e| e.to_string())? != PermissionState::Granted {
     if app.notification().request_permission().map_err(|e| e.to_string())? != PermissionState::Granted {
-      return Ok("Notifications are turned off for Vocorum in the system settings.".into());
+      let settings = if cfg!(windows) { "Windows Settings" } else { "System Settings" };
+      return Ok(format!("Notifications for Vocorum are off in {settings}. Turn them on there first."));
     }
   }
   state.events.set_notify(on).await;
@@ -342,6 +343,7 @@ fn take_link(app: &AppHandle, urls: impl IntoIterator<Item = Url>) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let _ = rustls::crypto::ring::default_provider().install_default();
+  #[cfg_attr(mobile, allow(unused_mut))]
   let mut builder = tauri::Builder::default();
   #[cfg(desktop)]
   {

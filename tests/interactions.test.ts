@@ -25,6 +25,8 @@ beforeAll(async () => {
   await bot.application!.commands.create({ name: 'model', description: 'pick a model' }, t.config.guildId)
   await bot.application!.commands.create({ name: 'slow', description: 'deferred' }, t.config.guildId)
   bot.on('interactionCreate', async (interaction) => {
+    if (interaction.isUserSelectMenu()) return void (await interaction.reply(`picked user ${interaction.users.first()?.username}`))
+    if (interaction.isChannelSelectMenu()) return void (await interaction.reply(`picked channel ${interaction.channels.first()?.id}`))
     if (!interaction.isChatInputCommand()) return
     if (interaction.commandName === 'model') await interaction.reply('Current model: opus')
     else {
@@ -59,4 +61,19 @@ test('deferred replies and follow-ups carry it as well', async () => {
   for (const content of ['done after a while', 'and one more thing']) {
     expect(messages.find((m: { content: string }) => m.content === content).interaction_metadata).toMatchObject({ name: 'slow', user: { id: t.config.ownerUserId } })
   }
+})
+
+test('user and channel menus reach the bot as their own types, with resolved objects', async () => {
+  const sent = await general.send({
+    content: 'who and where?',
+    components: [
+      { type: 1, components: [{ type: 5, custom_id: 'who' }] },
+      { type: 1, components: [{ type: 8, custom_id: 'where' }] },
+    ],
+  })
+  await phone.json('/client/interactions', { method: 'POST', json: { type: 'select', channelId: general.id, messageId: sent.id, customId: 'who', values: [t.config.ownerUserId] } })
+  const owner = (await phone.json('/client/state')).users.find((u: { id: string }) => u.id === t.config.ownerUserId)
+  await waitFor(async () => (await phone.json(`/client/channels/${general.id}/messages`)).messages.find((m: { content: string }) => m.content === `picked user ${owner.username}`))
+  await phone.json('/client/interactions', { method: 'POST', json: { type: 'select', channelId: general.id, messageId: sent.id, customId: 'where', values: [general.id, '999999999999999999'] } })
+  await waitFor(async () => (await phone.json(`/client/channels/${general.id}/messages`)).messages.find((m: { content: string }) => m.content === `picked channel ${general.id}`))
 })

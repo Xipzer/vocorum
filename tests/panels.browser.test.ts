@@ -1322,3 +1322,106 @@ test.skipIf(!ready)("can't reach the hub: a plain card with Try again, and it re
   await p.getByText('Sign in with passkey').waitFor({ timeout: 8000 })
   await ctx.close()
 }, 60_000)
+
+test.skipIf(!ready)('a server with no channels welcomes the owner with first steps', async () => {
+  const p = await page.context().newPage()
+  await p.route('**/client/state', async (r) => {
+    const j = await (await r.fetch()).json()
+    j.channels = []
+    j.threads = []
+    await r.fulfill({ json: j })
+  })
+  // An earlier test may have left Overview as the last view; ask for a channel that isn't there.
+  await p.goto(`${origin}/#/c/1`)
+  await p.getByRole('heading', { name: /Welcome to/ }).waitFor()
+  for (const step of ['Connect a machine', 'Move from Discord', 'Pair another device', 'Invite people']) await p.locator('.welcome-step', { hasText: step }).waitFor()
+  await p.locator('.welcome-step', { hasText: 'Pair another device' }).click()
+  await p.locator('.settings-layer').getByText('Devices').first().waitFor()
+  await p.close()
+}, 60_000)
+
+test.skipIf(!ready)('keyboard: Ctrl+K switcher, Enter on empty goes back, Alt+arrows walk the list, Up edits, Ctrl+/ lists shortcuts, message links jump', async () => {
+  await page.goto(`${origin}/#/c/${demo.thread.id}`)
+  await page.locator('.chat-header', { hasText: 'Fix footer on short turns' }).waitFor()
+  const general = await page.evaluate(() => fetch('/client/state').then((r) => r.json()).then((s) => s.channels.find((c: { name: string }) => c.name === 'general').id))
+
+  await page.keyboard.press('Control+k')
+  await page.locator('.switcher').waitFor()
+  await page.keyboard.type('genera')
+  await page.locator('.switcher-item.picked', { hasText: 'general' }).waitFor()
+  await page.locator('.switcher').screenshot({ path: path.join(shots, 'quick-switcher.png') })
+  await page.keyboard.press('Enter')
+  await page.waitForFunction((id) => location.hash === `#/c/${id}`, general)
+  await page.keyboard.press('Control+k')
+  await page.locator('.switcher input:focus').waitFor()
+  await page.keyboard.press('Enter')
+  await page.locator('.switcher').waitFor({ state: 'detached' })
+  await page.waitForFunction((id) => location.hash === `#/c/${id}`, demo.thread.id)
+
+  // Alt+Down from the thread moves to the next row in the list.
+  const rows = await page.locator('.sidebar [data-nav]').evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset['nav']))
+  const next = rows[rows.indexOf(demo.thread.id) + 1]
+  if (next) {
+    await page.keyboard.press('Alt+ArrowDown')
+    await page.waitForFunction((id) => location.hash === `#/c/${id}`, next)
+    await page.keyboard.press('Alt+ArrowUp')
+    await page.waitForFunction((id) => location.hash === `#/c/${id}`, demo.thread.id)
+  }
+
+  // Up in the empty box edits the owner's last message.
+  const box = page.locator('.composer textarea').first()
+  await page.evaluate((id) => fetch(`/client/channels/${id}/messages`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content: 'zz-edit-me' }) }), demo.thread.id)
+  await page.locator('.message', { has: page.getByText('zz-edit-me', { exact: true }) }).waitFor()
+  await box.click()
+  await box.press('ArrowUp')
+  const editor = page.locator('.edit-box textarea, .message textarea').filter({ hasText: 'zz-edit-me' })
+  await editor.waitFor()
+  await editor.press('Escape')
+
+  // Copy message link gives a link that jumps to the message.
+  const id = await page.locator('.message', { has: page.getByText('zz-edit-me', { exact: true }) }).getAttribute('id')
+  await page.goto(`${origin}/#/c/${demo.thread.id}/${id!.slice(2)}`)
+  await page.waitForFunction((tid) => location.hash === `#/c/${tid}`, demo.thread.id)
+  await page.locator(`#${id}.highlight`).waitFor()
+
+  await page.keyboard.press('Control+/')
+  await page.locator('.shortcuts .shortcut-row').first().waitFor()
+  await page.locator('.shortcuts').screenshot({ path: path.join(shots, 'shortcuts.png') })
+  await page.keyboard.press('Escape')
+  await page.locator('.shortcuts').waitFor({ state: 'detached' })
+}, 60_000)
+
+test.skipIf(!ready)('mark unread: from the menu or Alt+click, the line moves there, and other tabs follow', async () => {
+  const other = await page.context().newPage()
+  await other.goto(`${origin}/#/c/${demo.kimaki.id}`)
+  const otherRow = other.locator('.sidebar .channel', { hasText: 'Fix footer on short turns' })
+  await page.goto(`${origin}/#/c/${demo.thread.id}`)
+  // Messages sent before the event socket is up only show after a resync.
+  await page.getByText('filler 59', { exact: true }).waitFor()
+  await page.waitForTimeout(500)
+  await demo.thread.send('zz-unread-one')
+  await demo.thread.send('zz-unread-two')
+  const one = page.locator('.message').filter({ has: page.getByText('zz-unread-one', { exact: true }) })
+  await page.locator('.message').filter({ has: page.getByText('zz-unread-two', { exact: true }) }).waitFor()
+  const id = (await one.getAttribute('id'))!.slice(2)
+  await one.click({ button: 'right' })
+  await page.locator('.sheet-item', { hasText: 'Mark unread' }).click()
+  // The line sits right above the message, the hub moved back, and the other tab shows it unread.
+  await expect.poll(() => page.evaluate((mid) => document.getElementById(`m-${mid}`)?.previousElementSibling?.classList.contains('new-divider') ?? false, id)).toBe(true)
+  await expect.poll(async () => (await hub.store.readState(hub.options.config.ownerUserId))[demo.thread.id]).toBe(String(BigInt(id) - 1n))
+  await expect.poll(() => otherRow.evaluate((e) => e.classList.contains('unread'))).toBe(true)
+  // Still unread while open: reading it again needs leaving or Mark as read.
+  await page.waitForTimeout(800)
+  expect((await hub.store.readState(hub.options.config.ownerUserId))[demo.thread.id]).toBe(String(BigInt(id) - 1n))
+  // Alt+click moves it to another message.
+  const two = page.locator('.message').filter({ has: page.getByText('zz-unread-two', { exact: true }) })
+  const id2 = (await two.getAttribute('id'))!.slice(2)
+  await two.locator('.message-body, .content').first().click({ modifiers: ['Alt'] }).catch(() => two.click({ modifiers: ['Alt'], position: { x: 300, y: 10 } }))
+  await expect.poll(async () => (await hub.store.readState(hub.options.config.ownerUserId))[demo.thread.id]).toBe(String(BigInt(id2) - 1n))
+  // Leaving and coming back reads it.
+  await page.goto(`${origin}/#/c/${demo.kimaki.id}`)
+  await page.getByPlaceholder('Message #kimaki').waitFor()
+  await page.goto(`${origin}/#/c/${demo.thread.id}`)
+  await expect.poll(() => otherRow.evaluate((e) => e.classList.contains('unread'))).toBe(false)
+  await other.close()
+}, 90_000)

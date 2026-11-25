@@ -945,6 +945,12 @@ export function Composer({
                   chooseCommand(matches[pick]!)
                   return
                 }
+                // Up in an empty box edits your last message, like Discord.
+                if (e.key === 'ArrowUp' && !text && !uploads.length && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
+                  e.preventDefault()
+                  window.dispatchEvent(new CustomEvent('vocorum:edit-last', { detail: channelId }))
+                  return
+                }
                 const touch = window.matchMedia('(pointer: coarse)').matches
                 if (e.key === 'Enter' && !e.shiftKey && !touch && !e.nativeEvent.isComposing) {
                   e.preventDefault()

@@ -158,7 +158,7 @@ async fn proxy(app: &AppHandle, request: Request<Vec<u8>>) -> Response<Cow<'stat
     Ok(response) => response,
     Err(HubError::Removed(message)) => {
       eprintln!("[vocorum] sign-in refused: {message}");
-      return json_error(StatusCode::UNAUTHORIZED, "This device was removed from the hub. Pair it again.");
+      return json_error(StatusCode::UNAUTHORIZED, "This device was signed out of the hub. Pair it again.");
     }
     Err(error) => return json_error(StatusCode::BAD_GATEWAY, &error.message()),
   };
@@ -169,7 +169,7 @@ async fn proxy(app: &AppHandle, request: Request<Vec<u8>>) -> Response<Cow<'stat
     }
   }
   if response.content_length().unwrap_or(0) as usize > BODY_LIMIT {
-    return json_error(StatusCode::PAYLOAD_TOO_LARGE, "This file is too large to show in the app.");
+    return json_error(StatusCode::PAYLOAD_TOO_LARGE, "This file is too large to show here.");
   }
   match response.bytes().await {
     Ok(bytes) => out.body(Cow::Owned(bytes.to_vec())).unwrap(),

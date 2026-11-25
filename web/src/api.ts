@@ -211,6 +211,7 @@ export const api = {
   pin: (channelId: string, messageId: string, on: boolean) => call(`/client/channels/${channelId}/pins/${messageId}`, { method: on ? 'PUT' : 'DELETE' }),
   overview: () => call<{ machines: MachineSummary[]; sessions: SessionSummary[] }>('/client/overview'),
   markRead: (read: Record<string, string>) => call('/client/read', { method: 'PUT', json: { read } }),
+  markUnread: (channelId: string, messageId: string) => call('/client/read', { method: 'PUT', json: { unread: { [channelId]: messageId } } }),
   setOutput: (channelId: string, output: boolean | null) => call(`/client/channels/${channelId}/output`, output === null ? { method: 'DELETE' } : { method: 'PUT', json: { output } }),
   notifications: () => call<NotificationState>('/client/notifications'),
   setNotification: (scopeId: string, body: { level?: NotifyLevel | null; muted_until?: number | null }) => call(`/client/notifications/${scopeId}`, { method: 'PUT', json: body }),

@@ -31,9 +31,18 @@ mod imp {
     Ok(public.to_vec())
   }
 
+  // An authentication context whose reason the system shows in the Touch ID or Face ID prompt.
+  fn context(reason: &str) -> core_foundation::base::CFType {
+    use core_foundation::base::TCFType;
+    let context = unsafe { objc2_local_authentication::LAContext::new() };
+    unsafe { context.setLocalizedReason(&objc2_foundation::NSString::from_str(reason)) };
+    let raw = objc2::rc::Retained::into_raw(context) as core_foundation::base::CFTypeRef;
+    unsafe { core_foundation::base::CFType::wrap_under_create_rule(raw) }
+  }
+
   fn find(tag: &str) -> Result<SecKey, String> {
     let mut search = ItemSearchOptions::new();
-    search.class(ItemClass::key()).label(&label(tag)).load_refs(true);
+    search.class(ItemClass::key()).label(&label(tag)).load_refs(true).local_authentication_context(Some(context("approve an agent's request")));
     #[cfg(target_os = "macos")]
     search.ignore_legacy_keychains();
     let results = search.search().map_err(|e| e.to_string())?;
@@ -43,7 +52,7 @@ mod imp {
         SearchResult::Ref(Reference::Key(key)) => Some(key),
         _ => None,
       })
-      .ok_or_else(|| "The approval key is missing on this device.".to_string())
+      .ok_or_else(|| "This device's approval key is missing. Approve in a browser, or pair the app again.".to_string())
   }
 
   // ECDSA P-256 with SHA-256, DER encoded. The system asks for Touch ID, Face ID or the password.
@@ -78,11 +87,11 @@ mod imp {
 
   // An RSA SubjectPublicKeyInfo: Windows Hello keys are RSA 2048.
   pub fn create(tag: &str) -> Result<Vec<u8>, String> {
-    if !KeyCredentialManager::IsSupportedAsync().and_then(|op| op.get()).unwrap_or(false) {
-      return Err("Windows Hello is not set up on this PC".into());
+    if !KeyCredentialManager::IsSupportedAsync().and_then(|op| op.join()).unwrap_or(false) {
+      return Err("Windows Hello isn't set up on this PC. Set it up in Windows Settings, or approve in a browser.".into());
     }
     let result = KeyCredentialManager::RequestCreateAsync(&name(tag), KeyCredentialCreationOption::ReplaceExisting)
-      .and_then(|op| op.get())
+      .and_then(|op| op.join())
       .map_err(|e| e.to_string())?;
     if result.Status().map_err(|e| e.to_string())? != KeyCredentialStatus::Success {
       return Err("Windows Hello did not make the key".into());
@@ -93,12 +102,12 @@ mod imp {
 
   // RSA PKCS#1 v1.5 with SHA-256. Windows Hello asks for the PIN, face or finger.
   pub fn sign(tag: &str, message: &[u8]) -> Result<Vec<u8>, String> {
-    let opened = KeyCredentialManager::OpenAsync(&name(tag)).and_then(|op| op.get()).map_err(|e| e.to_string())?;
+    let opened = KeyCredentialManager::OpenAsync(&name(tag)).and_then(|op| op.join()).map_err(|e| e.to_string())?;
     if opened.Status().map_err(|e| e.to_string())? != KeyCredentialStatus::Success {
-      return Err("The approval key is missing on this PC.".into());
+      return Err("This device's approval key is missing. Approve in a browser, or pair the app again.".into());
     }
     let data = CryptographicBuffer::CreateFromByteArray(message).map_err(|e| e.to_string())?;
-    let signed = opened.Credential().and_then(|c| c.RequestSignAsync(&data)).and_then(|op| op.get()).map_err(|e| e.to_string())?;
+    let signed = opened.Credential().and_then(|c| c.RequestSignAsync(&data)).and_then(|op| op.join()).map_err(|e| e.to_string())?;
     if signed.Status().map_err(|e| e.to_string())? != KeyCredentialStatus::Success {
       return Err("Not confirmed with Windows Hello.".into());
     }
@@ -106,7 +115,7 @@ mod imp {
   }
 
   pub fn delete(tag: &str) {
-    let _ = KeyCredentialManager::DeleteAsync(&name(tag)).and_then(|op| op.get());
+    let _ = KeyCredentialManager::DeleteAsync(&name(tag)).and_then(|op| op.join());
   }
 }
 
@@ -116,7 +125,7 @@ mod imp {
     Err("no approval key on this system".into())
   }
   pub fn sign(_: &str, _: &[u8]) -> Result<Vec<u8>, String> {
-    Err("This device cannot approve requests. Approve with a passkey in a browser instead.".into())
+    Err("This device can't approve requests. Approve with a passkey in a browser instead.".into())
   }
   pub fn delete(_: &str) {}
 }

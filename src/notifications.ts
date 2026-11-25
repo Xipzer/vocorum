@@ -13,6 +13,7 @@ import type { NotificationLevel, NotificationSetting } from './store.ts'
 export const DEFAULT_LEVEL: NotificationLevel = 'mentions'
 const DEFAULT_SUBJECT = 'mailto:hub@vocorum.invalid'
 const REPEAT_MS = 3000
+const SUPPRESS_NOTIFICATIONS = 1 << 12
 
 export type PushKind = 'message' | 'mention' | 'needs_you'
 export type PushPayload = { kind: PushKind; title: string; body: string; tag: string; url: string; channel_id: string; guild_id: string | null; message_id: string | null }
@@ -123,6 +124,8 @@ export class Notifications {
   private async onMessage(message: MessageData) {
     // Mirrored from Discord: the Discord app already notified about it.
     if (!message.author || message.origin === 'discord') return
+    // @silent (SUPPRESS_NOTIFICATIONS): unread and mention badges only, never a push, like Discord.
+    if (((message.flags ?? 0) & SUPPRESS_NOTIFICATIONS) !== 0) return
     const where = await this.chain(message.channel_id)
     if (!where) return
     const text = getMessageVisibleText({ content: message.content ?? '', components: message.components ?? [] })
@@ -195,6 +198,7 @@ type MessageData = {
   content?: string
   components?: unknown[]
   mention_everyone?: boolean
+  flags?: number
   mentions?: Array<{ id: string }>
   author?: { id: string; username?: string; global_name?: string | null; bot?: boolean }
   origin?: string

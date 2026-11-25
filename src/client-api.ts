@@ -553,8 +553,15 @@ export class ClientApi {
         started = await this.hub.twin.simulateButtonClick({ ...base, messageId: str(messageId, 'messageId') })
         break
       case 'select': {
-        const values = Array.isArray(body['values']) ? body['values'].filter((value): value is string => typeof value === 'string') : []
-        started = await this.hub.twin.simulateSelectMenu({ ...base, messageId: str(messageId, 'messageId'), values })
+        let values = Array.isArray(body['values']) ? body['values'].filter((value): value is string => typeof value === 'string').slice(0, 25) : []
+        const componentType = findComponent(JSON.parse(source!.components) as unknown[], customId)?.['type']
+        const entity = componentType === 5 || componentType === 6 || componentType === 7 || componentType === 8 ? componentType : undefined
+        // A channel menu can only pick channels the person can see.
+        if (entity === 8) {
+          const visible = await this.hub.access.visibleChannels(v.userId)
+          values = values.filter((id) => visible.has(id))
+        }
+        started = await this.hub.twin.simulateSelectMenu({ ...base, messageId: str(messageId, 'messageId'), values, ...(entity && { componentType: entity }) })
         break
       }
       case 'modal': {
@@ -605,12 +612,20 @@ export class ClientApi {
 }
 
 function hasComponent(components: unknown[], customId: string): boolean {
-  return components.some((c) => {
-    if (!c || typeof c !== 'object') return false
+  return findComponent(components, customId) !== undefined
+}
+
+function findComponent(components: unknown[], customId: string): Record<string, unknown> | undefined {
+  for (const c of components) {
+    if (!c || typeof c !== 'object') continue
     const o = c as Record<string, unknown>
-    if (o['custom_id'] === customId) return true
-    return [o['components'], o['accessory'] ? [o['accessory']] : undefined, o['component'] ? [o['component']] : undefined].some((child) => Array.isArray(child) && hasComponent(child, customId))
-  })
+    if (o['custom_id'] === customId) return o
+    for (const child of [o['components'], o['accessory'] ? [o['accessory']] : undefined, o['component'] ? [o['component']] : undefined]) {
+      const found = Array.isArray(child) ? findComponent(child, customId) : undefined
+      if (found) return found
+    }
+  }
+  return undefined
 }
 
 type CommandOption = { name: string; type: number; value?: string | number | boolean; options?: CommandOption[] }
