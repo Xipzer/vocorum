@@ -67,7 +67,9 @@ export function nextCron(expression: string, after: number): number | null {
   const anyDay = days.size === 31
   const anyWeekday = [0, 1, 2, 3, 4, 5, 6].every((d) => weekdays.has(d))
   const t = new Date(Math.floor(after / 60_000) * 60_000 + 60_000)
-  for (let i = 0; i < 366 * 24 * 60; i++) {
+  // Within five years: an impossible date (30 February) ends the search quickly.
+  const limit = after + 5 * 366 * 86_400_000
+  for (let i = 0; i < 366 * 24 * 60 && t.getTime() <= limit; i++) {
     if (!months.has(t.getUTCMonth() + 1)) {
       t.setUTCMonth(t.getUTCMonth() + 1, 1)
       t.setUTCHours(0, 0, 0, 0)
@@ -156,6 +158,12 @@ export class Schedules {
     for (const s of await this.rows("status = 'pending' AND next_at <= ? ORDER BY next_at", [now])) {
       let result = 'ok'
       let failed = false
+      // Only for a person who can still sign in: removing someone or revoking
+      // their last device ends their schedules too.
+      if (!(await this.hasDevice(s.user_id))) {
+        await this.db.execute({ sql: "UPDATE schedules SET status = 'failed', next_at = NULL, last_run_at = ?, last_result = ? WHERE id = ?", args: [now, 'No signed-in device', s.id] })
+        continue
+      }
       try {
         result = await this.fire(s)
       } catch (error) {
@@ -167,6 +175,10 @@ export class Schedules {
       await this.db.execute({ sql: 'UPDATE schedules SET status = ?, next_at = ?, last_run_at = ?, last_result = ? WHERE id = ?', args: [status, next, now, result.slice(0, 500), s.id] })
       this.changed(s.user_id, s.id)
     }
+  }
+
+  private async hasDevice(userId: string) {
+    return (await this.hub.store.listDevices()).some((d) => !d.revokedAt && this.hub.userOf(d) === userId)
   }
 
   private async fire(s: Schedule): Promise<string> {
@@ -233,6 +245,7 @@ export class Schedules {
     if (cron) {
       if (!parseCron(cron)) throw new HttpError(400, 'cron must be five fields: minute hour day month weekday (UTC)')
       next = nextCron(cron, Date.now())
+      if (next === null) throw new HttpError(400, 'cron never matches a date')
     } else {
       if (!Number.isFinite(at) || at < Date.now() - 60_000) throw new HttpError(400, 'at must be a time in the future')
       next = at

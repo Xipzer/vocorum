@@ -134,6 +134,14 @@ export function Lightbox({ items, start, onClose }: { items: Viewable[]; start: 
 
 // --- images
 
+// Message images ask the hub for a copy about as wide as they show: an original photo
+// decodes to tens of megabytes. The lightbox still opens the original.
+function previewUrl(url: string, width: number | null | undefined, shownWidth: number) {
+  const want = Math.ceil(shownWidth * Math.min(window.devicePixelRatio || 1, 2))
+  if (!url.startsWith('/attachments/') || (width && width <= want)) return url
+  return `${url}${url.includes('?') ? '&' : '?'}width=${want}`
+}
+
 function MediaCell({ item, spoiler, onOpen, fit }: { item: Viewable; spoiler?: boolean; onOpen: () => void; fit?: { maxW: number; maxH: number } }) {
   const [shown, setShown] = useState(!spoiler)
   const [failed, setFailed] = useState(false)
@@ -153,7 +161,7 @@ function MediaCell({ item, spoiler, onOpen, fit }: { item: Viewable; spoiler?: b
   return (
     <div className={`media-cell${fit ? ' single' : ''}${shown ? '' : ' spoiler'}`} style={style}>
       <button className="media-open" onClick={() => (shown ? onOpen() : setShown(true))} aria-label={shown ? `Open ${item.name}` : 'Show spoiler'}>
-        {item.video ? <video src={`${item.url}#t=0.1`} muted playsInline preload="metadata" /> : <img src={item.url} alt={item.name} loading="lazy" onError={() => setFailed(true)} />}
+        {item.video ? <video src={`${item.url}#t=0.1`} muted playsInline preload="metadata" /> : <img src={previewUrl(item.url, item.width, typeof style?.width === 'number' ? style.width : 400)} alt={item.name} loading="lazy" decoding="async" onError={() => setFailed(true)} />}
         {item.video && shown && (
           <span className="media-play">
             <Icon name="play" size={20} />

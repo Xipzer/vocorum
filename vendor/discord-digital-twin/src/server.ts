@@ -370,7 +370,10 @@ export function createServer({
 
   // What Discord adds to a sent message beyond its text: the poll it opens, and
   // for a forward (message_reference type 1) a snapshot of the forwarded message.
-  async function messageExtras(body: RESTPostAPIChannelMessageJSONBody): Promise<string | null> {
+  // A forward copies only from the same guild as the channel it is sent to,
+  // never from a direct message: a client must not read, by id, a message in a
+  // channel it cannot see.
+  async function messageExtras(body: RESTPostAPIChannelMessageJSONBody, channelId: string): Promise<string | null> {
     const extra: Record<string, unknown> = {}
     if (body.poll) {
       const hours = body.poll.duration ?? 24
@@ -385,8 +388,9 @@ export function createServer({
     }
     const reference = body.message_reference as { type?: number; message_id?: string } | undefined
     if (reference?.type === 1 && reference.message_id) {
-      const source = await prisma.message.findUnique({ where: { id: reference.message_id } })
-      if (source) extra['message_snapshots'] = [{ message: { type: source.type, content: source.content, embeds: JSON.parse(source.embeds), attachments: JSON.parse(source.attachments), components: JSON.parse(source.components), timestamp: source.timestamp.toISOString(), edited_timestamp: source.editedTimestamp?.toISOString() ?? null, flags: source.flags, mentions: [], mention_roles: [] } }]
+      const source = await prisma.message.findUnique({ where: { id: String(reference.message_id) } })
+      const [from, to] = source ? await Promise.all([prisma.channel.findUnique({ where: { id: source.channelId } }), prisma.channel.findUnique({ where: { id: channelId } })]) : [null, null]
+      if (source && from?.guildId && from.guildId === to?.guildId) extra['message_snapshots'] = [{ message: { type: source.type, content: source.content, embeds: JSON.parse(source.embeds), attachments: JSON.parse(source.attachments), components: JSON.parse(source.components), timestamp: source.timestamp.toISOString(), edited_timestamp: source.editedTimestamp?.toISOString() ?? null, flags: source.flags, mentions: [], mention_roles: [] } }]
     }
     return Object.keys(extra).length ? JSON.stringify(extra) : null
   }
@@ -689,7 +693,7 @@ export function createServer({
             messageReference: body.message_reference
               ? JSON.stringify(body.message_reference)
               : null,
-            extra: await messageExtras(body),
+            extra: await messageExtras(body, params.channel_id),
           },
         })
         await prisma.channel.update({

@@ -54,7 +54,8 @@ export class Routines {
       }
     })
     await this.hub.store.db.execute({ sql: 'INSERT INTO machine_routines (machine, routines, updated_at) VALUES (?, ?, ?) ON CONFLICT(machine) DO UPDATE SET routines = excluded.routines, updated_at = excluded.updated_at', args: [machine, JSON.stringify(routines), Date.now()] })
-    this.hub.events.send('ROUTINES_UPDATE', { machine }, { shape: async (userId) => ({ machine, routines: await this.visible(userId, routines) }) })
+    // Only to people who can see that machine: its name is not for everyone.
+    this.hub.events.send('ROUTINES_UPDATE', { machine }, { shape: async (userId) => ((await this.hub.visibleMachines(userId)).has(machine.toLowerCase()) ? { machine, routines: await this.visible(userId, routines) } : null) })
     return { machine, routines: routines.length }
   }
 

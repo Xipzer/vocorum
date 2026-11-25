@@ -200,8 +200,13 @@ export class ClientApi {
     if (pathname.startsWith('/client/auth/app/')) {
       const body = await readJson(req)
       if (pathname === '/client/auth/app/register') {
+        auth.checkPairingLock(peer)
         const pairing = typeof body['code'] === 'string' ? await this.hub.store.findPairing(body['code']) : null
-        if (pairing && !(await this.hub.firstPairingAllowed(req, pairing.userId))) throw new HttpError(403, 'Forbidden: this device is not on an allowed Tailscale account')
+        if (pairing && !(await this.hub.firstPairingAllowed(req, pairing.userId))) {
+          // Counted like a wrong code: a refused account cannot test codes without limit.
+          auth.noteWrongCode(peer)
+          throw new HttpError(403, 'Forbidden: this device is not on an allowed Tailscale account')
+        }
         const registered = await auth.registerApp(body, peer)
         await this.hub.bindFirstPairing(req, registered.device)
         return sendJson(res, 200, { ...registered, device: { id: registered.device.id, name: registered.device.name } })
@@ -213,6 +218,7 @@ export class ClientApi {
     if (auth.usesBearer(req)) {
       if (pathname !== '/client/auth/logout') throw new HttpError(400, 'Passkey routes do not take a bearer token')
       await auth.logout(req)
+      await this.hub.events.endExpired()
       return sendJson(res, 200, { ok: true })
     }
     const origin = auth.checkOrigin(req)
@@ -220,8 +226,13 @@ export class ClientApi {
     switch (pathname) {
       case '/client/auth/register/options': {
         // From an unknown Tailscale account only a friend's own first code works, and a refused one is not spent.
+        auth.checkPairingLock(peer)
         const pairing = typeof body['code'] === 'string' ? await this.hub.store.findPairing(body['code']) : null
-        if (pairing && !(await this.hub.firstPairingAllowed(req, pairing.userId))) throw new HttpError(403, 'Forbidden: this device is not on an allowed Tailscale account')
+        if (pairing && !(await this.hub.firstPairingAllowed(req, pairing.userId))) {
+          // Counted like a wrong code: a refused account cannot test codes without limit.
+          auth.noteWrongCode(peer)
+          throw new HttpError(403, 'Forbidden: this device is not on an allowed Tailscale account')
+        }
         // The transport address plus the Tailscale login the network gate verified; never a raw header.
         return sendJson(res, 200, await auth.registrationOptions(origin, body, peer))
       }
@@ -238,6 +249,7 @@ export class ClientApi {
       }
       case '/client/auth/logout':
         await auth.logout(req)
+        await this.hub.events.endExpired()
         return sendJson(res, 200, { ok: true }, { 'set-cookie': auth.clearCookie() })
     }
     throw new HttpError(404, 'Not found')
@@ -584,6 +596,7 @@ export class ClientApi {
 
   async interaction(v: Viewer, body: Body) {
     const channelId = str(body['channelId'], 'channelId')
+    if (this.hub.dms.get(channelId)) throw new HttpError(400, 'Agents do not take direct messages')
     await this.channel(v, channelId)
     const customId = str(body['customId'], 'customId')
     const messageId = typeof body['messageId'] === 'string' ? body['messageId'] : undefined
@@ -628,6 +641,8 @@ export class ClientApi {
 
   // Discord hides a command from members without its default_member_permissions; so does the hub.
   private async checkCommand(v: Viewer, channelId: string, name: string) {
+    // Agents do not take DMs: no command or interaction there reaches a bot.
+    if (this.hub.dms.get(channelId)) throw new HttpError(400, 'Agents do not take direct messages')
     const channel = await this.channel(v, channelId, P.USE_APPLICATION_COMMANDS)
     const commands = await this.hub.twin.getRegisteredCommands({ guildId: channel.guildId })
     const command = commands.find((c) => c.name === name)

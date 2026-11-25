@@ -265,7 +265,8 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
     help(HELP[sub] ? sub : `${sub} ${rest[0]}`)
     return true
   }
-  if (flags['help'] === true || argv.includes('-h')) {
+  // Anywhere, also after `--`: a request for help never runs the command.
+  if (flags['help'] === true || argv.includes('--help') || argv.includes('-h')) {
     const key = command === 'discord' ? `discord ${sub}` : String(command)
     if (HELP[key]) {
       help(key)

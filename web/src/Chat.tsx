@@ -10,7 +10,7 @@ import { Components, type Interact } from './components.tsx'
 import { Attachments, Embeds, Forwarded, onlyEmbedLink, PollCard, stamp, Stickers } from './Media.tsx'
 import { Composer } from './Composer.tsx'
 import { Markdown, type MarkdownContext } from './markdown.tsx'
-import { dmName, dmUser, isDm, snowflakeGt, store, THREAD_TYPES, useStore } from './store.ts'
+import { dmName, dmUser, isDm, KEEP_AT_BOTTOM, snowflakeGt, store, THREAD_TYPES, useStore } from './store.ts'
 import { workspaceWaiting } from './Workspace.tsx'
 import { Icon, type IconName } from './icons.tsx'
 import { clock, displayName, plain, wallHue, machineLabel } from './text.ts'
@@ -24,6 +24,9 @@ const NO_REQUESTS: HubRequest[] = []
 import { bellSheet, effective } from './notify.ts'
 import { below, Sheet, sessionActions, usePress, type SheetAction, type SheetAt, type SheetSpec } from './Sheet.tsx'
 import { can, isHubOwner, P } from './perms.ts'
+
+// Up arrow in an empty composer edits your last message: each shown message registers here.
+const editors = new Map<string, () => void>()
 
 const IS_COMPONENTS_V2 = 1 << 15
 const IS_VOICE = 1 << 13
@@ -235,14 +238,21 @@ function MessageItem({
   const [editing, setEditing] = useState<string | null>(null)
   const [picker, setPicker] = useState<DOMRect | null>(null)
   useEffect(() => {
-    const onEdit = (e: Event) => {
-      if ((e as CustomEvent<string>).detail !== message.id) return
+    editors.set(message.id, () => {
       setEditing(message.content)
       document.getElementById(`m-${message.id}`)?.scrollIntoView({ block: 'nearest' })
-    }
-    window.addEventListener('vocorum:edit', onEdit)
-    return () => window.removeEventListener('vocorum:edit', onEdit)
+    })
+    return () => void editors.delete(message.id)
   }, [message.id, message.content])
+  // The hover toolbar exists only while a pointer or focus is on the message: a long
+  // channel would otherwise hold a dozen buttons per message.
+  const [hot, setHot] = useState(false)
+  const warm = {
+    onPointerEnter: (e: React.PointerEvent) => e.pointerType !== 'touch' && setHot(true),
+    onPointerLeave: (e: React.PointerEvent) => !e.currentTarget.contains(document.activeElement) && setHot(false),
+    onFocus: () => setHot(true),
+    onBlur: (e: React.FocusEvent) => !e.currentTarget.contains(e.relatedTarget as Node | null) && !e.currentTarget.matches(':hover') && setHot(false),
+  }
   // Reactions toggle like Discord's: yours lights up; clicking it again (on the message or
   // the toolbar) takes it off.
   const mineOn = (emoji: string) => Boolean(message.reactions_summary?.find((r) => r.emoji === emoji)?.me)
@@ -359,7 +369,7 @@ function MessageItem({
     )
   }
   return (
-    <div id={`m-${message.id}`} className={`message${compact ? ' compact' : ''}${mine ? ' you' : ''}${needs ? ' needs' : ''}${failed ? ' failed' : ''}`} {...press} onClick={markOnAlt}>
+    <div id={`m-${message.id}`} className={`message${compact ? ' compact' : ''}${mine ? ' you' : ''}${needs ? ' needs' : ''}${failed ? ' failed' : ''}`} {...press} {...warm} tabIndex={-1} onClick={markOnAlt}>
       {replyId &&
         (reference ? (
           <div className="reply-preview" onClick={() => onJump(reference.id)}>
@@ -454,7 +464,7 @@ function MessageItem({
         {picker && <EmojiPicker anchor={picker} onPick={(e) => !mineOn(e) && toggle(e)} onClose={() => setPicker(null)} />}
         {!feed && (message as Message & { thread?: { id: string } }).thread?.id !== channelId && message.id !== channelId && <StarterThread messageId={message.id} threadId={(message as Message & { thread?: { id: string } }).thread?.id} state={state} ctx={ctx} />}
       </div>
-      <div className="message-actions" role="toolbar" aria-label="Message actions">
+      {hot && <div className="message-actions" role="toolbar" aria-label="Message actions">
         {QUICK.map((emoji) => (
           <button key={emoji} className={`quick${mineOn(emoji) ? ' on' : ''}`} onClick={() => toggle(emoji)} aria-pressed={mineOn(emoji)} aria-label={`React ${emoji}`} title={mineOn(emoji) ? `Remove ${emoji}` : `React ${emoji}`}>
             {emoji}
@@ -480,7 +490,7 @@ function MessageItem({
         <button onClick={(e) => openMenu(below(e.currentTarget))} aria-label="More" title="More">
           <Icon name="more" size={20} />
         </button>
-      </div>
+      </div>}
     </div>
   )
 }
@@ -780,6 +790,7 @@ export function Chat({
   const seenAtOpen = useMemo(() => store.data.seen[channel.id], [channel.id, heldAt])
   useEffect(() => setNewRead(false), [heldAt])
   useEffect(() => () => store.release(channel.id), [channel.id])
+  useEffect(() => store.show(channel.id), [channel.id])
   const parent = isThread ? state.channels.find((c) => c.id === channel.parent_id) : undefined
   const project = parent ?? channel
   const list = entry?.list ?? []
@@ -914,7 +925,7 @@ export function Chat({
   const lastEditable = list.findLast((m) => m.author.id === state.me.id && (m.type === 0 || m.type === 19) && m.content && !((m.flags ?? 0) & IS_VOICE))?.id
   useEffect(() => {
     const onEditLast = (e: Event) => {
-      if ((e as CustomEvent<string>).detail === channel.id && lastEditable) window.dispatchEvent(new CustomEvent('vocorum:edit', { detail: lastEditable }))
+      if ((e as CustomEvent<string>).detail === channel.id && lastEditable) editors.get(lastEditable)?.()
     }
     window.addEventListener('vocorum:edit-last', onEditLast)
     return () => window.removeEventListener('vocorum:edit-last', onEditLast)
@@ -1089,6 +1100,8 @@ export function Chat({
         onScroll={(e) => {
           const el = e.currentTarget
           pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+          // Back at the newest after reading far back: let the old pages go.
+          if (pinned.current && list.length > 2 * KEEP_AT_BOTTOM) store.trimMessages(channel.id, KEEP_AT_BOTTOM)
           measure(el)
           if (el.scrollTop < 200 && entry?.hasMore && !entry.loading) {
             previousHeight.current = el.scrollHeight

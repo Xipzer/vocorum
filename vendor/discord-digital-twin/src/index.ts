@@ -1002,6 +1002,8 @@ export class DigitalDiscord {
     // interaction's webhook and callback routes accept.
     const interactionToken = `itk.${crypto.randomBytes(32).toString('base64url')}`
     const channelRow = await this.prisma.channel.findUnique({ where: { id: channelId } })
+    // Never for a channel with no guild (a DM): it would reach every bot of the default guild.
+    if (channelRow && !channelRow.guildId) throw new Error('Interactions need a guild channel')
     const resolvedGuildId = guildId ?? channelRow?.guildId ?? this.guildId
 
     // Pre-create the InteractionResponse row so the callback endpoint can find it

@@ -462,8 +462,11 @@ export class Hub {
       const login = await this.privateListener.checkPeer(req)
       // A Tailscale account the hub does not know yet may load the app and pair with an
       // invite code, nothing else: pairing ties that account to the invited person.
-      if (login === false && (FIRST_PAIRING.has(pathname) || !pathname.startsWith('/client/'))) {
-        this.firstPairings.set(req, this.privateListener.unknownLogin(req)!)
+      // Not when the account could not be read (whois failed: nothing to tie it to), nor
+      // for tagged devices, which all share one login name.
+      const unknown = login === false ? this.privateListener.unknownLogin(req) : null
+      if (unknown && unknown !== 'tagged-devices' && (FIRST_PAIRING.has(pathname) || !pathname.startsWith('/client/'))) {
+        this.firstPairings.set(req, unknown)
         return
       }
       if (login === false) throw new HttpError(403, 'Forbidden: this device is not on an allowed Tailscale account')

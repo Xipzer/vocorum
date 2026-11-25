@@ -42,7 +42,7 @@ const ACCESS = new Set(['GUILD_ROLE_CREATE', 'GUILD_ROLE_UPDATE', 'GUILD_ROLE_DE
 
 // One open app window: which device and person, the channel it shows, and
 // whether it is in front. The client reports the last two with {op: 'focus'}.
-export type DeviceConnection = { deviceId: string; userId: string; name: string; kind: 'web' | 'app'; channelId: string | null; visible: boolean }
+export type DeviceConnection = { deviceId: string; userId: string; name: string; kind: 'web' | 'app'; channelId: string | null; visible: boolean; session?: { token: string; kind: 'bearer' | 'cookie' } }
 
 // Who a hub-made event is for. Absent fields do not restrict.
 export type Audience = {
@@ -73,6 +73,7 @@ export class ClientEvents {
     })
     this.ping = setInterval(() => {
       for (const socket of this.sockets.keys()) socket.ping()
+      void this.endExpired().catch((error) => console.error('[events]', error))
     }, 30_000)
     this.ping.unref()
   }
@@ -88,6 +89,15 @@ export class ClientEvents {
   // Resolves when queued dispatches have been sent (tests).
   flush() {
     return this.queue
+  }
+
+  // A socket lives only as long as the session it opened with (logout, expiry).
+  async endExpired() {
+    for (const [socket, connection] of this.sockets) {
+      if (!connection.session) continue
+      const device = await this.hub.store.sessionDevice(connection.session.token, connection.session.kind)
+      if (!device || device.id !== connection.deviceId) socket.close(4001, 'Session ended')
+    }
   }
 
   disconnectDevice(deviceId: string) {
@@ -174,7 +184,7 @@ export class ClientEvents {
       const userId = this.hub.userOf(device)
       this.hub.checkIdentity(req, userId)
       this.wss.handleUpgrade(req, socket, head, (ws) => {
-        const connection: DeviceConnection = { deviceId: device.id, userId, name: device.name, kind: device.kind, channelId: null, visible: true }
+        const connection: DeviceConnection = { deviceId: device.id, userId, name: device.name, kind: device.kind, channelId: null, visible: true, session: this.hub.auth.session(req) ?? undefined }
         this.sockets.set(ws, connection)
         ws.on('error', () => ws.terminate())
         this.hub.presence.changed()

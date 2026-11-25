@@ -8,6 +8,10 @@ import { api, type HubRequest, type MachineRoutines, type Reminder, type Schedul
 
 export type ChannelMessages = { list: Message[]; hasMore: boolean; loading: boolean }
 
+// Messages a channel keeps once no view shows it, and once its reader is back at the newest.
+export const KEEP_HIDDEN = 100
+export const KEEP_AT_BOTTOM = 200
+
 type Data = {
   state: HubState | null
   messages: Record<string, ChannelMessages>
@@ -168,6 +172,25 @@ class Store {
     delete this.unsentRead[channelId]
     this.set({ held: { ...this.data.held, [channelId]: messageId } })
     void api.markUnread(channelId, messageId).catch(() => {})
+  }
+
+  // Long history scrolled back through costs memory in every view of it: a channel
+  // nobody shows keeps only its newest messages, and loads older ones again on scroll.
+  private shown = new Map<string, number>()
+  show(channelId: string) {
+    this.shown.set(channelId, (this.shown.get(channelId) ?? 0) + 1)
+    return () => {
+      const left = (this.shown.get(channelId) ?? 1) - 1
+      if (left > 0) return void this.shown.set(channelId, left)
+      this.shown.delete(channelId)
+      this.trimMessages(channelId, KEEP_HIDDEN)
+    }
+  }
+
+  trimMessages(channelId: string, keep: number) {
+    const current = this.data.messages[channelId]
+    if (!current || current.loading || current.list.length <= keep) return
+    this.setMessages(channelId, { ...current, list: current.list.slice(-keep), hasMore: true })
   }
 
   // Leaving a channel marked unread lets reading it count again.

@@ -47,7 +47,7 @@ export function adminPaths(paths: HubPaths) {
 
 // Commands the agent runs without asking: they only read, or only file a request.
 const ALLOW = [
-  'vocorum doctor *', 'vocorum help *', 'vocorum * --help', 'vocorum --help',
+  'vocorum doctor *', 'vocorum help *', 'vocorum --help',
   'vocorum admin status *', 'vocorum config get *', 'vocorum private status *',
   'vocorum people list *', 'vocorum access *', 'vocorum channels list *', 'vocorum channels', 'vocorum devices list *', 'vocorum bots list *', 'vocorum guilds list *',
   'vocorum requests', 'vocorum requests --json', 'vocorum requests list *', 'vocorum requests deny *', 'vocorum requests undo *', 'vocorum request *',
@@ -63,6 +63,8 @@ const NEVER = [
   'vocorum people invite *', 'vocorum people remove *', 'vocorum invite *',
   'vocorum bots add *', 'vocorum bots guilds *',
   'vocorum init *', 'vocorum start *', 'vocorum kimaki setup *',
+  // An owner pairing code, or whose Tailscale account is the owner's: never through the agent.
+  'vocorum pair *', 'vocorum welcome *', 'vocorum config set tailscaleLogin *', 'vocorum config set ownerDiscordIds *', 'vocorum config set publicUrl *',
 ]
 
 export function workspacePolicy() {

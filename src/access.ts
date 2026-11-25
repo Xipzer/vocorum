@@ -132,7 +132,13 @@ export class Access {
       }
     }
     // Direct messages: only their two sides, with what Discord allows in a DM.
-    for (const dm of this.hub.dms.of(userId)) view.channels.set(dm.id, DM_PERMS)
+    // With someone who no longer shares a server, only the history stays.
+    const dms = this.hub.dms.of(userId)
+    const peers = dms.some((dm) => !dm.machine) ? new Set((await prisma.guildMember.findMany({ where: { guildId: { in: [...view.guilds.keys()] } }, select: { userId: true } })).map((m) => m.userId)) : new Set<string>()
+    for (const dm of dms) {
+      const other = dm.users.find((id) => id !== userId) ?? userId
+      view.channels.set(dm.id, dm.machine || peers.has(other) ? DM_PERMS : P.VIEW_CHANNEL | P.READ_MESSAGE_HISTORY)
+    }
     this.views.set(userId, view)
     return view
   }

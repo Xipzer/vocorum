@@ -201,7 +201,13 @@ export class Mirror {
       return { linked: message.echo_of }
     }
     // Unchanged since the last copy (a re-run import, a repeated PUT): nothing to do.
-    const before = await this.prisma.message.findUnique({ where: { id: message.id }, select: { content: true, editedTimestamp: true, pinned: true, attachments: true } })
+    const before = await this.prisma.message.findUnique({ where: { id: message.id }, select: { channelId: true, content: true, editedTimestamp: true, pinned: true, attachments: true } })
+    // A copy only ever updates its own copy: never a message in another channel
+    // (a DM, another server) and never one typed in the hub.
+    if (before) {
+      const origin = (await this.hub.store.db.execute({ sql: 'SELECT origin FROM message_origins WHERE message_id = ?', args: [message.id] })).rows[0]?.['origin']
+      if (before.channelId !== message.channel_id || origin !== 'discord') throw new HttpError(409, 'That message id belongs to another message')
+    }
     const edited = message.edited_timestamp ? new Date(message.edited_timestamp).getTime() : null
     if (before && before.content === this.rewriteMentions(message.content ?? '') && (before.editedTimestamp?.getTime() ?? null) === edited && before.pinned === (message.pinned ?? false) && files.size === 0) return { id: message.id, created: false }
     const authorId = await this.user(guildId, message.author)
@@ -219,7 +225,9 @@ export class Mirror {
         attachments.push(a)
         continue
       }
-      const saved = await this.hub.attachments.save({ id: /^\d{1,20}$/.test(a.id) ? a.id : generateSnowflake(), filename: a.filename, contentType: a.content_type ?? 'application/octet-stream', data, uploadedBy: 'mirror', durationSecs: a.duration_secs ?? null, waveform: a.waveform ?? null })
+      // Discord's id, unless the hub already has a file under it (never overwrite another message's file).
+      const free = /^\d{1,20}$/.test(a.id) && !(await this.hub.store.getAttachment(a.id))
+      const saved = await this.hub.attachments.save({ id: free ? a.id : generateSnowflake(), filename: a.filename, contentType: a.content_type ?? 'application/octet-stream', data, uploadedBy: 'mirror', durationSecs: a.duration_secs ?? null, waveform: a.waveform ?? null })
       attachments.push({ ...a, id: saved.id, url: saved.url, proxy_url: saved.url, size: saved.size })
     }
     // Recorded first: everything that reacts to the message can tell where it came from.

@@ -77,10 +77,13 @@ export class Requests {
   async create(input: Record<string, unknown>, { prefix = '' }: { prefix?: string } = {}) {
     const method = String(input['method'] ?? '').toUpperCase()
     const route = String(input['route'] ?? '')
+    // Plain ids only: an encoded route would be judged on one id and applied to another.
+    if (!/^[A-Za-z0-9/_-]{1,300}$/.test(route)) throw new HttpError(400, 'route must be a plain path')
     const allowed = ALLOWED.find((a) => a.method === method && match(a.route, route))
     if (!allowed) throw new HttpError(400, `Requests can only carry: ${[...new Set(ALLOWED.map((a) => a.kind))].join(', ')}`)
     const body = input['body'] && typeof input['body'] === 'object' ? (input['body'] as Record<string, unknown>) : {}
     const text = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
+    if (body['username'] !== undefined && body['user_id'] !== undefined) throw new HttpError(400, 'An invite names a new person (username) or an existing one (user_id), not both')
     // The Admin server is the owner's and their admin agent's alone: no request adds anyone or changes it.
     const adminGuild = this.hub.options.config.adminGuildId
     if (adminGuild && (await this.guildOf(route)) === adminGuild) throw new HttpError(400, 'The Admin server is only for you and your admin agent. Nothing can add people to it or change it through a request.')
@@ -141,7 +144,7 @@ export class Requests {
     }
     const roleChange = body['permissions'] !== undefined ? ` with permissions: ${perms(body['permissions'])}` : ''
     let p: Record<string, string> | null
-    if ((p = match('/client/guilds/:id/invites', route))) return `Invite ${String(body['username'] ?? body['user_id'] ?? 'someone')} to ${await guildName(p['id']!)}`
+    if ((p = match('/client/guilds/:id/invites', route))) return typeof body['user_id'] === 'string' ? `Add ${await userName(body['user_id'])} (already on the hub) to ${await guildName(p['id']!)}` : `Invite a new person, ${String(body['username'] ?? 'someone')}, to ${await guildName(p['id']!)}`
     if ((p = match('/client/guilds/:id/members/:user/roles', route))) {
       const roles = Array.isArray(body['roles']) ? await Promise.all((body['roles'] as string[]).map(roleName)) : []
       return `Set ${await userName(p['user']!)}'s roles in ${await guildName(p['id']!)} to ${roles.length ? roles.join(', ') : 'none'}`
@@ -150,8 +153,28 @@ export class Requests {
     if ((p = match('/client/guilds/:id/roles/:role', route))) return `Change the role ${await roleName(p['role']!)} in ${await guildName(p['id']!)}${body['name'] !== undefined ? `, name ${String(body['name'])}` : ''}${roleChange}`
     if ((p = match('/client/guilds/:id/roles', route))) return `Create the role ${String(body['name'] ?? '')} in ${await guildName(p['id']!)}${roleChange}`
     if ((p = match('/client/channels/:id/permissions/:target', route))) return method === 'DELETE' ? `Reset ${await channelName(p['id']!)} permissions for ${await target(p['id']!, p['target']!)}` : `Change who can use ${await channelName(p['id']!)}: ${await target(p['id']!, p['target']!)} may ${perms(body['allow'])}${BigInt(String(body['deny'] ?? '0') || '0') ? `, may not ${perms(body['deny'])}` : ''}`
-    if ((p = match('/client/guilds/:id/channels', route))) return `Create the channel #${String(body['name'] ?? '')} in ${await guildName(p['id']!)}`
-    if ((p = match('/client/channels/:id/settings', route))) return `Change ${await channelName(p['id']!)}`
+    // Everything else the change carries, so nothing is applied that the card does not say.
+    const overwrites = async (channel: string | null, guild: string) => {
+      const list = Array.isArray(body['permission_overwrites']) ? (body['permission_overwrites'] as Array<Record<string, unknown>>) : []
+      const parts = await Promise.all(list.map(async (o) => {
+        const who = String(o['id']) === guild ? 'everyone' : channel ? await target(channel, String(o['id'])) : ((await prisma.role.findUnique({ where: { id: String(o['id']) } }))?.name ?? (await userName(String(o['id']))))
+        return `${who} may ${perms(o['allow'])}${BigInt(String(o['deny'] ?? '0') || '0') ? `, may not ${perms(o['deny'])}` : ''}`
+      }))
+      return parts.length ? `; permissions: ${parts.join('; ')}` : ''
+    }
+    const settings = async (skip: string[] = []) => {
+      const shown: string[] = []
+      for (const [key, value] of Object.entries(body)) {
+        if (key === 'permission_overwrites' || skip.includes(key)) continue
+        shown.push(key === 'parent_id' ? `category ${value ? await channelName(String(value)) : 'none'}` : `${key} ${JSON.stringify(value).slice(0, 120)}`)
+      }
+      return shown.length ? `: ${shown.join(', ')}` : ''
+    }
+    if ((p = match('/client/guilds/:id/channels', route))) return `Create the channel #${String(body['name'] ?? '')} in ${await guildName(p['id']!)}${await settings(['name'])}${await overwrites(null, p['id']!)}`
+    if ((p = match('/client/channels/:id/settings', route))) {
+      const channel = await prisma.channel.findUnique({ where: { id: p['id']! }, select: { guildId: true } })
+      return `Change ${await channelName(p['id']!)}${await settings()}${await overwrites(p['id']!, channel?.guildId ?? '')}`
+    }
     if ((p = match('/client/channels/:id', route))) return `Delete ${await channelName(p['id']!)}`
     if ((p = match('/client/guilds/:id', route))) return `Rename ${await guildName(p['id']!)} to ${String(body['name'] ?? '')}`
     return `${method} ${route}`

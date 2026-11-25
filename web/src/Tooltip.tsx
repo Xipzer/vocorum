@@ -2,7 +2,7 @@
 // at once on keyboard focus. It takes over native `title`s on controls inside the app
 // chrome (icon buttons, the search bar, rail icons), so the two never show together.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 const SCOPE = '.icon-button, .search-field, .rail-item, .message-actions > button, .row-gear'
 const DELAY = 400
@@ -20,6 +20,16 @@ function label(el: HTMLElement): string {
 
 export function Tooltips() {
   const [tip, setTip] = useState<Tip | null>(null)
+  const ref = useRef<HTMLDivElement>(null)
+  // Kept 8px inside the window; the arrow still points at the control.
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el || !tip || tip.side === 'right') return
+    const half = el.offsetWidth / 2
+    const x = Math.min(Math.max(tip.x, half + 8), window.innerWidth - half - 8)
+    el.style.left = `${x}px`
+    el.style.setProperty('--arrow', `${tip.x - x}px`)
+  }, [tip])
   useEffect(() => {
     let timer = 0
     let lastHidden = 0
@@ -35,7 +45,7 @@ export function Tooltips() {
         // Server icons speak to the right, as in Discord; others above (below at the top edge).
         if (el.matches('.rail-item')) return setTip({ text, x: r.right, y: r.top + r.height / 2, side: 'right' })
         const below = r.top < 44
-        setTip({ text, x: Math.min(Math.max(r.left + r.width / 2, 60), window.innerWidth - 60), y: below ? r.bottom : r.top, side: below ? 'below' : 'above' })
+        setTip({ text, x: r.left + r.width / 2, y: below ? r.bottom : r.top, side: below ? 'below' : 'above' })
       }
       // Moving between controls keeps the tooltip up without waiting again.
       if (now || Date.now() - lastHidden < 600) place()
@@ -76,7 +86,7 @@ export function Tooltips() {
   const m = / \(((?:Ctrl|Alt|Shift|Esc|Enter|⌘|⌥|⇧)[^)]*)\)$/.exec(tip.text)
   const [main, keys] = m ? [tip.text.slice(0, m.index), m[1]] : [tip.text, undefined]
   return (
-    <div className={`tip ${tip.side}`} role="tooltip" style={{ left: tip.x, top: tip.y }}>
+    <div ref={ref} className={`tip ${tip.side}`} role="tooltip" style={{ left: tip.x, top: tip.y }}>
       {main}
       {keys && <kbd>{keys}</kbd>}
     </div>

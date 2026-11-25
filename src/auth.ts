@@ -129,6 +129,12 @@ export class HubAuth {
     if (!this.usesBearer(req)) this.checkOrigin(req)
   }
 
+  // The session a request carries (for connections that must end with it).
+  session(req: http.IncomingMessage): { token: string; kind: 'bearer' | 'cookie' } | null {
+    const token = this.usesBearer(req) ? this.bearerToken(req) : parseCookies(req.headers.cookie)[SESSION_COOKIE]
+    return token ? { token, kind: this.usesBearer(req) ? 'bearer' : 'cookie' } : null
+  }
+
   async device(req: http.IncomingMessage): Promise<DeviceRow | null> {
     if (this.usesBearer(req)) {
       const token = this.bearerToken(req)
@@ -168,6 +174,11 @@ export class HubAuth {
       throw new HttpError(400, 'Challenge expired, try again')
     }
     return challenge
+  }
+
+  // Before any look at a pairing code: a locked-out peer learns nothing about codes.
+  checkPairingLock(peer: string) {
+    if (this.pairingLocked(peer)) throw new HttpError(429, 'Too many wrong pairing codes. Wait 10 minutes.')
   }
 
   // One peer guessing codes cannot lock everyone else out of pairing.
@@ -275,7 +286,7 @@ export class HubAuth {
     return false
   }
 
-  private noteWrongCode(peer: string) {
+  noteWrongCode(peer: string) {
     this.pairingFailures.set(peer, [...(this.pairingFailures.get(peer) ?? []), Date.now()])
   }
 

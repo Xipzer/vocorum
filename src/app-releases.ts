@@ -26,6 +26,7 @@ const VERSION = /^\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[0-9A-Za-z.-]{1,40})?$/
 // several update formats, e.g. linux-x86_64-appimage next to linux-x86_64-deb.
 const PLATFORM = /^(windows|darwin|linux)-(x86_64|aarch64|i686|armv7)(?:-(appimage|deb|rpm|nsis|msi|app))?$/
 const BUNDLE = /^(appimage|deb|rpm|nsis|msi|app|unknown)$/
+const DEFAULT_BUNDLE: Record<string, string> = { linux: 'appimage', windows: 'nsis', darwin: 'app' }
 const FILE = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,200}$/
 
 // Semantic version order (pre-releases before their release).
@@ -73,13 +74,24 @@ export class AppReleases {
       }
       if (entry.install) names.add(entry.install)
     }
-    for (const name of names) if (!fs.statSync(path.join(source, name), { throwIfNoEntry: false })?.isFile()) throw new Error(`${name} is listed in release.json but missing`)
+    // Regular files only: a symlink in a build folder must not publish whatever it points at.
+    for (const name of names) {
+      const stat = fs.lstatSync(path.join(source, name), { throwIfNoEntry: false })
+      if (!stat) throw new Error(`${name} is listed in release.json but missing`)
+      if (!stat.isFile()) throw new Error(`${name} is not a regular file (symlinks are refused)`)
+    }
     fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 })
     const staging = fs.mkdtempSync(path.join(this.dir, '.publish-'))
     const manifest: Manifest = {}
     for (const name of names) {
-      fs.copyFileSync(path.join(source, name), path.join(staging, name))
-      const data = fs.readFileSync(path.join(staging, name))
+      const fd = fs.openSync(path.join(source, name), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+      let data: Buffer
+      try {
+        data = fs.readFileSync(fd)
+      } finally {
+        fs.closeSync(fd)
+      }
+      fs.writeFileSync(path.join(staging, name), data, { mode: 0o600 })
       manifest[name] = { size: data.length, sha256: crypto.createHash('sha256').update(data).digest('hex') }
     }
     fs.writeFileSync(path.join(staging, 'release.json'), JSON.stringify(release, null, 1))
@@ -107,19 +119,22 @@ export class AppReleases {
   }
 
   private manifest(version: string): Manifest {
-    return JSON.parse(fs.readFileSync(path.join(this.dir, version, 'files.json'), 'utf8')) as Manifest
+    // No prototype: a name like "constructor" is not a listed file.
+    return Object.assign(Object.create(null), JSON.parse(fs.readFileSync(path.join(this.dir, version, 'files.json'), 'utf8'))) as Manifest
   }
 
   // --- updates (signed-in devices)
 
   // Tauri's updater answer, or null when the device is up to date. An app that
-  // says its bundle gets that kind (<os>-<arch>-<bundle>) or else the plain
-  // <os>-<arch> one; an app that does not (older apps) gets the plain one only.
+  // says its bundle gets that kind (<os>-<arch>-<bundle>); the plain <os>-<arch>
+  // key is the OS's default kind (Tauri's: AppImage, NSIS, .app), so only apps
+  // of that kind, of an unknown kind, or that do not say (older apps) fall back
+  // to it. A .deb app is never offered an AppImage.
   update(target: string, arch: string, current: string, origin: string, bundle?: string | null) {
     const platform = `${target}-${arch}`
     if (!PLATFORM.test(platform) || platform.split('-').length !== 2) throw new HttpError(400, 'Unknown target or arch')
     if (bundle != null && !BUNDLE.test(bundle)) throw new HttpError(400, 'Unknown bundle')
-    const keys = bundle ? [`${platform}-${bundle}`, platform] : [platform]
+    const keys = !bundle || bundle === 'unknown' ? [platform] : bundle === DEFAULT_BUNDLE[target] ? [`${platform}-${bundle}`, platform] : [`${platform}-${bundle}`]
     const pick = (r: Release) => keys.map((k) => r.files[k]?.update).find(Boolean)
     const latest = this.list().find(pick)
     if (!latest || (VERSION.test(current) && compareVersions(latest.version, current) <= 0)) return null
@@ -136,8 +151,9 @@ export class AppReleases {
   // A file of a published release: only those its release.json lists (and update signatures).
   file(version: string, name: string): { path: string; size: number; sha256: string } | null {
     if (!VERSION.test(version) || !FILE.test(name) || !fs.existsSync(path.join(this.dir, version, 'files.json'))) return null
-    const entry = this.manifest(version)[name]
-    return entry ? { path: path.join(this.dir, version, name), ...entry } : null
+    const manifest = this.manifest(version)
+    const entry = Object.hasOwn(manifest, name) ? manifest[name] : undefined
+    return entry && typeof entry.size === 'number' ? { path: path.join(this.dir, version, name), ...entry } : null
   }
 
   // --- first install (pairing code holders)
@@ -176,10 +192,10 @@ export function sendDownload(req: http.IncomingMessage, res: http.ServerResponse
     }
     res.writeHead(206, { ...headers, 'content-range': `bytes ${start}-${end}/${file.size}`, 'content-length': String(end - start + 1) })
     if (req.method === 'HEAD') return void res.end()
-    fs.createReadStream(file.path, { start, end }).pipe(res)
+    fs.createReadStream(file.path, { start, end }).on('error', () => res.destroy()).pipe(res)
     return
   }
   res.writeHead(200, { ...headers, 'content-length': String(file.size) })
   if (req.method === 'HEAD') return void res.end()
-  fs.createReadStream(file.path).pipe(res)
+  fs.createReadStream(file.path).on('error', () => res.destroy()).pipe(res)
 }

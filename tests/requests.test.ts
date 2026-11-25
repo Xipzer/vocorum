@@ -30,7 +30,7 @@ async function approve(device: TestDevice, id: string) {
 test('a request changes nothing until the owner approves it with a passkey', async () => {
   const created = await admin('POST', '/admin/requests', { method: 'POST', route: `/client/guilds/${t.config.guildId}/invites`, body: { username: 'sam' }, reason: 'Sam helps with the docs', origin: 'agent session test' })
   expect(created.status).toBe(200)
-  expect(created.json).toMatchObject({ status: 'pending', kind: 'invite a person', origin: 'agent session test', summary: `Invite sam to ${t.config.guildName}` })
+  expect(created.json).toMatchObject({ status: 'pending', kind: 'invite a person', origin: 'agent session test', summary: `Invite a new person, sam, to ${t.config.guildName}` })
   expect(await t.hub.twin.prisma.user.findFirst({ where: { username: 'sam' } })).toBeNull()
   const { requests } = await owner.json('/client/requests')
   expect(requests.map((r: { id: string }) => r.id)).toContain(created.json.id)

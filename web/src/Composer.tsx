@@ -998,7 +998,13 @@ export function Composer({
           )}
           {!recording && text.length > LIMIT - 200 && <span className={`char-count num${text.length > LIMIT ? ' over' : ''}`}>{LIMIT - text.length}</span>}
           {!recording && (
-            <button ref={emojiButton} className="icon-button emoji-button" aria-label="Emoji" title="Emoji" onMouseDown={(e) => e.preventDefault()} onClick={() => setEmojiAt(emojiAt ? null : emojiButton.current!.getBoundingClientRect())}>
+            <button ref={emojiButton} className="icon-button emoji-button" aria-label="Emoji" title="Emoji" onMouseDown={(e) => e.preventDefault()} onClick={() => {
+                if (emojiAt) return setEmojiAt(null)
+                // Above the whole box, 8px clear of it, right edge on the button (Discord's spot).
+                const b = emojiButton.current!.getBoundingClientRect()
+                const box = (emojiButton.current!.closest('.footer') ?? emojiButton.current!.closest('.composer'))?.getBoundingClientRect() ?? b
+                setEmojiAt(new DOMRect(b.x, box.top, b.width, b.bottom - box.top))
+              }}>
               <Icon name="smile" />
             </button>
           )}

@@ -4343,7 +4343,7 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
   bottom: -5px;
   width: 8px;
   height: 8px;
-  margin-left: -4px;
+  margin-left: calc(var(--arrow, 0px) - 4px);
   background: var(--bg-4);
   border-right: 1px solid var(--line-raised);
   border-bottom: 1px solid var(--line-raised);
@@ -5350,7 +5350,8 @@ img.emoji.jumbo {
 .char-count.over {
   color: var(--danger-text, #ff6b6b);
 }
-@media (pointer: coarse) {
+/* Phones have the keyboard's emoji; tablets keep the button, as in Discord. */
+@media (pointer: coarse) and (max-width: 767px) {
   .composer .emoji-button {
     display: none;
   }
