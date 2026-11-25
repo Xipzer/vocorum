@@ -106,7 +106,7 @@ export class Requests {
     if (allowed.shell?.(body)) row.summary += ' (roles can give a shell on your machines through agents: check which)'
     await this.migrate()
     await this.db.execute({ sql: 'INSERT INTO change_requests (id, method, route, body, kind, summary, reason, origin, created_at, expires_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', args: [row.id, row.method, row.route, row.body, row.kind, row.summary, row.reason, row.origin, row.created_at, row.expires_at, row.status] })
-    this.notify('REQUEST_CREATE', this.toClient(row))
+    this.notify('REQUEST_CREATE', await this.toClient(row, { secrets: true }))
     return this.toClient(row)
   }
 
@@ -180,16 +180,25 @@ export class Requests {
     return `${method} ${route}`
   }
 
-  private toClient(r: RequestRow) {
-    return { id: r.id, kind: r.kind, summary: r.summary, reason: r.reason, origin: r.origin, method: r.method, route: r.route, body: JSON.parse(r.body) as unknown, status: r.status, created_at: Number(r.created_at), expires_at: Number(r.expires_at), decided_at: r.decided_at === null ? null : Number(r.decided_at), result: r.result ? (JSON.parse(r.result) as unknown) : null, undoable: Boolean(r.undo) }
+  // `secrets`: the owner's own devices. An approved invite's pairing code only goes there, and
+  // only while it can still be used: never to the CLI, where an agent could pair as the new person.
+  private async toClient(r: RequestRow, { secrets = false } = {}) {
+    let result = r.result ? (JSON.parse(r.result) as Record<string, unknown> | null) : null
+    if (result && typeof result['code'] === 'string' && match('/client/guilds/:id/invites', r.route)) {
+      const pairing = await this.hub.store.pairingState(result['code'])
+      // Once used or expired the code is worth nothing: drop it from the stored result too.
+      if (pairing !== 'ready') await this.db.execute({ sql: 'UPDATE change_requests SET result = ? WHERE id = ?', args: [JSON.stringify({ ...result, code: null, pairing }), r.id] })
+      result = { ...result, code: pairing === 'ready' && secrets ? result['code'] : null, pairing }
+    }
+    return { id: r.id, kind: r.kind, summary: r.summary, reason: r.reason, origin: r.origin, method: r.method, route: r.route, body: JSON.parse(r.body) as unknown, status: r.status, created_at: Number(r.created_at), expires_at: Number(r.expires_at), decided_at: r.decided_at === null ? null : Number(r.decided_at), result, undoable: Boolean(r.undo) }
   }
 
   private notify(event: string, data: unknown) {
     this.hub.events.send(event, data, { shape: async (userId) => (this.hub.access.isHubOwner(userId) ? data : null) })
   }
 
-  async list(status?: string) {
-    return (status ? await this.rows('status = ?', [status]) : await this.rows()).map((r) => this.toClient(r))
+  async list(status?: string, { secrets = false } = {}) {
+    return Promise.all((status ? await this.rows('status = ?', [status]) : await this.rows()).map((r) => this.toClient(r, { secrets })))
   }
 
   private async pending(id: string) {
@@ -263,7 +272,7 @@ export class Requests {
   private async decide(id: string, status: RequestRow['status'], result: unknown) {
     await this.db.execute({ sql: 'UPDATE change_requests SET status = ?, decided_at = ?, result = ? WHERE id = ?', args: [status, Date.now(), JSON.stringify(result ?? null), id] })
     const [row] = await this.rows('id = ?', [id])
-    if (row) this.notify('REQUEST_UPDATE', this.toClient(row))
+    if (row) this.notify('REQUEST_UPDATE', await this.toClient(row, { secrets: true }))
   }
 
   // /admin/requests (local CLI): create, list, deny. Approving needs a passkey, so it is not here.
@@ -288,7 +297,7 @@ export class Requests {
     if (!this.hub.access.isHubOwner(v.userId)) throw new HttpError(403, 'Only the hub owner decides requests')
     const method = req.method ?? 'GET'
     let params: Record<string, string> | null
-    if (pathname === '/client/requests' && method === 'GET') return { requests: await this.list() }
+    if (pathname === '/client/requests' && method === 'GET') return { requests: await this.list(undefined, { secrets: true }) }
     if ((params = match('/client/requests/:id/undo', pathname)) && method === 'POST') return this.undo(params['id']!, `app (${v.device.name})`)
     if ((params = match('/client/requests/:id/deny', pathname)) && method === 'POST') {
       await this.pending(params['id']!)

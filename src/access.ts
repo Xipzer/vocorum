@@ -104,6 +104,7 @@ export class Access {
     const guildRows = await prisma.guild.findMany({ where: { id: { in: members.map((m) => m.guildId) } }, include: { roles: true } })
     const overwrites = await this.overwrites()
     const view: View = { version, guilds: new Map(), channels: new Map() }
+    let privateThreads: Set<string> | undefined
     for (const guild of guildRows) {
       const member = members.find((m) => m.guildId === guild.id)!
       const roles = JSON.parse(member.roles) as string[]
@@ -118,7 +119,7 @@ export class Access {
       }
       const admin = owner || (perms & P.ADMINISTRATOR) !== 0n
       view.guilds.set(guild.id, { perms: admin ? ALL : perms, roles, topRole: owner ? Number.MAX_SAFE_INTEGER : topRole, owner })
-      const channels = await prisma.channel.findMany({ where: { guildId: guild.id }, select: { id: true, type: true, parentId: true } })
+      const channels = await prisma.channel.findMany({ where: { guildId: guild.id }, select: { id: true, type: true, parentId: true, ownerId: true } })
       const byId = new Map(channels.map((c) => [c.id, c]))
       for (const channel of channels) {
         if (THREAD_TYPES.has(channel.type)) continue
@@ -128,7 +129,10 @@ export class Access {
       for (const channel of channels) {
         if (!THREAD_TYPES.has(channel.type)) continue
         const parent = channel.parentId ? view.channels.get(channel.parentId) : undefined
-        if (parent !== undefined && byId.has(channel.parentId!)) view.channels.set(channel.id, parent)
+        if (parent === undefined || !byId.has(channel.parentId!)) continue
+        // A private thread: only its members, its starter, and people who manage threads (as on Discord).
+        if (channel.type === 12 && !admin && !(parent & P.MANAGE_THREADS) && channel.ownerId !== userId && !(privateThreads ??= new Set((await prisma.threadMember.findMany({ where: { userId, channel: { type: 12 } }, select: { channelId: true } })).map((t) => t.channelId))).has(channel.id)) continue
+        view.channels.set(channel.id, parent)
       }
     }
     // Direct messages: only their two sides, with what Discord allows in a DM.

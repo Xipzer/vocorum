@@ -11,6 +11,8 @@ import { Sheet, usePress, type SheetAt, type SheetSpec } from './Sheet.tsx'
 import { cronLabel, remindTime, whenPicker } from './remind.ts'
 import { api, type Attachment, type Command, type CommandOption, type InteractionResult, type Message } from './api.ts'
 import { Icon } from './icons.tsx'
+import { customName, customTag, emojify, expandEmoji, serverEmoji } from './emoji.tsx'
+import type { CustomEmojiInfo } from './api.ts'
 
 // A pending file. The server keeps the name it was uploaded under, so a rename or a
 // spoiler toggle uploads the kept File again under the new name.
@@ -30,7 +32,10 @@ function UploadTile({ upload, onSpoiler, onEdit, onRemove, onRetry }: { upload: 
         {upload.error ? (
           <div className="upload-error" role="alert">
             <Icon name="warn" size={24} />
-            <span>{upload.error}</span>
+            {/* The tile is small: the short word here, the reason on hover and for screen readers. */}
+            <span title={upload.error} aria-label={`Upload failed: ${upload.error}`}>
+              Upload failed
+            </span>
             <button className="button" onClick={onRetry}>
               Retry
             </button>
@@ -471,6 +476,10 @@ export function Composer({
     if (token?.trigger === ':' && !emojiReady) void loadEmoji().then(() => setEmojiReady(true))
   }, [token?.trigger, emojiReady])
   const guildId = hub?.channels.find((c) => c.id === channelId)?.guild_id ?? hub?.threads.find((c) => c.id === channelId)?.guild_id ?? hub?.guild.id
+  const [serverList, setServerList] = useState<CustomEmojiInfo[]>([])
+  useEffect(() => {
+    if (token?.trigger === ':') void serverEmoji(guildId).then(setServerList)
+  }, [token?.trigger, guildId])
   const suggestions: Suggestion[] = (() => {
     if (!token || caret.start !== caret.end || dismissed === token.start || !hub) return []
     const q = token.query
@@ -490,9 +499,12 @@ export function Composer({
         .map((c) => ({ key: c.id, label: c.name ?? '', hint: hub.channels.find((p) => p.id === c.parent_id)?.name ?? undefined, insert: `<#${c.id}> `, glyph: hub.threads.includes(c) ? <Icon name="thread" size={16} /> : '#' }))
     }
     if (!emojiIndex) return []
+    const own = serverList
+      .filter((e) => e.name.toLowerCase().includes(q))
+      .map((e) => ({ key: e.id, label: `:${e.name}:`, insert: `:${e.name}: `, glyph: customTag(e) }))
     const starts = emojiIndex.filter(([, name]) => name.toLowerCase().replace(/\s+/g, '_').startsWith(q))
     const rest = emojiIndex.filter(([, name]) => !name.toLowerCase().replace(/\s+/g, '_').startsWith(q) && name.toLowerCase().includes(q.replace(/_/g, ' ')))
-    return [...starts, ...rest].slice(0, 10).map(([emoji, name]) => ({ key: emoji, label: `:${name.toLowerCase().replace(/[\s:]+/g, '_')}:`, insert: `${emoji} `, glyph: emoji }))
+    return [...own, ...[...starts, ...rest].map(([emoji, name]) => ({ key: emoji, label: `:${name.toLowerCase().replace(/[\s:]+/g, '_')}:`, insert: `${emoji} `, glyph: emoji }))].slice(0, 10)
   })()
   useEffect(() => setSuggestPick(0), [token?.trigger, token?.query])
 
@@ -618,7 +630,7 @@ export function Composer({
   const canSchedule = useStore((d) => d.reminders !== null)
   const schedule = async (when: { at: number } | { cron: string; at: number }) => {
     const content = text
-    const s = await api.schedule({ channel_id: channelId, content, ...('cron' in when ? { cron: when.cron } : { at: when.at }) })
+    const s = await api.schedule({ channel_id: channelId, content: await expandEmoji(content, guildId), ...('cron' in when ? { cron: when.cron } : { at: when.at }) })
     store.upsertScheduled(s)
     setText((t) => (t === content ? '' : t))
     store.notice('cron' in when ? `Scheduled: ${cronLabel(when.cron, s.next_at)}.` : `Message scheduled for ${remindTime(when.at)}.`)
@@ -673,7 +685,7 @@ export function Composer({
       setUploads((list) => list.filter((x) => !files.some((u) => u.key === x.key)))
       onCancelReply()
       try {
-        await api.send(channelId, { content, attachmentIds: ids, ...(Object.keys(descriptions).length && { descriptions }), ...(replyTo && { replyTo: replyTo.id }) })
+        await api.send(channelId, { content: await expandEmoji(content, guildId), attachmentIds: ids, ...(Object.keys(descriptions).length && { descriptions }), ...(replyTo && { replyTo: replyTo.id }) })
       } catch (e) {
         setText(content)
         onError(e instanceof Error ? e.message : String(e))
@@ -828,7 +840,7 @@ export function Composer({
         <div className="palette suggest" role="listbox" aria-label={token?.trigger === '@' ? 'Members' : token?.trigger === '#' ? 'Channels' : 'Emoji'}>
           {suggestions.map((s, index) => (
             <button key={s.key} role="option" aria-selected={index === suggestPick} className={`slash-item${index === suggestPick ? ' on' : ''}`} onMouseEnter={() => setSuggestPick(index)} onMouseDown={(e) => e.preventDefault()} onClick={() => chooseSuggestion(s)}>
-              {s.glyph && <span className={`suggest-glyph${token?.trigger === ':' ? ' emoji' : ''}`}>{s.glyph}</span>}
+              {s.glyph && <span className={`suggest-glyph${token?.trigger === ':' ? ' emoji' : ''}`}>{token?.trigger === ':' ? emojify(String(s.glyph)) : s.glyph}</span>}
               <span className="slash-name">{s.label}</span>
               {s.hint && <span className="muted">{s.hint}</span>}
             </button>
@@ -849,9 +861,11 @@ export function Composer({
       {emojiAt && (
         <EmojiPicker
           anchor={emojiAt}
+          guildId={guildId}
           onPick={(emoji) => {
             rememberEmoji(emoji)
-            replaceRange(caret.start, caret.end, emoji)
+            // A server emoji reads as :name: while typing; sending turns it back into the emoji.
+            replaceRange(caret.start, caret.end, customName(emoji) ? `:${customName(emoji)}:` : emoji)
             setEmojiAt(null)
           }}
           onClose={() => setEmojiAt(null)}

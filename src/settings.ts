@@ -70,6 +70,11 @@ export class Settings {
     if ((params = match('/client/guilds/:id/channels', pathname)) && method === 'PATCH') return this.reorder(v, await this.guild(v, params['id']!, P.MANAGE_CHANNELS), await readJson<unknown>(req))
     if ((params = match('/client/channels/:id/settings', pathname)) && method === 'PATCH') return this.patchChannel(v, params['id']!, await readJson(req))
     if ((params = match('/client/channels/:id', pathname)) && method === 'DELETE') return this.deleteChannel(v, params['id']!)
+    if ((params = match('/client/emojis/:id', pathname)) && method === 'GET') {
+      this.hub.community.serveEmoji(res, params['id']!)
+      return null
+    }
+    if ((params = match('/client/guilds/:id/emojis', pathname)) && method === 'GET') return this.hub.community.emojiOf(await this.guild(v, params['id']!))
     if ((params = match('/client/guild-icons/:id', pathname)) && method === 'GET') {
       this.serveImage(res, this.mediaFile('guild-icon', await this.guild(v, params['id']!)))
       return null

@@ -82,6 +82,10 @@ node bin/vocorum.js discord status
 Check: open a few old threads in the app. Pictures load, and nothing shows as
 unread.
 
+Moving a community with other members? See
+[Moving a Discord community](communities.md) for what comes across and how
+members join.
+
 ## 3. Clean up Discord (optional)
 
 Only do this once the import has finished and you have looked at the result.

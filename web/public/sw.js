@@ -1,5 +1,5 @@
 // App shell cache only. API, events and attachments always go to the network.
-const CACHE = 'vocorum-shell-v3'
+const CACHE = 'vocorum-shell-v4'
 const SHELL = ['/', '/manifest.webmanifest', '/icon.svg', '/icon-192.png', '/fonts/inter-latin-wght.woff2']
 
 self.addEventListener('install', (event) => {
@@ -29,7 +29,7 @@ self.addEventListener('fetch', (event) => {
     )
     return
   }
-  if (url.pathname.startsWith('/assets/') || url.pathname.startsWith('/fonts/')) {
+  if (url.pathname.startsWith('/assets/') || url.pathname.startsWith('/fonts/') || url.pathname.startsWith('/emoji/')) {
     event.respondWith(
       caches.match(event.request).then(
         (hit) =>

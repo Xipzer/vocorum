@@ -811,6 +811,7 @@ export class DigitalDiscord {
   // --- Test utilities ---
 
   async simulateUserMessage({
+    id,
     channelId,
     userId,
     content,
@@ -820,6 +821,8 @@ export class DigitalDiscord {
     type = MessageType.Default,
     flags = 0,
   }: {
+    // A forum post's opening message has its thread's id, as on Discord.
+    id?: string
     channelId: string
     userId: string
     content: string
@@ -833,7 +836,7 @@ export class DigitalDiscord {
     if (!this.server) {
       throw new Error('Server not started')
     }
-    const messageId = generateSnowflake()
+    const messageId = id ?? generateSnowflake()
     await this.prisma.message.create({
       data: {
         id: messageId,

@@ -16,6 +16,15 @@ This product includes third-party software:
 - Inter font (web/public/fonts), Copyright (c) 2016 The Inter Project Authors,
   SIL Open Font License 1.1 (see OFL.txt and web/public/fonts/OFL.txt).
 
+- Twemoji 17.0.3 emoji images (web/public/emoji), Copyright (c) 2022-present
+  Jason Sofonia & Justine De Caires and Copyright (c) 2014-2021 Twitter,
+  CC-BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Files renamed;
+  artwork unchanged. See web/public/emoji/LICENSE.txt.
+
+- Twemoji Mozilla font 0.7.0 (web/public/fonts/twemoji-mozilla.woff2), SIL Open
+  Font License 1.1, artwork CC-BY 4.0 (Twitter). Used unmodified. See
+  web/public/fonts/LICENSE-Twemoji-Mozilla.txt.
+
 Apache-2.0 dependencies installed from npm (not modified, not bundled into
 Vocorum's own files): Prisma (@prisma/client, @prisma/adapter-libsql, prisma),
 discord.js and playwright-core (also as playwright-webkit, pinned for the

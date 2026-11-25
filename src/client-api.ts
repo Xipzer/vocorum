@@ -106,6 +106,9 @@ export class ClientApi {
       if (!user || (!user.bot && id !== v.userId && !(await this.hub.access.peers(v.userId)).has(id))) throw new HttpError(404, 'No avatar')
       return this.hub.settings.serveImage(res, path.join(this.hub.options.paths.media, `avatar-${id}.png`))
     }
+    // Forum posts and welcoming imported people (community.ts).
+    if ((params = match('/client/channels/:id/threads', pathname)) && method === 'POST') return send(200, await this.hub.community.forumPost(v, params['id']!, await readJson(req)))
+    if ((params = match('/client/users/:id/welcome', pathname)) && method === 'POST') return send(200, await this.hub.community.welcome(v, params['id']!))
     if ((params = match('/client/channels/:id/messages', pathname))) {
       if (method === 'GET') return send(200, await this.messages(v, params['id']!, new URL(req.url ?? '/', 'http://x').searchParams))
       if (method === 'POST') return send(200, await this.postMessage(v, params['id']!, await readJson(req)))
@@ -280,6 +283,7 @@ export class ClientApi {
     const agentGuilds = new Set([...activeMachines].flatMap((machine) => (machine === 'admin' ? (config.adminGuildId ? [config.adminGuildId] : []) : (botGuilds.get(machine) ?? [config.guildId]))))
     const roles = await this.prisma.role.findMany({ where: { guildId: { in: guilds.map((g) => g.id) } }, orderBy: [{ position: 'desc' }, { id: 'asc' }] })
     const profiles = await this.hub.store.profiles()
+    const pending = await this.hub.community.pending()
     const guildCommands = Object.fromEntries(await Promise.all(guilds.map(async (g) => [g.id, await this.hub.twin.getRegisteredCommands({ guildId: g.id })] as const)))
     const primary = guilds.find((g) => g.id === config.guildId) ?? guilds[0]
     const visible = new Set(view.channels.keys())
@@ -302,7 +306,8 @@ export class ClientApi {
       channels: channels.filter((c) => !THREAD_TYPES.includes(c.type)).map(withPerms),
       threads: channels.filter((c) => THREAD_TYPES.includes(c.type)).map((c) => ({ ...withPerms(c), last_message_id: c.lastMessageId })),
       // color: the name colour from the user's profile (0xRRGGBB or null).
-      users: users.map((u) => ({ ...userToAPI(u), color: profiles[u.id]?.color ?? null })),
+      // pending: never had a device (imported from Discord, or invited and not joined yet).
+      users: users.map((u) => ({ ...userToAPI(u), color: profiles[u.id]?.color ?? null, ...(pending.has(u.id) && { pending: true }) })),
       // Per guild: roles (highest first) and members with their roles.
       roles: Object.fromEntries(guilds.map((g) => [g.id, roles.filter((r) => r.guildId === g.id).map(roleToAPI)])),
       // The agents' bot only where a machine's agent is (not in a server of friends).

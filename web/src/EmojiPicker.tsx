@@ -1,8 +1,10 @@
-// The emoji picker: every system emoji, searchable, grouped like Discord's, with the ones
-// you use most on top. The emoji list loads only when the picker first opens.
+// The emoji picker: the server's own emoji, then every standard emoji, searchable, grouped
+// like Discord's, with the ones you use most on top. The lists load when it first opens.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { LoadingMark } from './components.tsx'
+import { customName, customTag, emojify, serverEmoji } from './emoji.tsx'
+import { useStore } from './store.ts'
 
 type Groups = Array<{ name: string; emoji: Array<[string, string]> }>
 let cache: Groups | null = null
@@ -15,8 +17,13 @@ export function rememberEmoji(emoji: string) {
   localStorage.setItem(RECENT_KEY, JSON.stringify(next))
 }
 
-export function EmojiPicker({ anchor, onPick, onClose }: { anchor: DOMRect; onPick: (emoji: string) => void; onClose: () => void }) {
+export function EmojiPicker({ anchor, guildId, onPick, onClose }: { anchor: DOMRect; guildId?: string; onPick: (emoji: string) => void; onClose: () => void }) {
   const [groups, setGroups] = useState<Groups | null>(cache)
+  const [server, setServer] = useState<Array<[string, string]>>([])
+  const serverName = useStore((d) => d.state?.guilds?.find((g) => g.id === guildId)?.name ?? d.state?.guild.name ?? 'This server')
+  useEffect(() => {
+    void serverEmoji(guildId).then((list) => setServer(list.map((e) => [customTag(e), e.name])))
+  }, [guildId])
   const [q, setQ] = useState('')
   const [hover, setHover] = useState<[string, string] | null>(null)
   const panel = useRef<HTMLDivElement>(null)
@@ -42,12 +49,14 @@ export function EmojiPicker({ anchor, onPick, onClose }: { anchor: DOMRect; onPi
     setPos({ left, top })
   }, [anchor, groups])
   const term = q.trim().toLowerCase()
-  const names = useMemo(() => new Map((groups ?? []).flatMap((g) => g.emoji)), [groups])
+  const names = useMemo(() => new Map([...(groups ?? []).flatMap((g) => g.emoji), ...server]), [groups, server])
+  // Another server's emoji in the recent list can't be sent here: leave them out.
+  const recent = recentEmoji().filter((e) => !customName(e) || names.has(e))
   const shown: Groups = !groups
     ? []
     : term
-      ? [{ name: 'Results', emoji: groups.flatMap((g) => g.emoji).filter(([, n]) => n.includes(term)).slice(0, 160) }]
-      : [{ name: 'Frequently used', emoji: recentEmoji().map((e) => [e, names.get(e) ?? ''] as [string, string]) }, ...groups].filter((g) => g.emoji.length)
+      ? [{ name: 'Results', emoji: [...server, ...groups.flatMap((g) => g.emoji)].filter(([, n]) => n.toLowerCase().includes(term)).slice(0, 160) }]
+      : [{ name: 'Frequently used', emoji: recent.map((e) => [e, names.get(e) ?? ''] as [string, string]) }, { name: serverName, emoji: server }, ...groups].filter((g) => g.emoji.length)
   const pick = (e: string) => {
     rememberEmoji(e)
     onPick(e)
@@ -70,14 +79,14 @@ export function EmojiPicker({ anchor, onPick, onClose }: { anchor: DOMRect; onPi
             <div className="emoji-grid">
               {g.emoji.map(([e, n]) => (
                 <button key={e} className="emoji-cell" onClick={() => pick(e)} onMouseEnter={() => setHover([e, n])} aria-label={n || e}>
-                  {e}
+                  {emojify(e)}
                 </button>
               ))}
             </div>
           </section>
         ))}
       </div>
-      <div className="emoji-foot">{hover ? <><span className="emoji-big">{hover[0]}</span>:{hover[1].replace(/\s+/g, '_')}:</> : 'Pick an emoji'}</div>
+      <div className="emoji-foot">{hover ? <><span className="emoji-big">{emojify(hover[0])}</span>:{hover[1].replace(/\s+/g, '_')}:</> : 'Pick an emoji'}</div>
     </div>
   )
 }

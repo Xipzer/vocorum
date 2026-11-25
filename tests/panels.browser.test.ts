@@ -474,7 +474,7 @@ test.skipIf(!ready)('reactions: add from the toolbar, it lights up as yours; cli
   const message = page.locator('.message', { hasText: 'filler 59' }).first()
   await message.hover()
   await message.getByRole('button', { name: 'React 👍' }).click()
-  const chip = message.locator('.reaction.me', { hasText: '👍' })
+  const chip = message.locator('.reaction.me', { has: page.locator('img[alt="👍"]') })
   await chip.waitFor()
   await chip.click()
   await chip.waitFor({ state: 'detached' })
@@ -484,7 +484,7 @@ test.skipIf(!ready)('reactions: add from the toolbar, it lights up as yours; cli
   await picker.waitFor()
   await picker.getByRole('textbox').fill('rocket')
   await picker.getByRole('button', { name: 'rocket' }).first().click()
-  await message.locator('.reaction.me', { hasText: '🚀' }).waitFor()
+  await message.locator('.reaction.me', { has: page.locator('img[alt="🚀"]') }).waitFor()
   await page.screenshot({ path: path.join(shots, 'reactions.png') })
 })
 
@@ -1530,7 +1530,7 @@ test.skipIf(!ready)("an agent's permission prompt is an approval card: the ask, 
   const card = p.locator('.approval.open', { hasText: 'vocorum devices revoke laptop' })
   await card.waitFor()
   await card.getByText('Run this command?').waitFor()
-  for (const name of ['Accept', 'Always', 'Deny']) await card.getByRole('button', { name, exact: true }).waitFor()
+  for (const name of ['Accept', 'Always allow', 'Deny']) await card.getByRole('button', { name, exact: true }).waitFor()
   await demo.thread.send('⚠️ **Permission Required**\n**Type:** `bash`\n**Pattern:** `vocorum people remove sam`\n❌ Permission **rejected**')
   const done = p.locator('.approval', { hasText: 'vocorum people remove sam' })
   await done.getByText('Denied', { exact: true }).waitFor()
@@ -1665,5 +1665,123 @@ test.skipIf(!ready)('accessibility: every control has a name, Tab starts with Sk
   await p.setViewportSize({ width: 390, height: 844 })
   await p.waitForTimeout(300)
   await expect(unnamed(p)).resolves.toEqual([])
+  await p.close()
+}, 60_000)
+
+test.skipIf(!ready)('error states read as words: a refused send, a failed upload, a lost hub', async () => {
+  const stored = await page.context().storageState()
+  const ctx = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, serviceWorkers: 'block', storageState: stored })
+  const p = await ctx.newPage()
+  await p.goto(`${origin}/#/c/${demo.kimaki.id}`)
+  await p.locator('.message').last().waitFor()
+  await p.route('**/client/channels/*/messages', (r) => (r.request().method() === 'POST' ? r.fulfill({ status: 403, json: { message: 'Missing Permissions', code: 50013 } }) : r.continue()))
+  const box = p.getByPlaceholder('Message #kimaki')
+  await box.fill('hello there')
+  await box.press('Enter')
+  await p.getByText("You don't have permission to do that here.").waitFor()
+  await expect(p.getByText('Missing Permissions').count()).resolves.toBe(0)
+  await p.unroute('**/client/channels/*/messages')
+  await box.fill('')
+  await p.route('**/client/uploads', (r) => r.fulfill({ status: 500, json: { message: 'The hub could not store the file' } }))
+  await p.locator('input[type=file]').first().setInputFiles({ name: 'report.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 x') })
+  await p.locator('.upload-error', { hasText: 'Upload failed' }).waitFor()
+  await expect(p.locator('.upload-error span').getAttribute('title')).resolves.toBe('The hub could not store the file')
+  await ctx.close()
+  const off = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, serviceWorkers: 'block', storageState: stored })
+  const q = await off.newPage()
+  await q.routeWebSocket(/client\/events/, (ws) => ws.close())
+  await q.goto(`${origin}/#/c/${demo.kimaki.id}`)
+  await q.locator('.message').last().waitFor()
+  await q.locator('.offline-notice', { hasText: "Can't reach the hub. Retrying." }).waitFor({ timeout: 8000 })
+  await off.close()
+}, 60_000)
+
+test.skipIf(!ready)('fresh-eyes fixes: DMs with none open, a name kept on Esc, a bot named as in the chat in search', async () => {
+  const p = await page.context().newPage()
+  await p.goto(`${origin}/#/c/${demo.kimaki.id}`)
+  await p.getByPlaceholder('Message #kimaki').waitFor()
+  // Direct messages with nothing open: their own page, not the last channel.
+  await p.evaluate(() => (document.querySelector('.rail-item[aria-label="Direct messages"]') as HTMLElement).click())
+  // (Earlier tests may have opened DMs: then the newest one opens instead.)
+  await expect.poll(() => p.getByPlaceholder('Message #kimaki').count()).toBe(0)
+  await p.locator('.chat.no-channel, .chat-header .dm-avatar, .chat-header .title-avatar').first().waitFor()
+  // A display name typed and then Esc is kept.
+  await p.goto(`${origin}/#/c/${demo.kimaki.id}`)
+  await p.getByRole('button', { name: 'Settings', exact: true }).click()
+  await p.getByRole('button', { name: 'User settings' }).click()
+  const field = p.getByRole('textbox', { name: 'Display name' })
+  await field.fill('Robin Owner')
+  await field.press('Escape')
+  await expect.poll(() => p.evaluate(() => fetch('/client/state').then((r) => r.json()).then((j) => j.users.find((u: { id: string }) => u.id === j.me.id)?.global_name))).toBe('Robin Owner')
+  await p.evaluate(() => fetch('/client/me', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ global_name: null }) }))
+  await p.close()
+}, 60_000)
+
+test.skipIf(!ready)('emoji draw as Twemoji images, only those shown are fetched, and a copy keeps them', async () => {
+  const p = await page.context().newPage()
+  await demo.website.send('Shipped 🎉 with flags 🇬🇧 and a family 👨‍👩‍👧, © stays text')
+  await p.goto(`${origin}/#/c/${demo.website.id}`)
+  const text = p.locator('.message .markdown', { hasText: 'Shipped' }).last()
+  await text.locator('img.emoji').nth(2).waitFor()
+  const images = await text.locator('img.emoji').evaluateAll((els) => els.map((el) => [(el as HTMLImageElement).alt, new URL((el as HTMLImageElement).src).pathname, (el as HTMLImageElement).naturalWidth > 0]))
+  expect(images).toEqual([
+    ['🎉', '/emoji/twemoji-17/1f389.svg', true],
+    ['🇬🇧', '/emoji/twemoji-17/1f1ec-1f1e7.svg', true],
+    ['👨‍👩‍👧', '/emoji/twemoji-17/1f468-200d-1f469-200d-1f467.svg', true],
+  ])
+  const response = await p.request.get(`${origin}/emoji/twemoji-17/1f389.svg`)
+  expect(response.headers()['cache-control']).toContain('immutable')
+  // A string, not a function: the test runner's transform would add helpers the page lacks.
+  const copied = await p.evaluate(`(() => {
+    const el = [...document.querySelectorAll('.message .markdown')].filter((m) => m.textContent.includes('Shipped')).pop()
+    const range = document.createRange()
+    range.selectNodeContents(el)
+    getSelection().removeAllRanges()
+    getSelection().addRange(range)
+    let got = ''
+    function grab(e) { got = e.clipboardData.getData('text/plain') }
+    document.addEventListener('copy', grab)
+    document.execCommand('copy')
+    document.removeEventListener('copy', grab)
+    return got
+  })()`)
+  expect(copied).toContain('Shipped 🎉 with flags 🇬🇧 and a family 👨‍👩‍👧, © stays text')
+  await p.close()
+}, 60_000)
+
+test.skipIf(!ready)('custom emoji come from the hub, react and send by name; a forum lists its posts', async () => {
+  const p = await page.context().newPage()
+  const guildId = hub.options.config.guildId
+  const png = Buffer.from(fs.readFileSync(path.resolve(import.meta.dirname, '../web/public/icon-192.png')))
+  await hub.community.saveEmoji(guildId, '1300000000000000001', 'shipit', false, png)
+  await demo.website.send('Custom <:shipit:1300000000000000001> and a lost one <:gone:1300000000000000099>')
+  await p.goto(`${origin}/#/c/${demo.website.id}`)
+  const message = p.locator('.message', { hasText: 'Custom' }).last()
+  await expect.poll(() => message.locator('img[alt=":shipit:"]').getAttribute('src')).toBe('/client/emojis/1300000000000000001')
+  await message.getByText(':gone:').waitFor()
+  // The picker has the server's own emoji; a reaction with one shows it, not its raw tag.
+  await message.hover()
+  await message.locator('.message-actions').getByRole('button', { name: 'Add reaction' }).click()
+  await p.locator('.emoji-cell[aria-label="shipit"]').click()
+  await message.locator('.reaction.me img[alt=":shipit:"]').waitFor()
+  // Typed as :shipit:, sent as the emoji.
+  const box = p.getByPlaceholder(/^Message /)
+  await box.fill('Ship :shipit:')
+  await box.press('Enter')
+  await p.locator('.message', { hasText: 'Ship' }).last().locator('img[alt=":shipit:"]').waitFor()
+  // A forum: its posts as cards; a card opens the post.
+  const forum = (await demo.website.guild.channels.create({ name: 'ideas', type: 15 as never })) as unknown as { id: string; threads: { create: (o: object) => Promise<{ id: string }> } }
+  const post = await forum.threads.create({ name: 'Dark mode for the docs', message: { content: 'Too bright at night' } })
+  await p.goto(`${origin}/#/c/${forum.id}`)
+  await p.locator('.forum-post', { hasText: 'Dark mode for the docs' }).click()
+  await p.waitForURL(new RegExp(post.id))
+  // A new post from the app: a title and a first message, then the post opens.
+  await p.goto(`${origin}/#/c/${forum.id}`)
+  await p.getByRole('button', { name: 'New post' }).click()
+  await p.getByRole('textbox', { name: 'Post title' }).fill('Pin threads to the top')
+  await p.getByRole('textbox', { name: 'First message' }).fill('So the important ones stay in view')
+  await p.getByRole('button', { name: 'Post', exact: true }).click()
+  await p.locator('.message', { hasText: 'So the important ones stay in view' }).waitFor()
+  await expect(p.locator('.chat-header .title-text').textContent()).resolves.toBe('Pin threads to the top')
   await p.close()
 }, 60_000)

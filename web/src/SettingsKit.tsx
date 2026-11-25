@@ -138,7 +138,23 @@ export function TextSetting({ label, note, value, max, placeholder, allowEmpty, 
     await feedback.run(() => onSave(draft.trim()))
     setBusy(false)
   }
-  const props = { id, value: draft, maxLength: max, placeholder, disabled, className: 'settings-input', onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setDraft(e.target.value) }
+  // A typed change is kept when the field is left (Tab, a click elsewhere, Esc closing
+  // settings), not only by Save or Enter: nothing typed is thrown away without a word.
+  const onBlur = (e: React.FocusEvent) => {
+    if ((e.relatedTarget as HTMLElement | null)?.dataset['save'] !== id) void save()
+  }
+  // Settings closing (Esc, the close button) unmounts the field before it blurs: keep the
+  // last typed value then too.
+  const latest = useRef({ draft, value, valid, onSave })
+  latest.current = { draft, value, valid, onSave }
+  useEffect(
+    () => () => {
+      const l = latest.current
+      if (l.draft.trim() !== l.value.trim() && l.valid) void l.onSave(l.draft.trim()).catch(() => {})
+    },
+    [],
+  )
+  const props = { id, value: draft, maxLength: max, placeholder, disabled, className: 'settings-input', onBlur, onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setDraft(e.target.value) }
   return (
     <div className="settings-field">
       <label className="settings-label" htmlFor={id}>
@@ -147,12 +163,12 @@ export function TextSetting({ label, note, value, max, placeholder, allowEmpty, 
       {note && <div className="settings-item-note">{note}</div>}
       <div className="settings-field-row">
         {multiline ? (
-          <textarea {...props} rows={3} onKeyDown={(e) => e.key === 'Enter' && (e.metaKey || e.ctrlKey) && void save()} />
+          <textarea {...props} rows={3} onKeyDown={(e) => ((e.key === 'Enter' && (e.metaKey || e.ctrlKey)) || e.key === 'Escape') && void save()} />
         ) : (
-          <input {...props} onKeyDown={(e) => e.key === 'Enter' && void save()} />
+          <input {...props} onKeyDown={(e) => (e.key === 'Enter' || e.key === 'Escape') && void save()} />
         )}
         {changed && (
-          <button className="button primary" disabled={!valid || busy} onClick={() => void save()}>
+          <button className="button primary" data-save={id} disabled={!valid || busy} onClick={() => void save()}>
             Save
           </button>
         )}

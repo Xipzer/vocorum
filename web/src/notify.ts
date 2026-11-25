@@ -101,7 +101,7 @@ export async function enablePush(): Promise<string> {
   const key = store.data.state?.notifications?.vapid_public_key
   if (!pushSupported() || !key) return 'This browser can’t receive notifications. On iPhone, add Vocorum to the Home Screen first.'
   const permission = await Notification.requestPermission()
-  if (permission !== 'granted') return 'Notifications are blocked for this site in the browser settings.'
+  if (permission !== 'granted') return 'Notifications are blocked for this site. Allow them in the browser’s site settings, then try again.'
   const reg = await navigator.serviceWorker.ready
   const sub = (await reg.pushManager.getSubscription()) ?? (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) }))
   await api.pushSubscribe(sub.toJSON())

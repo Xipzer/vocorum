@@ -140,10 +140,34 @@ Requests wait 24 hours. Nothing can change the Admin server this way.`,
   backup: `vocorum backup [DIR] [--no-files] [--json]
 
 A consistent copy of the hub while it runs: both databases, the config, the
-secrets and the CA (mode 0600, folder 0700), and the stored files as hard links
-(no extra space; --no-files leaves them out). Default DIR: <state>/backups/<time>.
-Take one before an import, a purge or an update. To restore, stop the hub and
-copy the folder's contents back into the state folder.`,
+secrets and the CA, the hub's Kimaki data (its sessions and their threads), and
+the stored files as hard links when DIR is on the same disk (no extra space;
+--no-files leaves them out). Owner only (0600, folders 0700). A manifest lists
+what is in it. Default DIR: <state>/backups/<time>; copy it to another disk or
+machine to survive losing this one. Take one before an import, a purge or an update.
+Restore with: vocorum restore DIR`,
+  export: `vocorum export DIR [--json]
+
+Everything you can read, as plain files that need nothing from Vocorum: every
+server's channels and threads and your own direct messages (never other
+people's), each as Markdown to read and JSON Lines to process, every stored file
+under its name, and people.json. DIR must be outside the hub folder.`,
+  uninstall: `vocorum uninstall [--yes] [--delete-data] [--json]
+
+Takes this hub off this machine: stops and removes its service and its Kimaki
+and admin agent services (systemd, launchd or Task Scheduler), stops background
+processes, and removes the vocorum command setup made. Without --yes it only
+lists what it would do. Data is kept unless --delete-data: export or back it up
+first (vocorum export DIR, vocorum backup DIR). It then lists what to do by hand:
+the certificate and passkey on each device, Tailscale shares, this code folder.`,
+  restore: `vocorum restore DIR [--replace] [--json]
+
+Puts a backup back: into an empty hub folder (a new machine: set VOCORUM_DIR or
+use ~/.vocorum), or over the current one with --replace (what is there is moved
+aside, never deleted). The hub must not be running. Checks the copy against the
+backup's manifest, then: vocorum setup. Devices keep trusting the hub when this
+machine has the old hub's address and name (same CA); with a new address the
+hub makes a new CA, and devices install it again from the setup page.`,
   restart: `vocorum restart
 
 Restarts this hub's service (systemd or launchd) and waits until it answers.
@@ -203,7 +227,7 @@ function help(key: string) {
   console.log(HELP[key] ?? Object.values(HELP).map((h) => h.split('\n')[0]).join('\n'))
 }
 
-const BOOLEAN = new Set(['help', 'app', 'no-service', 'remove', 'json', 'yes', 'dry-run', 'no-service', 'detach', 'no-files', 'threads', 'kimaki-keep'])
+const BOOLEAN = new Set(['help', 'replace', 'delete-data', 'app', 'no-service', 'remove', 'json', 'yes', 'dry-run', 'no-service', 'detach', 'no-files', 'threads', 'kimaki-keep'])
 
 const str = (v: string | true | undefined) => (typeof v === 'string' ? v : undefined)
 
@@ -352,10 +376,12 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
         const twin = openTwin(paths)
         const row = (await twin.execute({ sql: 'SELECT id, globalName FROM User WHERE username = ? AND bot = 0', args: [username] })).rows[0]
         if (row?.['globalName'] && !str(flags['name'])) flags['name'] = String(row['globalName'])
+        const servers = row ? (await twin.execute({ sql: 'SELECT g.name FROM GuildMember m JOIN Guild g ON g.id = m.guildId WHERE m.userId = ?', args: [String(row['id'])] })).rows.map((r) => String(r['name'])) : []
         twin.close()
-        if (!row || String(row['id']) === config.ownerUserId) throw new Error(`No friend "${username}". Invite them first: vocorum invite ${username}`)
+        if (row && String(row['id']) === config.ownerUserId) throw new Error(`${username} is you, the hub's owner: pair your own device with vocorum pair <device name>.`)
+        if (!row) throw new Error(`No one called "${username}" on the hub. Someone from an imported Discord server: check the username (vocorum people list), or import the server first. Your own Discord account is you here (vocorum pair <device name>). Someone new: vocorum invite ${username}`)
         code = await store.createPairing(`${username}'s device`, { userId: String(row['id']), ttlMs: 24 * 3_600_000 })
-        server = 'their servers'
+        server = servers.length ? servers.join(', ') : 'their servers'
       }
     } finally {
       store.close()
@@ -418,44 +444,60 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
   }
   if (command === 'backup') {
     requireConfig()
-    const { openSqlite } = await import('./sqlite.ts')
+    const { backup } = await import('./backup.ts')
     const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)
     const dir = path.resolve(sub ?? path.join(paths.root, 'backups', stamp))
-    if (fs.existsSync(dir) && fs.readdirSync(dir).length) throw new Error(`${dir} is not empty. Give a new folder.`)
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-    const started = Date.now()
-    // VACUUM INTO reads one snapshot, so the copy is consistent while the hub writes.
-    for (const name of ['hub.db', 'twin.db']) {
-      const db = openSqlite(`file:${path.join(paths.root, name)}`)
-      try {
-        await db.execute({ sql: 'VACUUM INTO ?', args: [path.join(dir, name)] })
-      } finally {
-        db.close()
-      }
-      fs.chmodSync(path.join(dir, name), 0o600)
-    }
-    const skip = new Set(['hub.db', 'twin.db', 'hub.db-wal', 'hub.db-shm', 'twin.db-wal', 'twin.db-shm', 'backups', 'attachments', 'media', 'kimaki-data', 'import', 'purge'])
-    let files = 0
-    const copy = (from: string, to: string, link: boolean) => {
-      const stat = fs.statSync(from)
-      if (stat.isDirectory()) {
-        fs.mkdirSync(to, { recursive: true, mode: 0o700 })
-        for (const entry of fs.readdirSync(from)) copy(path.join(from, entry), path.join(to, entry), link)
-      } else if (stat.isFile()) {
-        if (link) {
-          try {
-            fs.linkSync(from, to)
-          } catch {
-            fs.copyFileSync(from, to)
-          }
-        } else fs.copyFileSync(from, to)
-        if (link) files++
-      }
-    }
-    for (const entry of fs.readdirSync(paths.root)) if (!skip.has(entry)) copy(path.join(paths.root, entry), path.join(dir, entry), false)
-    for (const entry of ['import', 'purge']) if (fs.existsSync(path.join(paths.root, entry))) copy(path.join(paths.root, entry), path.join(dir, entry), false)
-    if (flags['no-files'] !== true) for (const entry of ['attachments', 'media']) if (fs.existsSync(path.join(paths.root, entry))) copy(path.join(paths.root, entry), path.join(dir, entry), true)
-    await emit({ backup: dir, stored_files_linked: files, seconds: (Date.now() - started) / 1000 }, () => console.log(`Backed up to ${dir} (${files} stored files linked) in ${((Date.now() - started) / 1000).toFixed(1)} s.`))
+    const result = await backup(paths, dir, { files: flags['no-files'] !== true })
+    const c = result.manifest.counts
+    await emit({ backup: result.dir, ...result.manifest, seconds: result.seconds }, () => {
+      console.log(`Backed up to ${result.dir} in ${result.seconds.toFixed(1)} s: ${c.messages} messages, ${c.attachments} stored files, ${c.devices} devices, ${c.bots} bots, ${c.kimaki_sessions} Kimaki sessions.`)
+      if (dir.startsWith(path.join(paths.root, 'backups'))) console.log('It is on this disk. To survive a dead disk or machine, copy it elsewhere, for example: tar -C ' + path.dirname(dir) + ' -cf ~/vocorum-backup.tar ' + path.basename(dir))
+    })
+    return true
+  }
+  if (command === 'restore') {
+    if (!sub) throw new Error('usage: vocorum restore <backup folder> [--replace]')
+    const { restore } = await import('./backup.ts')
+    const result = await restore(paths, path.resolve(sub), { replace: flags['replace'] === true })
+    const os2 = await import('node:os')
+    const here = Object.values(os2.networkInterfaces()).flat().map((i) => i?.address)
+    const elsewhere = result.address && !here.includes(result.address)
+    await emit({ ...result, address_on_this_machine: !elsewhere }, () => {
+      console.log(`Restored into ${result.root} in ${result.seconds.toFixed(1)} s: ${result.counts.messages} messages, ${result.counts.attachments} stored files, ${result.counts.devices} devices, ${result.counts.bots} bots, ${result.counts.kimaki_sessions} Kimaki sessions. CA ${result.ca_fingerprint?.slice(0, 23)}…`)
+      if (result.moved_aside) console.log(`What was there before is in ${result.moved_aside}.`)
+      console.log(`${result.from} still holds the hub's keys: keep it as private as the hub, or delete it once the hub runs.`)
+      for (const p of result.problems) console.log(`  ! ${p}`)
+      if (elsewhere) {
+        console.log(`\nThe hub listened on ${result.address}, which is not an address of this machine.`)
+        console.log('For every device to keep trusting it with nothing to redo, give this machine that address and name:')
+        console.log(`  in Tailscale's admin console, remove the old machine, rename this one to its name, and set its IPv4 to ${result.address} (Machines, the menu, Edit machine IPv4).`)
+        console.log(`Then: vocorum setup. With another address instead (vocorum setup --address <ip>) the hub makes a new CA, and every device installs it again from the setup page; passkeys keep working while the name (${result.names[0]}) stays.`)
+      } else console.log('\nNext: vocorum setup (installs the service here and checks everything; it keeps the names and the CA).')
+    })
+    if (result.problems.length) process.exitCode = 1
+    return true
+  }
+  if (command === 'export') {
+    const config = requireConfig()
+    if (!sub) throw new Error('usage: vocorum export <folder>')
+    const { exportHub } = await import('./leave.ts')
+    const result = await exportHub(config, paths, path.resolve(sub))
+    await emit(result, () => console.log(`Exported ${result.messages} messages (${result.channels} channels, ${result.threads} threads, ${result.direct_messages} direct message conversations, in ${result.servers} servers) and ${result.files} files, to ${result.dir} in ${result.seconds.toFixed(1)} s. Start with README.txt.${result.files_missing ? ` ${result.files_missing} files were never stored on the hub; README.txt lists them.` : ''}`))
+    return true
+  }
+  if (command === 'uninstall') {
+    const { loadConfig } = await import('./config.ts')
+    const { uninstall } = await import('./leave.ts')
+    const deleteData = flags['delete-data'] === true
+    const result = await uninstall(loadConfig(paths), paths, { execute: flags['yes'] === true, deleteData, repo })
+    await emit(result, () => {
+      if (flags['yes'] !== true) console.log('vocorum uninstall would:')
+      for (const s of result.steps) console.log(`  ${s.done ? 'done' : '-'} ${s.detail}`)
+      if (!result.steps.length) console.log('  nothing: no service, process or command of this hub here.')
+      if (flags['yes'] !== true) console.log(`\nNothing changed. Run again with --yes to do it${deleteData ? '' : ' (data is kept; add --delete-data to delete it, after vocorum export <folder> or vocorum backup <folder> outside it)'}.`)
+      console.log('\nBy hand:')
+      for (const line of result.by_hand) console.log(`  - ${line}`)
+    })
     return true
   }
   if (command === 'restart') {
@@ -631,8 +673,12 @@ async function discordCommand(sub: string | undefined, rest: string[], flags: Re
       if (result.message_content_intent === null) console.log('Message Content intent: could not check (Discord did not show this bot\'s settings). If other people\'s messages import empty, turn it on in the developer portal, then import again.')
       for (const g of result.guilds) {
         console.log(`\n${g.name} (${g.id}): ${g.channels} channels in ${g.categories} categories, ${g.threads} threads (${g.thread_messages} messages in threads)`)
-        if (g.owner_id) console.log(`  owner: ${g.owner_id}. If that is you: vocorum config set ownerDiscordIds ${g.owner_id}`)
+        if (g.owner_id && !(loadConfig(paths)?.ownerDiscordIds ?? []).includes(g.owner_id)) console.log(`  owner: ${g.owner_id}. If that is you: vocorum config set ownerDiscordIds ${g.owner_id}`)
         if (g.unreadable.length) console.log(`  the bot cannot read ${g.unreadable.length}: ${g.unreadable.slice(0, 10).join(', ')}${g.unreadable.length > 10 ? ', …' : ''}`)
+        const c = g.community
+        console.log(`  comes across: ${c.roles} roles, ${c.member_list ? 'the member list with everyone\'s roles' : 'no member list'}, permissions of ${c.channels_with_permissions} channels, ${c.emoji} custom emoji${c.forums ? `, ${c.forums} forums (posts as threads, no tags)` : ''}${c.private_threads ? `, ${c.private_threads} private threads` : ''}, pins and reactions`)
+        if (!c.member_list) console.log('  PROBLEM: no member list (and no roles per person, or who is in private threads) without the Server Members intent: Discord developer portal, your app, Bot, Privileged Gateway Intents, Server Members.')
+        if (c.voice_channels) console.log(`  stays on Discord: ${c.voice_channels} voice or stage channels (the hub has no voice)`)
       }
       console.log(`\nImport takes about ${result.estimate.import_minutes} minute${result.estimate.import_minutes === 1 ? '' : 's'} plus channel history; deleting its threads from Discord later (purge --threads) about ${result.estimate.purge_hours < 1 ? `${Math.max(1, Math.round(result.estimate.purge_hours * 60))} minutes` : `${result.estimate.purge_hours} hours`}, plus about 2 minutes per 1000 channel messages.`)
       console.log('Next: vocorum discord import <guild id> (or all) --detach')
@@ -654,6 +700,10 @@ async function discordCommand(sub: string | undefined, rest: string[], flags: Re
     await emit(report, () => {
       const gaps = Object.values(report.guilds).reduce((n, g) => n + Object.keys(g.gaps).length + g.files_failed, 0)
       console.log(gaps ? `\nSome messages or files did not arrive. Run the same command again; it resumes.` : `\nEverything arrived. Report: ${path.join(paths.root, 'import', 'report.json')}`)
+      const admins = Object.values(report.guilds).flatMap((g) => g.community?.admins ?? [])
+      const others = [...new Set(admins)].filter((a) => a !== 'you')
+      if (others.length) console.log(`\nPeople who are administrators on Discord, and so on the hub once they join: ${others.slice(0, 20).join(', ')}${others.length > 20 ? ', …' : ''}.`)
+      if (Object.values(report.guilds).some((g) => g.community?.members)) console.log('Members came across without a way to sign in. For each person who should join: vocorum welcome <their Discord username> (vocorum people list shows them), then send them what it prints.')
       if (report.secrets.length) console.log(`\n${report.secrets.length} secret${report.secrets.length === 1 ? "" : "s"} appeared in Discord messages. Rotate them (vocorum discord report lists them, masked).`)
     })
     return

@@ -65,7 +65,7 @@ function QrCode({ text }: { text: string }) {
   )
 }
 
-function CodeCard({ code, expires, note, qr }: { code: string; expires: number; note: string; qr?: boolean }) {
+export function CodeCard({ code, expires, note, qr }: { code: string; expires: number; note: string; qr?: boolean }) {
   const [copied, setCopied] = useState(false)
   return (
     <div className="settings-code" role="status">
@@ -314,7 +314,7 @@ function InvitePerson({ ctx, state }: { ctx: GuildCtx; state: HubState }) {
     })
   return (
     <Group title="Invite a person" note="A new account on this hub, with a pairing code for their first device. They join this server; give them roles below.">
-      {result && <CodeCard code={result.code} expires={result.expires} note={`${result.name} enters it in Vocorum under New device. If they connect over Tailscale, the hub owner must first register their Tailscale login on the hub machine with the vocorum CLI.`} />}
+      {result && <CodeCard code={result.code} expires={result.expires} note={`Send it to ${result.name}. They open Vocorum on their device and enter it under New device.`} />}
       {open ? (
         <form
           className="settings-create"
@@ -399,6 +399,10 @@ function MemberRow({ state, ctx, member }: { state: HubState; ctx: GuildCtx; mem
       store.apply('GUILD_MEMBER_REMOVE', { guild_id: ctx.guild.id, user })
     })
   const canRemove = !isOwner && (me || ctx.canServer)
+  // Someone imported from Discord who has no device yet: the owner sends them a first code.
+  const [welcome, setWelcome] = useState<{ code: string; expires_at: number } | null>(null)
+  const canWelcome = Boolean(user?.pending) && state.hub_owner !== false
+  const sendWelcome = () => void feedback.run(async () => setWelcome(await api.welcome(member.user_id)))
   return (
     <div className="settings-member">
       <div className="settings-member-main">
@@ -413,14 +417,20 @@ function MemberRow({ state, ctx, member }: { state: HubState; ctx: GuildCtx; mem
             {user?.bot && <span className="settings-tag">Bot</span>}
             {me && <span className="settings-tag">You</span>}
           </div>
-          <div className="settings-item-note">{user?.username}</div>
+          <div className="settings-item-note">{user?.pending ? `${user.username} · Not joined yet` : user?.username}</div>
         </div>
+        {canWelcome && !welcome && (
+          <button className="button primary" onClick={sendWelcome}>
+            Welcome
+          </button>
+        )}
         {canRemove && !removing && (
           <button className="button danger" onClick={() => setRemoving(true)}>
             {me ? 'Leave' : 'Remove'}
           </button>
         )}
       </div>
+      {welcome && <CodeCard code={welcome.code} expires={welcome.expires_at} qr note={`Send it to ${nameOf(user)}. They open Vocorum on their device and enter it under New device.`} />}
       {removing && (
         <Confirm
           text={me ? `Leave ${ctx.guild.name}? You will need an invite to come back.` : `Remove ${nameOf(user)} from ${ctx.guild.name}? They lose access to its channels.`}

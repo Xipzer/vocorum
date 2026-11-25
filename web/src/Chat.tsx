@@ -10,9 +10,10 @@ import { Components, type Interact } from './components.tsx'
 import { Attachments, Embeds, Forwarded, onlyEmbedLink, PollCard, stamp, Stickers } from './Media.tsx'
 import { Composer } from './Composer.tsx'
 import { Markdown, type MarkdownContext } from './markdown.tsx'
-import { dmName, dmUser, isDm, KEEP_AT_BOTTOM, snowflakeGt, store, THREAD_TYPES, useStore } from './store.ts'
+import { dmName, dmUser, isDm, KEEP_AT_BOTTOM, machineOf, snowflakeGt, store, THREAD_TYPES, useStore } from './store.ts'
 import { workspaceWaiting } from './Workspace.tsx'
 import { Icon, type IconName } from './icons.tsx'
+import { E, Emoji, emojify } from './emoji.tsx'
 import { clock, displayName, plain, wallHue, machineLabel, motion } from './text.ts'
 import { shareOrigin } from './native.ts'
 import { remindSheet, remindTime } from './remind.ts'
@@ -423,7 +424,7 @@ function MessageItem({
           <div className="message-head">
             <Avatar id={message.author.id} name={name} size="inline" version={profile?.avatar} src={message.author.bot ? machineIcon(state.machine_icons, botName, 'avatar') : null} />
             <span className="author" style={profile?.color != null ? { color: `#${profile.color.toString(16).padStart(6, '0')}` } : undefined} title={message.author.bot && botName ? (message.author.global_name ?? message.author.username) : undefined}>
-              {name}
+              <E>{name}</E>
             </span>
             {message.author.bot && <span className="bot-tag">BOT</span>}
             <span className="message-time">{clock(message.timestamp)}</span>
@@ -471,7 +472,7 @@ function MessageItem({
           <div className="reactions">
             {message.reactions_summary.map((r) => (
               <button key={r.emoji} className={`reaction${r.me ? ' me' : ''}`} onClick={() => toggle(r.emoji)} aria-pressed={r.me} title={r.me ? (r.count > 1 ? `You and ${r.count - 1} more reacted (click to remove)` : 'You reacted (click to remove)') : `${r.count} reacted (click to add yours)`}>
-                <span className="reaction-emoji">{r.emoji}</span>
+                <span className="reaction-emoji">{emojify(r.emoji)}</span>
                 <span className="num">{r.count}</span>
               </button>
             ))}
@@ -480,13 +481,13 @@ function MessageItem({
             </button>
           </div>
         ) : null}
-        {picker && <EmojiPicker anchor={picker} onPick={(e) => !mineOn(e) && toggle(e)} onClose={() => setPicker(null)} />}
+        {picker && <EmojiPicker anchor={picker} guildId={(state.channels.find((c) => c.id === channelId) ?? state.threads.find((c) => c.id === channelId))?.guild_id ?? state.guild.id} onPick={(e) => !mineOn(e) && toggle(e)} onClose={() => setPicker(null)} />}
         {!feed && (message as Message & { thread?: { id: string } }).thread?.id !== channelId && message.id !== channelId && <StarterThread messageId={message.id} threadId={(message as Message & { thread?: { id: string } }).thread?.id} state={state} ctx={ctx} />}
       </div>
       {hot && <div className="message-actions" role="toolbar" aria-label="Message actions">
         {QUICK.map((emoji) => (
           <button key={emoji} className={`quick${mineOn(emoji) ? ' on' : ''}`} onClick={() => toggle(emoji)} aria-pressed={mineOn(emoji)} aria-label={`React ${emoji}`} title={mineOn(emoji) ? `Remove ${emoji}` : `React ${emoji}`}>
-            {emoji}
+            <Emoji emoji={emoji} />
           </button>
         ))}
         <button onClick={(e) => setPicker(e.currentTarget.getBoundingClientRect())} aria-label="Add reaction" title="Add reaction">
@@ -574,7 +575,7 @@ function ThreadCard({ id, name, thread }: { id: string; name: string; thread?: C
 const snowflakeDate = (id: string) => new Date(Number((BigInt(id) >> 22n) + 1420070400000n)).toISOString()
 
 // Desktop search: a field-shaped button in the header, like Discord's, that opens the search panel.
-function SearchField({ onSearch }: { onSearch: () => void }) {
+export function SearchField({ onSearch }: { onSearch: () => void }) {
   return (
     <button className="search-field desk-only" onClick={onSearch} aria-label="Search messages">
       <span>Search</span>
@@ -814,7 +815,7 @@ export function Chat({
   const project = parent ?? channel
   const list = entry?.list ?? []
   const category = state.channels.find((c) => c.id === project.parent_id)
-  const botName = category ? (state.machines.find((m) => m.toLowerCase() === (category.name ?? '').toLowerCase() || `kimaki ${m.toLowerCase()}` === (category.name ?? '').toLowerCase()) ?? null) : null
+  const botName = machineOf(state, channel)
 
   // The sheet's Rename lands here: an inline field in the header, like message edit.
   useEffect(() => {
@@ -901,7 +902,7 @@ export function Chat({
 
   const onResult = (result: InteractionResult, messageId?: string) => {
     if (result.type === 9 && result.data) onModal({ channelId: channel.id, messageId, data: result.data })
-    else if (!result.acknowledged) setToast('This interaction failed')
+    else if (!result.acknowledged) setToast("The bot didn't answer. Try again, or type your reply.")
   }
 
   // Scroll to a message, loading older pages until it is there (search, pins, replies).
@@ -1012,7 +1013,7 @@ export function Chat({
                 ) : (
                   <Icon name={isThread ? 'thread' : 'hash'} size={18} className="title-icon" />
                 )}
-                <span className="title-text">{title}</span>
+                <span className="title-text"><E>{title}</E></span>
               </button>
             </div>
           )}

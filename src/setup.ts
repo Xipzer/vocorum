@@ -214,10 +214,10 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
   const plan = [
     `state in ${paths.root}${existing ? ' (exists, kept)' : ''}, hub port ${hubPort}`,
     ...notes,
-    listener ? `HTTPS for your devices on ${listener.address}:${listener.port} and a setup page on ${listener.address}:${listener.httpPort}, only from ${listener.allowedCidrs.join(', ')} (${network.kind}); never the internet` : 'no private network found: the hub stays on this machine only (pass --address <private ip> to change that)',
+    listener ? `HTTPS for your devices on ${listener.address}:${listener.port} and a setup page on ${listener.address}:${listener.httpPort}, only from ${listener.allowedCidrs.join(', ')} (${['127.0.0.1', '::1'].includes(listener.address) ? 'this computer only' : kept ? 'as before' : network.kind}); never the internet` : 'no private network found: the hub stays on this machine only (pass --address <private ip> to change that)',
     listener ? `app address ${publicUrl}` : '',
     better ? `kept your current names (${kept!.names.join(', ')}). ${better} would need no DNS step on devices, but switching means reinstalling the certificate and new passkeys on every device: vocorum setup --name ${better},${kept!.names.join(',')}` : '',
-    network.login ? `extra check: devices must be on the Tailscale account ${network.login}` : '',
+    (existing?.tailscaleLogin ?? network.login) ? `extra check: devices must be on the Tailscale account ${existing?.tailscaleLogin ?? network.login}` : '',
     options.service && (await serviceManager()) ? `service: ${process.platform === 'darwin' ? `launchd agent dev.${serviceName(paths)}` : WINDOWS ? `Task Scheduler task Vocorum\\${serviceName(paths)}, at logon` : `systemd user unit ${serviceName(paths)}.service`}` : `no service${options.service ? ' manager here' : ''}: the hub runs in the background and does not start after a reboot by itself`,
   ].filter(Boolean)
   if (!options.json) {
@@ -321,8 +321,11 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
   }
 
   // 7. a `vocorum` command on PATH, so people and their agents can just type it
-  const onPath = WINDOWS ? (await out('where.exe', ['vocorum']))?.trim().split('\n')[0]?.trim() : (await out('sh', ['-c', 'command -v vocorum']))?.trim()
-  if (onPath) log({ step: 'command', status: 'already', detail: onPath })
+  // Only for the usual hub folder: a bare `vocorum` always means ~/.vocorum.
+  const usual = path.resolve(paths.root) === path.join(os.homedir(), '.vocorum')
+  const onPath = !usual ? `VOCORUM_DIR=${paths.root} ${process.execPath} ${path.join(options.repo, 'bin', 'vocorum.js')}` : WINDOWS ? (await out('where.exe', ['vocorum']))?.trim().split('\n')[0]?.trim() : (await out('sh', ['-c', 'command -v vocorum']))?.trim()
+  if (!usual) log({ step: 'command', status: 'skipped', detail: `this hub is not in ~/.vocorum, so run it as: ${onPath}` })
+  else if (onPath) log({ step: 'command', status: 'already', detail: onPath })
   else if (WINDOWS) {
     // WindowsApps is on every user's PATH; a .cmd there needs no administrator.
     const dir = path.join(process.env['LOCALAPPDATA'] ?? path.join(os.homedir(), 'AppData', 'Local'), 'Microsoft', 'WindowsApps')

@@ -622,3 +622,13 @@ export const store = new Store()
 export function useStore<T>(select: (data: Data) => T): T {
   return useSyncExternalStore(store.subscribe, () => select(store.data))
 }
+
+// The machine whose agent posts in a channel: its project's category names it (Discord's
+// "Kimaki <machine>" categories). Bots there are shown by that name everywhere.
+export function machineOf(state: HubState, channel: Channel): string | null {
+  const project = THREAD_TYPES.has(channel.type) ? (state.channels.find((c) => c.id === channel.parent_id) ?? channel) : channel
+  const category = state.channels.find((c) => c.id === project.parent_id)
+  if (!category) return null
+  const name = (category.name ?? '').toLowerCase()
+  return state.machines.find((m) => m.toLowerCase() === name || `kimaki ${m.toLowerCase()}` === name) ?? null
+}

@@ -347,7 +347,7 @@ function Overrides({ state, guildId }: { state: HubState; guildId?: string }) {
   return (
     <Group title="Custom settings" note="Channels and threads with their own level or mute. Reset one to follow its parent again.">
       {entries.length === 0 ? (
-        <p className="settings-empty">Nothing has its own setting. Use the bell in a channel header, or Edit channel, to set one.</p>
+        <p className="settings-empty">Nothing has its own setting yet. Open a channel's Notifications to give it one.</p>
       ) : (
         <div className="settings-list">
           {entries.map(([id, s]) => {

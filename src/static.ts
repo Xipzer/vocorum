@@ -20,8 +20,8 @@ const TYPES: Record<string, string> = {
 
 export const SECURITY_HEADERS = {
   'content-security-policy':
-    // Outside media only from Discord's CDN and YouTube thumbnails (embeds, custom
-    // emoji, stickers), and players only from YouTube's no-cookie host and Vimeo.
+    // Outside media only from Discord's CDN and YouTube thumbnails (embeds, stickers),
+    // and players only from YouTube's no-cookie host and Vimeo. Custom emoji come from the hub.
     "default-src 'self'; img-src 'self' data: blob: https://cdn.discordapp.com https://media.discordapp.net https://images-ext-1.discordapp.net https://images-ext-2.discordapp.net https://i.ytimg.com; media-src 'self' blob: https://cdn.discordapp.com https://media.discordapp.net; frame-src https://www.youtube-nocookie.com https://player.vimeo.com; connect-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; worker-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
   'x-content-type-options': 'nosniff',
   'referrer-policy': 'no-referrer',
@@ -49,7 +49,8 @@ export async function serveStatic(req: http.IncomingMessage, res: http.ServerRes
     return
   }
   const ext = path.extname(file)
-  const immutable = file.includes(`${path.sep}assets${path.sep}`)
+  // Hashed bundles, and emoji images in a folder named by their set's version.
+  const immutable = file.includes(`${path.sep}assets${path.sep}`) || file.includes(`${path.sep}emoji${path.sep}`)
   const headers = { ...SECURITY_HEADERS, 'content-type': TYPES[ext] ?? 'application/octet-stream', 'cache-control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache' }
   // Text assets (the app bundle is ~500 KB) go out compressed, made once per file version.
   const accepts = String(req.headers['accept-encoding'] ?? '')

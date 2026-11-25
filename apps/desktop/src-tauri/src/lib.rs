@@ -181,6 +181,10 @@ fn build_main(app: &AppHandle) -> tauri::Result<()> {
       PermissionKind::Microphone => PermissionResponse::Allow,
       _ => PermissionResponse::Deny,
     });
+  let builder = match data_dir() {
+    Some(dir) => builder.data_directory(dir.join("webview")),
+    None => builder,
+  };
   #[cfg(desktop)]
   let builder = builder
     .inner_size(1180.0, 780.0)
@@ -450,6 +454,12 @@ fn take_link(app: &AppHandle, urls: impl IntoIterator<Item = Url>) {
   }
 }
 
+// VOCORUM_DATA_DIR keeps everything of one app run (pairing, web storage) in that
+// folder, so the end-to-end tests never touch the person's own app.
+fn data_dir() -> Option<std::path::PathBuf> {
+  std::env::var_os("VOCORUM_DATA_DIR").filter(|d| !d.is_empty()).map(std::path::PathBuf::from)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let _ = rustls::crypto::ring::default_provider().install_default();
@@ -457,11 +467,14 @@ pub fn run() {
   let mut builder = tauri::Builder::default();
   #[cfg(desktop)]
   {
-    builder = builder
-      .plugin(tauri_plugin_single_instance::init(|app, args, _| {
+    // A test profile (see data_dir) runs beside the person's own app, not into it.
+    if data_dir().is_none() {
+      builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _| {
         take_link(app, args.iter().filter_map(|a| Url::parse(a).ok()));
         show_main(app);
-      }))
+      }));
+    }
+    builder = builder
       .plugin(tauri_plugin_autostart::Builder::new().args(["--hidden"]).build())
       .plugin(tauri_plugin_updater::Builder::new().build());
   }
@@ -472,7 +485,10 @@ pub fn run() {
     .register_asynchronous_uri_scheme_protocol(SCHEME, |ctx, request, responder| protocol::handle(ctx.app_handle(), request, responder))
     .invoke_handler(tauri::generate_handler![pair, sign_in, approve_request, forget_hub, events_subscribe, events_unsubscribe, set_focus, set_alerts, window_control, window_maximized, window_title])
     .setup(|app| {
-      let dir = app.path().app_config_dir()?;
+      let dir = match data_dir() {
+        Some(dir) => dir.join("config"),
+        None => app.path().app_config_dir()?,
+      };
       std::fs::create_dir_all(&dir)?;
       let state = State { dir: dir.clone(), hub: RwLock::new(None), events: Default::default(), pending_link: Mutex::new(None),
         last_alert: Mutex::new(None),

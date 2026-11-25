@@ -42,7 +42,7 @@ function Row({ session, now, onOpen, names, onDismiss }: { session: SessionSumma
     try {
       const result = await api.interaction({ type: 'button', customId, channelId: session.id, messageId: session.ask.messageId })
       if (result.type === 9) onOpen(session.id)
-      else if (!result.acknowledged) setFailed('This interaction failed')
+      else if (!result.acknowledged) setFailed("The bot didn't answer. Try again, or type your reply.")
       else setChose(label)
     } catch (e) {
       setFailed(e instanceof Error ? e.message : String(e))

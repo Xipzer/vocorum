@@ -4,10 +4,9 @@ This sets up the hub on one computer and signs in your first device.
 
 ## What you need
 
-- A computer that stays on, running Linux or macOS. This is the hub.
-- Node.js 22 or newer, pnpm (no pnpm? run
-  `corepack enable`), and `openssl`. `ffmpeg` is optional, for voice
-  notes from phones.
+- A computer that stays on, running Linux, macOS or Windows. This is the hub.
+- Node.js 22.16 or newer, pnpm (no pnpm? run `corepack enable`), and
+  `openssl`. `ffmpeg` is optional, for voice notes from phones.
 - A private network between the hub and your other devices, such as Tailscale or
   WireGuard. Vocorum is never meant to be reachable from the internet.
 
@@ -49,6 +48,32 @@ On Linux, run `loginctl enable-linger "$USER"` if setup asks for it, so the hub
 keeps running after you log out. Without systemd (a container, or WSL without
 it) setup runs the hub in the background instead. It then does not start again
 after a reboot: `doctor` prints the line to add for that.
+
+### On macOS
+
+`openssl` is already there. Setup adds a launchd agent, so the hub starts when
+you log in and comes back if it stops.
+
+### On Windows
+
+Install Node.js 22.16 or newer, Git for Windows (it brings `openssl`) and
+Tailscale. Then, in a normal terminal (not as administrator):
+
+```bat
+git clone https://github.com/Xipzer/vocorum
+cd vocorum
+corepack enable
+pnpm install
+pnpm build
+node bin\vocorum.js setup
+```
+
+- If `corepack enable` is refused, use `npm i -g pnpm` instead.
+- Setup adds a Task Scheduler task for your user. It starts the hub when you log
+  in, with no window, and starts it again if it stops. The log is
+  `%USERPROFILE%\.vocorum\hub.log`.
+- The hub only runs while you are logged in.
+- Setup adds a `vocorum` command for you.
 
 ## 2. Sign in on a device
 

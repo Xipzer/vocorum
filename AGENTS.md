@@ -20,6 +20,9 @@ Every command is safe to run twice.
 - **Ask before anything that deletes or cannot be undone:**
   `discord purge --execute`, `bots revoke`, `people remove`, `devices revoke`,
   deleting anything in `~/.vocorum`.
+- **Never pass `--delete-data` to `vocorum uninstall`** unless the person asked
+  for their data to be deleted and an export or backup exists outside the hub
+  folder.
 - **Back up first.** Before an import, a purge or an update, run
   `vocorum backup --json`. It copies the hub while it runs and prints the folder.
 - **Talk to Discord only through `vocorum discord`.** Never call Discord's API
@@ -34,7 +37,7 @@ Every command is safe to run twice.
 
 ## What to ask first
 
-1. Which computer runs the hub? It should stay on (Linux or macOS).
+1. Which computer runs the hub? It should stay on (Linux, macOS or Windows).
 2. Which private network reaches it: Tailscale (default), WireGuard, or other?
 3. Which devices will they use (iPhone, Mac, Android, Windows, Linux)?
 4. Which machines run bots, and which bots (Kimaki or other discord.js bots)?
@@ -50,12 +53,16 @@ Every command is safe to run twice.
 ## 1. Prerequisites
 
 ```bash
-node --version          # 22 or newer
+node --version          # 22.16 or newer
 pnpm --version          # missing? corepack enable (if Node's folder is not
                         # writable: corepack enable --install-directory ~/.local/bin)
 openssl version
 which ffmpeg            # optional, voice notes from phones
 ```
+
+On Windows, check first for Node.js 22.16 or newer and Git for Windows (it
+brings `openssl`). Never use an administrator terminal for setup. Run commands
+as `node bin\vocorum.js ...` until setup has added `vocorum.cmd`.
 
 ## 2. Install
 
@@ -80,7 +87,8 @@ What setup does:
 - Uses the machine's Tailscale name first, then `hub.home.arpa`. The
   certificate comes from the hub's own CA, limited to exactly those names, so
   nothing appears in public certificate logs and devices need no DNS setup.
-- Writes a systemd user service (macOS: a launchd agent) only if none exists,
+- Writes a systemd user service (macOS: a launchd agent; Windows: a Task
+  Scheduler task for the user, which runs only while they are logged in) only if none exists,
   then starts it. It never overwrites a unit someone wrote by hand.
 - No service manager (a container, WSL without systemd): it starts the hub in
   the background instead (`hub.pid`, `hub.log` in the state folder). It does
@@ -242,6 +250,11 @@ vocorum discord status --json
 Check: `discord status` says finished with no gaps, with the message and file
 counts per server. `doctor` shows no import gaps. Open old threads in the app:
 messages and pictures load.
+
+Imported Discord members join with `vocorum welcome <username>`, never
+`vocorum invite` (that makes a separate account without their roles). Check the
+import's administrator list before welcoming anyone. See
+[docs/communities.md](docs/communities.md).
 
 ## 6. Configure
 

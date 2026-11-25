@@ -7,6 +7,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Icon } from './icons.tsx'
 import { usePress } from './Sheet.tsx'
 import { plain } from './text.ts'
+import { CustomEmoji, emojify } from './emoji.tsx'
 
 export type MarkdownContext = {
   userName: (id: string) => string | null
@@ -29,13 +30,6 @@ const INLINE =
   /(`+)([\s\S]*?[^`])\1(?!`)|\[([^\]\n]+)\]\(<?(https?:\/\/[^\s)>]+)>?\)|<(https?:\/\/[^\s>]+)>|(https?:\/\/[^\s<]+[^\s<.,:;"')\]!?*_~|])|<@!?(\d+)>|<@&(\d+)>|<#(\d+)>|<t:(-?\d+)(?::([tTdDfFR]))?>|<a?:(\w+):(\d+)>|\*\*([\s\S]+?)\*\*(?!\*)|__([\s\S]+?)__(?!_)|\*([^\s*](?:[\s\S]*?[^\s\\])?)\*(?!\*)|\b_([^\s_](?:[\s\S]*?[^\s_])?)_\b|~~([\s\S]+?)~~|\|\|([\s\S]+?)\|\||\\([^\w\s])|\b(ses_[A-Za-z0-9]{24,28})\b|<\/([\w-]+(?: [\w-]+){0,2}):(\d+)>|<id:(customize|browse|guide|linked-roles)>|(?<![\w@])@(everyone|here)\b/
 
 const GUILD_NAV: Record<string, string> = { customize: 'Channels & Roles', browse: 'Browse Channels', guide: 'Server Guide', 'linked-roles': 'Linked Roles' }
-
-// Discord's custom emoji, from its CDN; the name stays as text if the image fails.
-function CustomEmoji({ name, id, animated, jumbo }: { name: string; id: string; animated: boolean; jumbo?: boolean }) {
-  const [failed, setFailed] = useState(false)
-  if (failed) return <span>:{name}:</span>
-  return <img className={`emoji${jumbo ? ' jumbo' : ''}`} src={`https://cdn.discordapp.com/emojis/${id}.${animated ? 'gif' : 'webp'}?size=${jumbo ? 96 : 48}&quality=lossless`} alt={`:${name}:`} title={`:${name}:`} draggable={false} onError={() => setFailed(true)} />
-}
 
 // <t:…:R> stays current; every style shows the full date on hover, as in Discord.
 function TimeMention({ seconds, style }: { seconds: number; style: string | undefined }) {
@@ -144,13 +138,13 @@ function semantic(text: string, key: string): ReactNode[] {
   let last = 0
   let n = 0
   for (const m of text.matchAll(SEMANTIC)) {
-    if (m.index! > last) out.push(text.slice(last, m.index))
+    if (m.index! > last) out.push(...emojify(text.slice(last, m.index), `${key}e${n}`))
     const cls = m[1] ? 'sem-id' : m[2] ? 'sem-path' : m[3] ? 'sem-num' : 'sem-key'
     out.push(<span key={`${key}s${n++}`} className={cls}>{m[0]}</span>)
     last = m.index! + m[0].length
   }
-  if (last === 0) return [text]
-  if (last < text.length) out.push(text.slice(last))
+  if (last === 0) return emojify(text, `${key}e`)
+  if (last < text.length) out.push(...emojify(text.slice(last), `${key}e${n}`))
   return out
 }
 
@@ -187,7 +181,7 @@ export function inline(text: string, ctx: MarkdownContext, key = 'i'): ReactNode
       out.push(<span key={k} className={`mention${rgb ? ' role-mention' : ''}`} style={rgb ? ({ '--role': rgb } as React.CSSProperties) : undefined}>@{roleInfo?.name ?? 'unknown-role'}</span>)
     } else if (channel) out.push(ctx.channelName(channel) ? <ChannelChip key={k} id={channel} name={ctx.channelName(channel)!} url={`${location.origin}/#/c/${channel}`} ctx={ctx} /> : <span key={k} className="mention muted-mention">#unknown</span>)
     else if (ts) out.push(<TimeMention key={k} seconds={Number(ts)} style={tsStyle} />)
-    else if (emojiName) out.push(<CustomEmoji key={k} name={emojiName} id={emojiId!} animated={m[0].startsWith('<a:')} jumbo={ctx.jumbo} />)
+    else if (emojiName) out.push(<CustomEmoji key={k} name={emojiName} id={emojiId!} jumbo={ctx.jumbo} />)
     else if (command) out.push(<span key={k} className="mention command-mention" title={`/${command}`}>/{command}</span>)
     else if (guildNav) out.push(<span key={k} className="mention">{GUILD_NAV[guildNav]}</span>)
     else if (everyone) out.push(<span key={k} className="mention">@{everyone}</span>)

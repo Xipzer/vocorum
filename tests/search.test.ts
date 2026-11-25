@@ -137,6 +137,7 @@ test('snippets mark prefix hits and phrases, and cut long text around the first 
   expect(snippet('Deployed the hub and ran the tests', parseQuery('deploy test'))).toBe('**Deployed** the hub and ran the **tests**')
   expect(snippet('it said no text here', parseQuery('"no text"'))).toBe('it said **no text** here')
   expect(snippet('Café opened', parseQuery('cafe'))).toBe('**Café** opened')
+  expect(snippet('1. **Redirects file** at the host. 2. **Copy pages**', parseQuery('redirect'))).toBe('1. **Redirects** file at the host. 2. Copy pages')
   const long = Array.from({ length: 60 }, (_, i) => `w${i}`).join(' ')
   const cut = snippet(long, parseQuery('w40'))!
   expect(cut.startsWith('…')).toBe(true)

@@ -27,6 +27,7 @@ import { Settings } from './settings.ts'
 import { Access, P } from './access.ts'
 import { Members } from './members.ts'
 import { MachineIconStore } from './machine-icons.ts'
+import { Community } from './community.ts'
 import { Mirror } from './mirror.ts'
 import { Requests } from './requests.ts'
 import { DirectMessages } from './dms.ts'
@@ -87,6 +88,7 @@ export class Hub {
   extensions: HubExtension[]
   readonly machineIcons: MachineIconStore
   readonly mirror: Mirror
+  readonly community: Community
   readonly api: ClientApi
   private readonly adminToken: string
   // Registered token key -> machine.
@@ -166,6 +168,7 @@ export class Hub {
     this.routines = new Routines(this)
     this.machineIcons = new MachineIconStore(this)
     this.mirror = new Mirror(this)
+    this.community = new Community(this)
     this.api = new ClientApi(this, webDir)
     this.search = new SearchIndex(this)
     this.extensions = []

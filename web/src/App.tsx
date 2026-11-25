@@ -31,6 +31,8 @@ import { initColumns, keys, startResize, toggleColumn, useColumnKeys, useColumns
 
 initColumns()
 import { Icon, type IconName } from './icons.tsx'
+import { E } from './emoji.tsx'
+import { Forum } from './Forum.tsx'
 import { plain, machineLabel, displayName, motion } from './text.ts'
 
 const LIVE_THREADS = 5
@@ -386,7 +388,7 @@ function ThreadRow({ thread, title, current, unread, session, favourite, mention
   })
   return (
     <button data-nav={thread.id} className={`channel${current ? ' active' : ''}${unread ? ' unread' : ''}${thread.thread_metadata?.archived ? ' dim' : ''}`} onClick={() => onOpen(thread.id)} {...press}>
-      <span className="channel-name">{title}</span>
+      <span className="channel-name"><E>{title}</E></span>
       {state === 'busy' && session && elapsed(session.since) && <span className="meta">{elapsed(session.since)}</span>}
       {mentions > 0 && <span className="badge num" aria-label={`${mentions} mentions`}>{mentions}</span>}
       {state && state !== 'idle' && state !== 'done' && <i className={`st ${state}`} aria-label={STATE_LABEL[state]} />}
@@ -416,7 +418,7 @@ function LinkedRows({ threadId, title, onOpen }: { threadId: string; title: (t: 
         return (
           <button key={link.id} className="channel linked-row" onClick={() => onOpen(link.id)} title={LINK_LABEL[link.kind]}>
             <Icon name="link" size={14} />
-            <span className="channel-name">{thread ? title(thread) : 'A thread not on this hub'}</span>
+            <span className="channel-name"><E>{thread ? title(thread) : 'A thread not on this hub'}</E></span>
             {state && state !== 'idle' && state !== 'done' ? <i className={`st ${state}`} aria-label={STATE_LABEL[state]} /> : <span className="meta">{SHORT_KIND[link.kind]}</span>}
           </button>
         )
@@ -449,8 +451,8 @@ function ProjectRow({ channel, current, unread, threads, mentions, onOpen, onShe
   )
   return (
     <button data-nav={channel.id} className={`channel${current ? ' active' : ''}${unread ? ' unread' : ''}`} onClick={() => onOpen(channel.id)} {...press}>
-      <span className="hash">#</span>
-      <span className="channel-name">{channel.name}</span>
+      <span className="hash">{channel.type === 15 ? <Icon name="threads" size={16} /> : '#'}</span>
+      <span className="channel-name"><E>{channel.name}</E></span>
       {mentions > 0 && <span className="badge num" aria-label={`${mentions} mentions`}>{mentions}</span>}
       {can(P.MANAGE_CHANNELS, channel) && <span
         className="row-gear"
@@ -822,14 +824,21 @@ function Sidebar({ state, current, open, onOpen, ctx, guild, onGuild, onThreads 
                 {(visible.length > 0 || (!hidden && older.length > 0)) && (
                   <Tree>
                     {visible.map(row)}
-                    {!hidden && older.length > 0 && (
-                      <OlderThreads threads={showOlder[channel.id] ? [] : older} onOpen={onOpen} onSeeAll={onThreads ? () => onThreads(channel.id) : undefined}>
-                        <button className="channel older" onClick={() => setShowOlder({ ...showOlder, [channel.id]: !showOlder[channel.id] })}>
-                          <span className="channel-name">{showOlder[channel.id] ? 'Hide older' : `${older.length} older`}</span>
+                    {/* Folded: "N older" with its hover preview. Unfolded: the threads, then
+                        "Hide older" under them (no preview: they are all in view). */}
+                    {!hidden && older.length > 0 && !showOlder[channel.id] && (
+                      <OlderThreads threads={older} onOpen={onOpen} onSeeAll={onThreads ? () => onThreads(channel.id) : undefined}>
+                        <button className="channel older" onClick={() => setShowOlder({ ...showOlder, [channel.id]: true })}>
+                          <span className="channel-name">{`${older.length} older`}</span>
                         </button>
                       </OlderThreads>
                     )}
                     {!hidden && showOlder[channel.id] && older.map(row)}
+                    {!hidden && older.length > 0 && showOlder[channel.id] && (
+                      <button className="channel older" onClick={() => setShowOlder({ ...showOlder, [channel.id]: false })}>
+                        <span className="channel-name">Hide older</span>
+                      </button>
+                    )}
                   </Tree>
                 )}
               </div>,
@@ -908,7 +917,7 @@ function DmList({ state, current, onOpen }: { state: HubState; current: string |
                   <DmAvatar channel={c} size="panel" />
                   <i className={`presence ${status}`} />
                 </span>
-                <span className="channel-name">{name}</span>
+                <span className="channel-name"><E>{name}</E></span>
                 {(c.machine || user?.bot) && <span className="bot-tag">BOT</span>}
                 {count > 0 && <span className="badge num">{count > 99 ? '99+' : count}</span>}
               </button>
@@ -985,6 +994,25 @@ function Welcome({ name }: { name: string }) {
           </button>
         ))}
       </div>
+    </div>
+  )
+}
+
+// Lost the hub for more than a few seconds (not a quick reconnect): one pill at the top,
+// gone when the socket is back. The system light in the user panel says the same, quietly.
+function OfflineNotice() {
+  const online = useStore((d) => d.online)
+  const [shown, setShown] = useState(false)
+  useEffect(() => {
+    if (online) return setShown(false)
+    const timer = window.setTimeout(() => setShown(true), 3000)
+    return () => window.clearTimeout(timer)
+  }, [online])
+  if (!shown) return null
+  return (
+    <div className="offline-notice" role="status">
+      <Icon name="warn" size={16} />
+      Can't reach the hub. Retrying.
     </div>
   )
 }
@@ -1229,7 +1257,10 @@ function Main() {
     // On a phone the panel covers the thread: close it so the jump is visible.
     if (window.matchMedia('(max-width: 767px)').matches) setPanel(null)
   }
-  const channel = overview || inbox || page ? undefined : (current && (state.channels.find((c) => c.id === current) ?? state.threads.find((c) => c.id === current))) || state.channels.find((c) => c.type === 0 && (c.guild_id ?? state.guild.id) === guildPick) || state.channels.find((c) => c.type === 0)
+  const routed = current && (state.channels.find((c) => c.id === current) ?? state.threads.find((c) => c.id === current))
+  // Direct messages picked with none open: their own empty page, not some server's channel.
+  const dmHome = !overview && !inbox && !page && guildPick === DM_GUILD && !routed
+  const channel = overview || inbox || page || dmHome ? undefined : routed || state.channels.find((c) => c.type === 0 && (c.guild_id ?? state.guild.id) === guildPick) || state.channels.find((c) => c.type === 0)
   // The server shown in the sidebar: the open channel's, else the one picked last.
   const guildIds = [...store.guilds().map((g) => g.id), ...(state.private_channels ? [DM_GUILD] : [])]
   const activeGuild = guildIds.includes(guildPick) ? guildPick : channel?.guild_id && guildIds.includes(channel.guild_id) ? channel.guild_id : state.guild.id
@@ -1241,6 +1272,8 @@ function Main() {
     const newest = (list: Channel[]) => [...list].sort((a, b) => (snowflakeGt(a.last_message_id ?? a.id, b.last_message_id ?? b.id) ? -1 : 1))[0]
     const target = [...state.channels, ...state.threads].find((c) => c.id === last) ?? (id === DM_GUILD ? newest(state.channels.filter(isDm)) : state.channels.find((c) => c.type === 0 && c.guild_id === id))
     if (target) setCurrent(target.id)
+    // No conversations yet: leave the open channel for the direct messages' own page.
+    else if (id === DM_GUILD) location.hash = '#/dms'
   }
   const open = (id: string) => {
     setModal(null)
@@ -1258,6 +1291,7 @@ function Main() {
 
   return (
     <div className="app">
+      <OfflineNotice />
       {/* Discord's first Tab stop: straight to the conversation. */}
       <button className="skip-link" onClick={() => (document.querySelector<HTMLElement>('.composer textarea') ?? document.querySelector<HTMLElement>('.messages'))?.focus()}>
         Skip to the conversation
@@ -1271,6 +1305,8 @@ function Main() {
         <page.Page key={`x${page.id}`} onMenu={showChannels} onOpen={open} />
       ) : inbox ? (
         <Inbox guildId={activeGuild} onMenu={showChannels} onJump={jump} onSearch={() => setPanel({ kind: 'search' })} />
+      ) : channel && channel.type === 15 ? (
+        <Forum key={`f${channel.id}`} channel={channel} state={state} onMenu={showChannels} onOpen={open} onSearch={() => setPanel({ kind: 'search' })} />
       ) : channel && !(channel.type === 4) ? (
         <Chat
           // Every sibling here has its own key prefix: a panel keyed by the same id as the
@@ -1296,7 +1332,15 @@ function Main() {
           <button className="icon-button menu" onClick={() => setDrawer(true)} aria-label="Channels">
             <Icon name="back" />
           </button>
-          {can(P.MANAGE_GUILD, null, activeGuild) ? (
+          {dmHome ? (
+            <Empty icon="chat" title="No conversation open">
+              Pick someone on the left, or{' '}
+              <button className="link-button" onClick={(e) => setLinkSheet(newDmSheet(state, below(e.currentTarget), open))}>
+                start a new message
+              </button>
+              .
+            </Empty>
+          ) : can(P.MANAGE_GUILD, null, activeGuild) ? (
             <Welcome name={state.guilds?.find((g) => g.id === activeGuild)?.name ?? state.guild.name} />
           ) : (
             <Empty icon="hash" title="No channels yet">Channels shared with you show here.</Empty>

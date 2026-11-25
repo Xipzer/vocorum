@@ -541,6 +541,13 @@ export class HubStore {
     return row ? { codeHash, deviceName: String(row['device_name']), userId: row['user_id'] == null ? null : String(row['user_id']) } : null
   }
 
+  // What became of a pairing code: still usable, used, or expired (or unknown, counted as expired).
+  async pairingState(code: string): Promise<'ready' | 'used' | 'expired'> {
+    const [row] = await this.rows('SELECT used_at, expires_at FROM pairings WHERE code_hash = ?', [sha256(normalizeCode(code))])
+    if (row?.['used_at'] != null) return 'used'
+    return row && Number(row['expires_at']) > Date.now() ? 'ready' : 'expired'
+  }
+
   async consumePairing(codeHash: string): Promise<boolean> {
     const result = await this.db.execute({ sql: 'UPDATE pairings SET used_at = ? WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?', args: [Date.now(), codeHash, Date.now()] })
     return result.rowsAffected > 0

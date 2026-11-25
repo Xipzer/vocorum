@@ -6,6 +6,7 @@ import { useState, type CSSProperties } from 'react'
 import type { Component } from './api.ts'
 import { Markdown, inline, keyValueBlock, type MarkdownContext } from './markdown.tsx'
 import { Icon, type IconName } from './icons.tsx'
+import { emojify } from './emoji.tsx'
 
 export type Interact = (body: { type: 'button' | 'select'; customId: string; values?: string[] }) => Promise<void>
 
@@ -16,7 +17,7 @@ export function accentColor(value: number | null | undefined) {
 }
 
 function emojiLabel(emoji: { name?: string } | undefined) {
-  return emoji?.name && !/^\w+$/.test(emoji.name) ? `${emoji.name} ` : ''
+  return emoji?.name && !/^\w+$/.test(emoji.name) ? <>{emojify(emoji.name)} </> : null
 }
 
 // Links from bots (embeds, buttons, media, files) open only http(s) URLs, or

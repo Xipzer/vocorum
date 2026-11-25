@@ -3,7 +3,8 @@
 
 import { connectNativeEvents, native, sendNativeFocus } from './native.ts'
 
-export type User = { id: string; username: string; global_name?: string | null; bot?: boolean; avatar?: string | null; color?: number | null }
+// pending: on the hub (imported from Discord) but no device paired yet.
+export type User = { id: string; username: string; global_name?: string | null; bot?: boolean; avatar?: string | null; color?: number | null; pending?: boolean }
 export type Attachment = { id: string; filename: string; size: number; url: string; proxy_url?: string; content_type?: string; duration_secs?: number; waveform?: string; width?: number | null; height?: number | null; flags?: number; description?: string; spoiler?: boolean; missing?: boolean }
 export type EmbedMedia = { url: string; proxy_url?: string; width?: number; height?: number }
 export type Embed = {
@@ -137,7 +138,9 @@ export type LinkKind = 'liaison' | 'spawned' | 'parent' | 'mentions' | 'mentione
 export type SessionLink = { id: string; kind: LinkKind; count: number; last: string; messageId: string; messageChannelId: string }
 export type ServiceStatus = 'running' | 'waiting' | 'stopped' | 'failed' | 'restarting' | 'starting'
 export type Service = { unit: string; kind: 'service' | 'timer'; description: string; status: ServiceStatus; sub: string; pid: number | null; since: string | null; restarts: number; enabled: boolean; transient: boolean; version: string | null; next: string | null; threads: string[]; timer: string | null; runs: string | null }
-export type HubRequest = { id: string; kind: string; summary: string; reason: string; origin: string; status: 'pending' | 'approved' | 'denied' | 'failed' | 'expired'; created_at: number; expires_at: number; decided_at?: number | null; result: unknown; undoable?: boolean }
+// A server's own emoji, stored on the hub (imported from Discord).
+export type CustomEmojiInfo = { id: string; name: string; animated: boolean }
+export type HubRequest = { id: string; kind: string; summary: string; reason: string; origin: string; route?: string; status: 'pending' | 'approved' | 'denied' | 'failed' | 'expired'; created_at: number; expires_at: number; decided_at?: number | null; result: unknown; undoable?: boolean }
 export type ServiceEvent = { unit: string; at: number; kind: string; detail: string | null }
 export type Guild = { id: string; name: string; icon: string | null; owner_id?: string; permissions?: string }
 export type DeviceInfo = { id: string; name: string; created_at: number | string; last_seen_at: number | string | null; current: boolean; online: boolean; push: boolean }
@@ -184,7 +187,9 @@ export async function call<T>(path: string, init: RequestInit & { json?: unknown
   if (!response.ok) {
     let message = text
     try {
-      message = (JSON.parse(text) as { error?: string }).error ?? text
+      const body = JSON.parse(text) as { error?: string; message?: string; code?: number }
+      // Discord-style errors carry a message and a code: say what they mean, never the JSON.
+      message = response.status === 403 && (body.code === 50013 || body.code === 50001) ? "You don't have permission to do that here." : (body.error ?? body.message ?? text)
     } catch {}
     throw new ApiError(response.status, message || `HTTP ${response.status}`)
   }
@@ -254,6 +259,9 @@ export const api = {
   devices: () => call<{ devices: DeviceInfo[] }>('/client/devices'),
   renameDevice: (id: string, name: string) => call<{ devices: DeviceInfo[] }>(`/client/devices/${id}`, { method: 'PATCH', json: { name } }),
   revokeDevice: (id: string) => call<{ revoked: string; signed_out: boolean }>(`/client/devices/${id}`, { method: 'DELETE' }),
+  newPost: (forumId: string, body: { name: string; content: string }) => call<{ thread: Channel; message: Message }>(`/client/channels/${forumId}/threads`, { method: 'POST', json: body }),
+  welcome: (userId: string) => call<{ code: string; expires_at: number }>(`/client/users/${userId}/welcome`, { method: 'POST', json: {} }),
+  guildEmojis: (id: string) => call<CustomEmojiInfo[]>(`/client/guilds/${id}/emojis`),
   patchGuild: (id: string, body: { name: string }) => call<Guild>(`/client/guilds/${id}`, { method: 'PATCH', json: body }),
   setGuildIcon: (id: string, image: Blob | null) => call<Guild>(`/client/guilds/${id}/icon`, image ? { method: 'PUT', body: image } : { method: 'DELETE' }),
   createChannel: (guildId: string, body: { name: string; type?: 0 | 4 | 5 | 15; topic?: string | null; parent_id?: string | null; position?: number; permission_overwrites?: Overwrite[] }) => call<Channel>(`/client/guilds/${guildId}/channels`, { method: 'POST', json: body }),

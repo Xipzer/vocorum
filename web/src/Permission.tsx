@@ -88,7 +88,7 @@ export function PermissionCard({ ask, components, interact }: { ask: PermissionA
           </button>
           {id('always') && (
             <button className="button" disabled={Boolean(busy)} onClick={() => press(id('always'))} title="Accept this and similar requests from now on">
-              Always
+              Always allow
             </button>
           )}
           <button className="button" disabled={Boolean(busy)} onClick={() => press(id('reject'))}>

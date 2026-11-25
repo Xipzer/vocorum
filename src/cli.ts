@@ -124,6 +124,9 @@ Get started
   pair <device>            a link and QR code that signs a new device in
   restart                  restart the hub
   backup [dir]             a consistent copy of the hub while it runs
+  restore <dir>            put a backup back, here or on a new machine
+  export <dir>             everything you can read, as plain files (for leaving)
+  uninstall                remove the hub's services and command (data kept unless --delete-data)
 
 Move from Discord
   discord scan             what is there, and what the bot cannot read (read only)

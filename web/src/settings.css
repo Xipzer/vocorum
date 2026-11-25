@@ -1059,3 +1059,16 @@ select.settings-input {
 .settings-tri .settings-tri-deny.on {
   background: var(--danger-fill);
 }
+
+/* An approved invite in the Inbox: the pairing code to send, at full strength on a decided card. */
+.request-card.request-card:not(.pending) > .settings-code,
+.request-card.request-card:not(.pending) > .request-outcome {
+  opacity: 1;
+}
+.request-card > .settings-code {
+  margin: 12px 0 0;
+}
+.request-outcome {
+  margin-top: 8px;
+  color: var(--text);
+}

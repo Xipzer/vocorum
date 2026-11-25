@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App.tsx'
+import { installEmojiCopy } from './emoji.tsx'
 import { installKeyboardDock } from './keyboard.ts'
 import { native } from './native.ts'
 import { TitleBar } from './TitleBar.tsx'
@@ -9,6 +10,7 @@ import './media.css'
 import './composer.css'
 
 installKeyboardDock()
+installEmojiCopy()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

@@ -113,6 +113,8 @@ function bodyOf(row: Pick<Row, 'content' | 'components' | 'embeds' | 'attachment
 // About 16 words around the first hit, hits marked **like this**, … where text was cut.
 // Words match as prefixes and without accents or case, as the index does.
 export function snippet(body: string, query: SearchQuery, words = 16): string | null {
+  // Markdown marks would clash with the hit marks and show as stars: drop them first.
+  body = body.replace(/\*\*|__|~~|`+/g, '')
   const fold = (s: string) => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
   const tokens = [...body.matchAll(/[\p{L}\p{N}_]+/gu)].map((m) => ({ start: m.index!, end: m.index! + m[0].length, text: fold(m[0]) }))
   if (!tokens.length) return null

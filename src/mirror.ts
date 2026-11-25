@@ -407,6 +407,16 @@ export class Mirror {
     const machineBot = /^\/admin\/mirror\/machine-bots\/([^/]+)$/.exec(pathname)
     if (machineBot) return this.machineBot(decodeURIComponent(machineBot[1]!), await readJson(req))
     if (pathname === '/admin/mirror/rewrite-mentions') return this.rewriteStoredMentions()
+    // A community's shape: roles, members, overwrites, private thread members, reactions, emoji (community.ts).
+    const structure = /^\/admin\/mirror\/guilds\/(\d{1,20})\/structure$/.exec(pathname)
+    if (structure) return this.hub.community.structure(structure[1]!, await readJson(req))
+    if (pathname === '/admin/mirror/thread-members') return this.hub.community.threadMembers(await readJson(req))
+    if (pathname === '/admin/mirror/reactions') return this.hub.community.reactions(await readJson(req))
+    const emoji = /^\/admin\/mirror\/guilds\/(\d{1,20})\/emoji\/(\d{1,20})$/.exec(pathname)
+    if (emoji) {
+      const q = new URL(req.url ?? '/', 'http://x').searchParams
+      return this.hub.community.saveEmoji(emoji[1]!, emoji[2]!, q.get('name') ?? '', q.get('animated') === '1', await readBody(req, 1024 * 1024))
+    }
     if (pathname === '/admin/mirror/finish') {
       const body = await readJson(req)
       const threads = Array.isArray(body['threads']) ? (body['threads'] as string[]) : []

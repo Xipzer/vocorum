@@ -111,6 +111,24 @@ apps then update from the hub itself, and the hub's setup page offers the
 installers to devices holding a valid pairing code. Nothing is fetched from
 any other host.
 
+## End-to-end tests
+
+`tests/apps-e2e/run.ts` checks a release build against a throwaway hub:
+pairing, sending, receiving, a native notification, memory budgets, and with
+`--from` an update from an older release to this one.
+
+```sh
+node --import tsx tests/apps-e2e/run.ts --platform linux --release <dir> [--from <older AppImage>]
+node --import tsx tests/apps-e2e/run.ts --platform windows --release <dir> [--from <older installer>]
+```
+
+Linux drives the app with `tauri-driver` and `WebKitWebDriver`
+(`webkit2gtk-driver`), in its own D-Bus session. Windows runs from WSL with
+node installed on Windows: it installs the build, opens WebView2's debugging
+port on localhost only, and reads notifications back from Windows. It refuses
+to run over an installed Vocorum. Every run keeps its data in its own folder
+(`VOCORUM_DATA_DIR`), so it never touches your own app.
+
 ## Per system notes
 
 - **Windows (WebView2):** Chromium based, so it behaves like Chrome.

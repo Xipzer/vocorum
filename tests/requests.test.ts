@@ -48,6 +48,17 @@ test('a request changes nothing until the owner approves it with a passkey', asy
   expect((await approve(owner, created.json.id).catch(() => null))?.status ?? 409).not.toBe(200)
   const [row] = (await admin('GET', '/admin/requests')).json.requests
   expect(row.status).toBe('approved')
+
+  // The code for the card: on the owner's devices while it can be used, never to the CLI (an
+  // agent could pair as sam), and gone everywhere once used.
+  expect(row.result).toMatchObject({ code: null, pairing: 'ready' })
+  const card = () => owner.json('/client/requests').then((r: { requests: Array<{ id: string; result: { code: string | null; pairing: string } }> }) => r.requests.find((x) => x.id === created.json.id)!.result)
+  expect(await card()).toMatchObject({ code: body.result.code, pairing: 'ready' })
+  const { TestDevice } = await import('./helpers.ts')
+  await new TestDevice(t.hub).pair(body.result.code)
+  expect(await card()).toMatchObject({ code: null, pairing: 'used' })
+  const stored = await t.hub.store.db.execute({ sql: 'SELECT result FROM change_requests WHERE id = ?', args: [created.json.id] })
+  expect(String(stored.rows[0]!['result'])).not.toContain(body.result.code)
 })
 
 test('only allowed changes can be requested, and only the owner decides', async () => {

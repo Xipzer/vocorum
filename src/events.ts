@@ -34,7 +34,7 @@ export const CLIENT_EVENTS = new Set([
 ])
 
 // Events after which who-can-see-what may have changed.
-const STRUCTURE = new Set(['CHANNEL_CREATE', 'CHANNEL_UPDATE', 'CHANNEL_DELETE', 'THREAD_CREATE', 'THREAD_UPDATE', 'THREAD_DELETE', 'GUILD_ROLE_CREATE', 'GUILD_ROLE_UPDATE', 'GUILD_ROLE_DELETE', 'GUILD_MEMBER_ADD', 'GUILD_MEMBER_UPDATE', 'GUILD_MEMBER_REMOVE'])
+const STRUCTURE = new Set(['CHANNEL_CREATE', 'CHANNEL_UPDATE', 'CHANNEL_DELETE', 'THREAD_CREATE', 'THREAD_UPDATE', 'THREAD_DELETE', 'GUILD_ROLE_CREATE', 'GUILD_ROLE_UPDATE', 'GUILD_ROLE_DELETE', 'GUILD_MEMBER_ADD', 'GUILD_MEMBER_UPDATE', 'GUILD_MEMBER_REMOVE', 'THREAD_MEMBERS_UPDATE', 'THREAD_MEMBER_UPDATE'])
 // Gone after the event: who could see it is answered from before it.
 const REMOVALS = new Set(['CHANNEL_DELETE', 'THREAD_DELETE'])
 // Role and membership changes: devices refetch /client/state to pick up what they can now see.

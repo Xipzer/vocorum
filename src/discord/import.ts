@@ -15,9 +15,13 @@ import { findSecrets, HubAdmin, jobDir, mask, openTwin, readJson, writeJson } fr
 import { DiscordRest, snowflakeTime, TEXT_TYPES, THREAD_TYPES } from './rest.ts'
 
 type User = { id: string; username?: string; global_name?: string | null; avatar?: string | null; bot?: boolean }
-type Channel = { id: string; guild_id?: string; type: number; name?: string; parent_id?: string | null; position?: number; message_count?: number; last_message_id?: string | null; thread_metadata?: { archived?: boolean; locked?: boolean; archive_timestamp?: string } }
+type Overwrite = { id: string; type: number; allow: string; deny: string }
+type Channel = { id: string; guild_id?: string; type: number; name?: string; parent_id?: string | null; position?: number; message_count?: number; last_message_id?: string | null; thread_metadata?: { archived?: boolean; locked?: boolean; archive_timestamp?: string }; permission_overwrites?: Overwrite[]; available_tags?: unknown[]; applied_tags?: unknown[]; rate_limit_per_user?: number; nsfw?: boolean }
+type Role = { id: string; name: string; permissions: string; managed?: boolean; icon?: string | null; unicode_emoji?: string | null }
+type Member = { user: User; nick?: string | null; roles: string[]; joined_at?: string; communication_disabled_until?: string | null }
+type Emoji = { id: string; name: string; animated?: boolean; available?: boolean }
 type Attachment = { id: string; filename: string; url?: string; size?: number }
-type Message = { id: string; channel_id: string; author: User; content?: string; timestamp?: string; type?: number; attachments?: Attachment[]; embeds?: unknown[]; components?: unknown[] }
+type Message = { id: string; channel_id: string; author: User; content?: string; timestamp?: string; type?: number; attachments?: Attachment[]; embeds?: unknown[]; components?: unknown[]; reactions?: Array<{ emoji: { id: string | null; name: string | null; animated?: boolean }; count: number }>; sticker_items?: unknown[] }
 type Guild = { id: string; name: string; icon?: string | null; owner_id?: string }
 
 const MAX_FILE = 50 * 1024 * 1024
@@ -27,7 +31,7 @@ const MESSAGE_CONTENT = (1 << 18) | (1 << 19)
 export type ImportReport = {
   started: string
   finished: string | null
-  guilds: Record<string, { name: string; channels: number; threads: number; complete: number; messages_created: number; files_copied: number; files_missing: number; files_failed: number; gaps: Record<string, { name: string; missing: number; expected: number }>; unreadable: string[] }>
+  guilds: Record<string, { name: string; channels: number; threads: number; complete: number; messages_created: number; files_copied: number; files_missing: number; files_failed: number; gaps: Record<string, { name: string; missing: number; expected: number }>; unreadable: string[]; community?: Community }>
   secrets: Array<{ kind: string; masked: string; channel: string; date: string }>
 }
 
@@ -51,8 +55,8 @@ export async function listThreads(rest: DiscordRest, guildId: string, channels: 
   return [...threads.values()].filter((t) => t.parent_id && parents.has(t.parent_id))
 }
 
-async function guildChannels(rest: DiscordRest, guildId: string) {
-  const all = (await rest.get<Channel[]>(`/guilds/${guildId}/channels`)).filter((c) => c.type === 4 || TEXT_TYPES.has(c.type))
+async function guildChannels(rest: DiscordRest, guildId: string, { every = false } = {}) {
+  const all = (await rest.get<Channel[]>(`/guilds/${guildId}/channels`)).filter((c) => every || c.type === 4 || TEXT_TYPES.has(c.type))
   all.sort((a, b) => Number(a.type !== 4) - Number(b.type !== 4) || (a.position ?? 0) - (b.position ?? 0))
   return all
 }
@@ -74,7 +78,19 @@ export async function scan(rest: DiscordRest, guildIds: string[] | 'all') {
       if ((await rest.call('GET', `/channels/${c.id}/messages?limit=1`)).status === 403) unreadable.push(c.name ?? c.id)
     }
     const threadMessages = threads.reduce((sum, t) => sum + (t.message_count ?? 0), 0)
-    guilds.push({ id, name: guild.name, owner_id: guild.owner_id ?? null, categories: channels.filter((c) => c.type === 4).length, channels: channels.filter((c) => c.type !== 4).length, threads: threads.length, thread_messages: threadMessages, unreadable })
+    // The community around the messages: what import brings, and what it cannot.
+    const every = await rest.get<Channel[]>(`/guilds/${id}/channels`)
+    const members = (await rest.call('GET', `/guilds/${id}/members?limit=1`)).status === 200
+    const community = {
+      roles: ((await rest.maybe<Role[]>(`/guilds/${id}/roles`)) ?? []).length,
+      member_list: members,
+      emoji: ((await rest.maybe<Emoji[]>(`/guilds/${id}/emojis`)) ?? []).length,
+      forums: channels.filter((c) => c.type === 15 || c.type === 16).length,
+      private_threads: threads.filter((t) => t.type === 12).length,
+      channels_with_permissions: channels.filter((c) => c.permission_overwrites?.length).length,
+      voice_channels: every.filter((c) => CHANNEL_KIND[c.type]).length,
+    }
+    guilds.push({ id, name: guild.name, owner_id: guild.owner_id ?? null, categories: channels.filter((c) => c.type === 4).length, channels: channels.filter((c) => c.type !== 4).length, threads: threads.length, thread_messages: threadMessages, unreadable, community })
   }
   const messages = guilds.reduce((sum, g) => sum + g.thread_messages, 0)
   const containers = guilds.reduce((sum, g) => sum + g.channels + g.threads, 0)
@@ -121,15 +137,17 @@ export async function importDiscord(rest: DiscordRest, config: HubConfig, paths:
         if (icon) await hub.call('POST', `/admin/mirror/guilds/${guildId}/icon`, icon, { raw: true }).catch(() => {})
       }
       const only = options.channels?.length ? new Set(options.channels) : null
-      const listed = await guildChannels(rest, guildId)
-      const channels = only ? listed.filter((c) => only.has(c.id) || (c.type === 4 && listed.some((x) => only.has(x.id) && x.parent_id === c.id))) : listed
+      const listed = await guildChannels(rest, guildId, { every: true })
+      const usable = listed.filter((c) => c.type === 4 || TEXT_TYPES.has(c.type))
+      const channels = only ? usable.filter((c) => only.has(c.id) || (c.type === 4 && usable.some((x) => only.has(x.id) && x.parent_id === c.id))) : usable
       if (only && !channels.some((c) => only.has(c.id))) throw new Error(`None of ${[...only].join(', ')} is a text channel the bot can see in ${guild.name}`)
       await hub.call('POST', '/admin/mirror/channels', channels.map((c) => ({ ...c, guild_id: guildId })))
       const threads = await listThreads(rest, guildId, channels)
       // A server with thousands of agent sessions: in slices the hub takes in one request.
       for (let i = 0; i < threads.length; i += 100) await hub.call('POST', '/admin/mirror/channels', threads.slice(i, i + 100).map((t) => ({ ...t, guild_id: guildId })))
       const done = new Set(progress[guildId] ?? [])
-      const stats: ImportReport['guilds'][string] = { name: guild.name, channels: channels.filter((c) => c.type !== 4).length, threads: threads.length, complete: 0, messages_created: 0, files_copied: 0, files_missing: 0, files_failed: 0, gaps: {}, unreadable: [] }
+      const community = await importStructure(rest, hub, guildId, guild, listed, channels, threads, config.ownerDiscordIds ?? [], log)
+      const stats: ImportReport['guilds'][string] = { name: guild.name, channels: channels.filter((c) => c.type !== 4).length, threads: threads.length, complete: 0, messages_created: 0, files_copied: 0, files_missing: 0, files_failed: 0, gaps: {}, unreadable: [], community }
       report.guilds[guildId] = stats
       const containers = [...channels.filter((c) => c.type !== 4), ...threads]
       let index = 0
@@ -156,6 +174,8 @@ export async function importDiscord(rest: DiscordRest, config: HubConfig, paths:
           }
         }
         stats.messages_created += await sendBatches(hub, messages)
+        community.reactions += await copyReactions(rest, hub, messages)
+        community.stickers += messages.filter((m) => m.sticker_items?.length).length
         let filesFailed = 0
         if (options.files !== false) {
           const files = await copyFiles(rest, hub, messages)
@@ -181,9 +201,14 @@ export async function importDiscord(rest: DiscordRest, config: HubConfig, paths:
         if (index % 25 === 0) log(`${guild.name}: ${index} of ${containers.length} channels and threads`)
         writeJson(reportFile, report)
       }
+      community.private_thread_members = await copyThreadMembers(rest, hub, threads)
+      community.emoji = await copyEmoji(rest, hub, guildId)
+      if (community.stickers) community.not_imported.push(`${community.stickers} messages with stickers: the sticker shows as its name`)
       await hub.call('POST', '/admin/mirror/finish', { threads: threads.map((t) => t.id), guild_id: guildId })
       await copyAvatars(hub, twin, guildId)
       log(`${guild.name}: ${stats.complete} of ${containers.length} complete, ${stats.messages_created} new messages, ${stats.files_copied} files copied, ${stats.files_missing} already gone on Discord`)
+      log(`${guild.name}: ${community.roles} roles, ${community.members ?? 'no'} members, permissions of ${community.overwrites} channels, ${community.reactions} reactions, ${community.emoji} custom emoji${community.private_threads ? `, ${community.private_threads} private threads (${community.private_thread_members} memberships)` : ''}`)
+      for (const line of community.not_imported) log(`  not imported: ${line}`)
     }
   } finally {
     report.finished = new Date().toISOString()
@@ -299,6 +324,155 @@ async function copyAvatars(hub: HubAdmin, twin: ReturnType<typeof openTwin>, gui
     const data = await download(`https://cdn.discordapp.com/avatars/${row['id']}/${row['avatar']}.png?size=256`)
     if (data && data !== 'gone') await hub.call('POST', `/admin/mirror/avatars/${row['id']}`, data, { raw: true }).catch(() => {})
   }
+}
+
+// --- community: roles, members, permissions, private threads, reactions, emoji
+
+// Discord permissions the hub keeps but has no feature for (moderation tools, webhooks,
+// events): shown in the report when a role or channel grants them.
+const UNENFORCED: Record<string, bigint> = {
+  'Kick and ban members': (1n << 1n) | (1n << 2n),
+  'Timeout members': 1n << 40n,
+  'Manage nicknames': 1n << 27n,
+  'Manage webhooks': 1n << 29n,
+  'Manage emoji and stickers': (1n << 30n) | (1n << 43n),
+  'Manage events': 1n << 33n,
+  'View audit log': 1n << 7n,
+}
+const ADMINISTRATOR = 1n << 3n
+const CHANNEL_KIND: Record<number, string> = { 2: 'voice channels', 13: 'stage channels', 14: 'directory channels' }
+
+export type Community = {
+  roles: number
+  admins: string[]
+  members: number | null
+  overwrites: number
+  kept: { roles: number; members: number; overwrites: number }
+  private_threads: number
+  private_thread_members: number
+  reactions: number
+  emoji: number
+  stickers: number
+  forum_tags: number
+  not_imported: string[]
+}
+
+// Every page of a list Discord pages with ?after=<id>; null when the bot may not read it.
+async function pages<T>(rest: DiscordRest, route: string, size: number, idOf: (item: T) => string): Promise<T[] | null> {
+  const out: T[] = []
+  let after = '0'
+  for (;;) {
+    const page = await rest.maybe<T[]>(`${route}?limit=${size}&after=${after}`)
+    if (page === null) return out.length ? out : null
+    out.push(...page)
+    if (page.length < size) return out
+    after = idOf(page.at(-1)!)
+  }
+}
+
+async function importStructure(rest: DiscordRest, hub: HubAdmin, guildId: string, guild: Guild, listed: Channel[], channels: Channel[], threads: Channel[], ownerDiscordIds: string[], log: (line: string) => void): Promise<Community> {
+  const roles = (await rest.maybe<Role[]>(`/guilds/${guildId}/roles`)) ?? []
+  const members = await pages<Member>(rest, `/guilds/${guildId}/members`, 1000, (m) => m.user.id)
+  const out: Community = { roles: roles.length, admins: [], members: members?.length ?? null, overwrites: 0, kept: { roles: 0, members: 0, overwrites: 0 }, private_threads: threads.filter((t) => t.type === 12).length, private_thread_members: 0, reactions: 0, emoji: 0, stickers: 0, forum_tags: 0, not_imported: [] }
+  const withOverwrites = channels.filter((c) => c.permission_overwrites?.length)
+  out.overwrites = withOverwrites.length
+  // Roles and channels in one request, members in slices the hub takes.
+  const first = await hub.call<{ roles_kept: number; overwrites_kept: number; members_kept: number }>('POST', `/admin/mirror/guilds/${guildId}/structure`, { roles, members: [], channels: withOverwrites.map((c) => ({ id: c.id, permission_overwrites: c.permission_overwrites })) })
+  out.kept.roles = first.roles_kept
+  out.kept.overwrites = first.overwrites_kept
+  for (let i = 0; members && i < members.length; i += 500) {
+    const r = await hub.call<{ members_kept: number }>('POST', `/admin/mirror/guilds/${guildId}/structure`, { roles: [], channels: [], members: members.slice(i, i + 500).map((m) => ({ user: m.user, nick: m.nick ?? null, roles: m.roles, joined_at: m.joined_at })) })
+    out.kept.members += r.members_kept
+    await hub.yieldToHub()
+  }
+
+  // Who would be an administrator on the hub once invited.
+  const byRole = new Map(roles.map((r) => [r.id, BigInt(r.permissions)]))
+  const owners = new Set(ownerDiscordIds)
+  const everyone = byRole.get(guildId) ?? 0n
+  for (const m of members ?? []) {
+    if (m.user.bot) continue
+    const perms = m.roles.reduce((p, r) => p | (byRole.get(r) ?? 0n), everyone)
+    if (perms & ADMINISTRATOR || m.user.id === guild.owner_id) out.admins.push(owners.has(m.user.id) ? 'you' : `${m.user.global_name ?? m.user.username} (@${m.user.username})`)
+  }
+
+  // What does not come across.
+  const n = out.not_imported
+  if (members === null && out.private_threads) n.push(`who is in ${out.private_threads} private threads (needs the Server Members intent too): until then only admins, people who manage threads and each thread's starter see them on the hub`)
+  if (members === null) n.push('the member list: Discord only gives it to a bot with the Server Members intent (developer portal, your app, Bot, Privileged Gateway Intents). Without it, only people who wrote messages come across, with no roles. Turn it on and import again')
+  // Roles people hold (not @everyone's defaults, not bots' own roles) and channel grants.
+  const granted = [...roles.filter((r) => r.id !== guildId && !r.managed).map((r) => BigInt(r.permissions)), ...channels.flatMap((c) => (c.permission_overwrites ?? []).map((o) => BigInt(o.allow)))].reduce((a, b) => a | b, 0n)
+  const unenforced = Object.entries(UNENFORCED).filter(([, bits]) => granted & bits).map(([name]) => name)
+  if (unenforced.length) n.push(`permissions the hub keeps but has no feature for: ${unenforced.join(', ')}`)
+  for (const [type, kind] of Object.entries(CHANNEL_KIND)) {
+    const count = listed.filter((c) => c.type === Number(type)).length
+    if (count) n.push(`${count} ${kind} in the server, and any text chat in them (the hub has no voice)`)
+  }
+  out.forum_tags = channels.reduce((sum, c) => sum + (c.available_tags?.length ?? 0), 0)
+  if (out.forum_tags) n.push(`${out.forum_tags} forum tags: forum posts come across as threads, without their tags`)
+  const slow = channels.filter((c) => (c.rate_limit_per_user ?? 0) > 0).length
+  if (slow) n.push(`slow mode on ${slow} channels`)
+  const nsfw = channels.filter((c) => c.nsfw).length
+  if (nsfw) n.push(`the age-restricted mark on ${nsfw} channels`)
+  const roleIcons = roles.filter((r) => r.icon || r.unicode_emoji).length
+  if (roleIcons) n.push(`icons of ${roleIcons} roles`)
+  const timeouts = (members ?? []).filter((m) => m.communication_disabled_until && Date.parse(m.communication_disabled_until) > Date.now()).length
+  if (timeouts) n.push(`${timeouts} members' current timeouts`)
+  const stickers = (await rest.maybe<unknown[]>(`/guilds/${guildId}/stickers`))?.length ?? 0
+  if (stickers) n.push(`${stickers} custom stickers`)
+  const events = (await rest.maybe<unknown[]>(`/guilds/${guildId}/scheduled-events`))?.length ?? 0
+  if (events) n.push(`${events} scheduled events`)
+  n.push('bans, invites, the audit log, AutoMod rules, onboarding questions and integrations (Discord-only)')
+  if (out.kept.roles || out.kept.members || out.kept.overwrites) log(`${guild.name}: left as the hub has them (imported before): ${out.kept.roles} roles, ${out.kept.members} members, permissions of ${out.kept.overwrites} channels`)
+  return out
+}
+
+// Who reacted with what: one request per emoji on each message with reactions (up to 100 people a request).
+async function copyReactions(rest: DiscordRest, hub: HubAdmin, messages: Message[]) {
+  const batch: Array<{ message_id: string; emoji: string; user_ids: string[] }> = []
+  let count = 0
+  for (const m of messages) {
+    for (const r of m.reactions ?? []) {
+      const param = r.emoji.id ? `${r.emoji.name}:${r.emoji.id}` : r.emoji.name
+      if (!param) continue
+      const users: string[] = []
+      let after = '0'
+      for (;;) {
+        const page = await rest.maybe<User[]>(`/channels/${m.channel_id}/messages/${m.id}/reactions/${encodeURIComponent(param)}?limit=100&after=${after}`)
+        if (!page?.length) break
+        users.push(...page.map((u) => u.id))
+        if (page.length < 100) break
+        after = page.at(-1)!.id
+      }
+      if (!users.length) continue
+      batch.push({ message_id: m.id, emoji: r.emoji.id ? `<${r.emoji.animated ? 'a' : ''}:${r.emoji.name}:${r.emoji.id}>` : r.emoji.name!, user_ids: users })
+      count += users.length
+    }
+    if (batch.length >= 200) await hub.call('POST', '/admin/mirror/reactions', batch.splice(0))
+  }
+  if (batch.length) await hub.call('POST', '/admin/mirror/reactions', batch)
+  return count
+}
+
+// Private threads: who is in each, so only they see it on the hub.
+async function copyThreadMembers(rest: DiscordRest, hub: HubAdmin, threads: Channel[]) {
+  const list: Array<{ thread_id: string; user_ids: string[] }> = []
+  for (const t of threads.filter((t) => t.type === 12)) {
+    const members = await pages<{ user_id: string }>(rest, `/channels/${t.id}/thread-members`, 100, (m) => m.user_id)
+    if (members?.length) list.push({ thread_id: t.id, user_ids: members.map((m) => m.user_id) })
+  }
+  if (!list.length) return 0
+  return Number((await hub.call<{ added: number }>('POST', '/admin/mirror/thread-members', list)).added ?? 0)
+}
+
+async function copyEmoji(rest: DiscordRest, hub: HubAdmin, guildId: string) {
+  let copied = 0
+  for (const e of (await rest.maybe<Emoji[]>(`/guilds/${guildId}/emojis`)) ?? []) {
+    const data = await download(`${standIn ?? 'https://cdn.discordapp.com'}/emojis/${e.id}.${e.animated ? 'gif' : 'png'}?size=128`)
+    if (!data || data === 'gone') continue
+    await hub.call('POST', `/admin/mirror/guilds/${guildId}/emoji/${e.id}?name=${encodeURIComponent(e.name)}&animated=${e.animated ? 1 : 0}`, data, { raw: true }).then(() => copied++, () => {})
+  }
+  return copied
 }
 
 export { THREAD_TYPES }

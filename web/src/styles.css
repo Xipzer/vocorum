@@ -6,6 +6,14 @@
   font-weight: 100 900;
   src: url('/fonts/inter-latin-wght.woff2') format('woff2-variations');
 }
+/* Emoji in form fields, where images can't go, on systems without an emoji font. Listed
+   after the system emoji fonts, so it is only fetched when none of them has the glyph. */
+@font-face {
+  font-family: 'Twemoji';
+  font-display: swap;
+  src: url('/fonts/twemoji-mozilla.woff2') format('woff2');
+  unicode-range: U+A9, U+AE, U+200D, U+203C, U+2049, U+20E3, U+2122, U+2139, U+2194-21AA, U+231A-23FA, U+24C2, U+25AA-27BF, U+2934-2935, U+2B05-2B55, U+3030, U+303D, U+3297-3299, U+FE0F, U+1F000-1FAFF, U+E0020-E007F;
+}
 :root {
   --bg-0: #000000;
   --bg-1: #060608;
@@ -49,8 +57,9 @@
   --ok: #3fb68b;
   --warn: #e5a50a;
   --danger: #ff4d5e;
-  --font: 'Inter Variable', Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  --mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace;
+  --emoji-font: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', Twemoji;
+  --font: 'Inter Variable', Inter, system-ui, -apple-system, 'Segoe UI', Roboto, var(--emoji-font), sans-serif;
+  --mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, var(--emoji-font), monospace;
   /* One radius scale: inline bits 4, controls and cards 8, floating surfaces 12
      (so an 8px item sits concentric in a 12px menu with 4px padding), sheets 20. */
   --r-inline: 4px;
@@ -1395,6 +1404,10 @@ html[data-keyboard='open'] .footer {
 }
 .composer textarea::placeholder {
   color: var(--text-faint);
+  /* One line, cut with an ellipsis, as Discord's: a long name never wraps under the field. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .composer .icon-button {
   width: 44px;
@@ -3850,7 +3863,7 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
   background: var(--bg-4);
 }
 .message-actions > button.quick {
-  font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
+  font-family: var(--emoji-font), sans-serif;
 }
 /* One rule colour on dark surfaces. */
 .day-divider {
@@ -4551,7 +4564,7 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
 .reaction-emoji {
   font-size: 16px;
   line-height: 1;
-  font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
+  font-family: var(--emoji-font), sans-serif;
 }
 .reaction.me {
   background: rgb(var(--accent-rgb) / 0.14);
@@ -4623,7 +4636,7 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
 .emoji-cell {
   height: 36px;
   border-radius: var(--r-inline);
-  font: 22px/1 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
+  font: 22px/1 var(--emoji-font), sans-serif;
 }
 @media (hover: hover) {
   .emoji-cell:hover {
@@ -4641,7 +4654,7 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
   color: var(--text-muted);
 }
 .emoji-big {
-  font: 22px/1 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
+  font: 22px/1 var(--emoji-font), sans-serif;
 }
 @media (max-width: 767px) {
   .emoji-picker {
@@ -5150,11 +5163,51 @@ html[data-side-collapsed='true'] .user-panel > .inbox-button {
 .spoiler:not(.shown):hover {
   background: var(--bg-5, #23232a);
 }
+/* Emoji images (Twemoji and custom): text size in names and labels, 22px in messages, as
+   Discord. Selected, they copy as the emoji. */
 img.emoji {
+  width: 1.25em;
+  height: 1.25em;
+  margin: 0 0.05em;
+  vertical-align: -0.25em;
+  object-fit: contain;
+}
+.markdown img.emoji {
+  width: 1.375em;
+  height: 1.375em;
+  vertical-align: bottom;
+}
+.markdown.jumbo img.emoji {
+  width: 48px;
+  height: 48px;
+}
+.reaction-emoji img.emoji {
+  display: block;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+.message-actions > button.quick img.emoji,
+.suggest-glyph img.emoji {
+  display: block;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+}
+.emoji-cell {
+  display: grid;
+  place-items: center;
+}
+.emoji-cell img.emoji {
+  width: 26px;
+  height: 26px;
+  margin: 0;
+}
+.emoji-big img.emoji {
+  display: block;
   width: 22px;
   height: 22px;
-  vertical-align: bottom;
-  object-fit: contain;
+  margin: 0;
 }
 .markdown.jumbo .paragraph {
   font-size: 48px;
@@ -7118,4 +7171,117 @@ html[data-chrome] :is(.overlay, .sheet-layer, .lightbox, .settings-layer) {
 * {
   scrollbar-width: thin;
   scrollbar-color: #2e2e36 transparent;
+}
+
+/* Offline: a pill at the top of the window, over the header, never moving the layout. */
+.offline-notice {
+  position: fixed;
+  top: calc(var(--chrome, 0px) + env(safe-area-inset-top) + var(--header) + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 16px;
+  background: var(--danger-fill);
+  color: #fff;
+  font: 600 13px/18px var(--font);
+  white-space: nowrap;
+  box-shadow: var(--shadow-float);
+  pointer-events: none;
+}
+
+/* Forum channels: post cards, newest activity first, as Discord's forum list. */
+.forum-posts {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+}
+.forum-post {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  padding: 12px 16px;
+  text-align: left;
+  border-radius: var(--r-control);
+  background: var(--bg-3);
+  border: 1px solid var(--line-strong);
+  transition: background-color var(--t-fast), border-color var(--t-fast);
+}
+@media (hover: hover) {
+  .forum-post:hover {
+    background: var(--bg-4);
+  }
+}
+.forum-post-title {
+  font: 600 16px/20px var(--font);
+  color: var(--text-strong);
+  overflow-wrap: anywhere;
+}
+.forum-post.unread .forum-post-title::after {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-left: 8px;
+  vertical-align: 2px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.forum-post-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  font: 400 14px/18px var(--font);
+  color: var(--text-muted);
+}
+.forum-post-owner,
+.forum-post-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.forum-post.archived {
+  opacity: 0.7;
+}
+.forum .forum-posts > .empty {
+  margin: auto;
+}
+/* A forum's row: its icon centred where a channel's # sits. */
+.channel .hash > svg {
+  display: block;
+  margin: 0 -1px;
+}
+.forum-bar {
+  display: flex;
+  justify-content: flex-end;
+}
+.forum-new {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px;
+  border-radius: var(--r-control);
+  background: var(--bg-3);
+  border: 1px solid var(--line-strong);
+}
+.forum-new .forum-new-title {
+  font: 600 16px/20px var(--font);
+}
+.forum-new textarea {
+  resize: vertical;
+}
+.forum-new-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }

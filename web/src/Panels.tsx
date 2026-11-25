@@ -6,15 +6,18 @@ import { extensions } from './extensions.tsx'
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
 import { below, Sheet, type SheetSpec } from './Sheet.tsx'
 import { startAuthentication } from '@simplewebauthn/browser'
-import { api, type HubRequest, type Reminder, type FoundChannel, type LinkKind, type Mention, type Message, type SearchResult, type Service, type ServiceEvent } from './api.ts'
+import { api, type Channel, type HubRequest, type Reminder, type FoundChannel, type LinkKind, type Mention, type Message, type SearchResult, type Service, type ServiceEvent } from './api.ts'
 import { Avatar, machineIcon } from './Avatar.tsx'
 import { Icon, type IconName } from './icons.tsx'
+import { E } from './emoji.tsx'
 import { Markdown, type MarkdownContext } from './markdown.tsx'
-import { dmName, isDm, store, useStore } from './store.ts'
+import { dmName, isDm, machineOf, store, useStore } from './store.ts'
 import { cronLabel, isDue, remindTime, remindSheet } from './remind.ts'
 import { can, P } from './perms.ts'
 import { clock, displayName, plain, machineLabel } from './text.ts'
 import { approveInApp, native } from './native.ts'
+import { approvalError } from './login.ts'
+import { CodeCard } from './SettingsPeople.tsx'
 
 export type Jump = (channelId: string, messageId: string) => void
 
@@ -104,6 +107,12 @@ export function SearchPanel({ onClose, onJump, initial = '' }: { onClose: () => 
   const input = useRef<HTMLInputElement>(null)
   const where = useWhere()
   const seq = useRef(0)
+  const hubState = useStore((d) => d.state)
+  // A bot's result carries the name the chat shows for it: its machine's.
+  const author = (r: SearchResult) => {
+    const machine = r.message.author.bot && hubState ? machineOf(hubState, (hubState.threads.find((c) => c.id === r.channel.id) ?? hubState.channels.find((c) => c.id === r.channel.id)) ?? ({ ...r.channel, name: r.channel.name ?? undefined } as Channel)) : null
+    return machine ? machineLabel(machine) : (r.message.author.global_name ?? r.message.author.username)
+  }
 
   useEffect(() => input.current?.focus(), [])
   useEffect(() => {
@@ -184,8 +193,8 @@ export function SearchPanel({ onClose, onJump, initial = '' }: { onClose: () => 
           <button key={r.message.id} className="result" onClick={() => onJump(r.channel.id, r.message.id)}>
             <span className="result-where">{where(r.channel)}</span>
             <span className="result-head">
-              <Avatar id={r.message.author.id} name={r.message.author.global_name ?? r.message.author.username} size="inline" />
-              <b>{r.message.author.global_name ?? r.message.author.username}</b>
+              <Avatar id={r.message.author.id} name={author(r)} size="inline" />
+              <b>{author(r)}</b>
               <span className="num">{when(r.message.timestamp)}</span>
             </span>
             <Snippet text={r.snippet ?? plain(r.message.content).slice(0, 200)} />
@@ -333,7 +342,8 @@ export function InboxPanel({ onClose, onJump, onOpen }: { onClose: () => void; o
   // Agents' requests: pending first, then what was decided in the last 15 minutes.
   const allRequests = useStore((d) => d.requests)
   const now = Date.now()
-  const requests = allRequests.filter((r) => (r.status === 'pending' && r.expires_at > now) || (r.decided_at ?? 0) > now - 15 * 60_000)
+  // An approved invite stays while its pairing code can still be sent.
+  const requests = allRequests.filter((r) => (r.status === 'pending' && r.expires_at > now) || (r.decided_at ?? 0) > now - 15 * 60_000 || inviteOf(r)?.code)
   const pendingCount = requests.filter((r) => r.status === 'pending').length
   const reminders = useStore((d) => d.reminders) ?? []
   const due = reminders.filter(isDue).reverse()
@@ -536,6 +546,26 @@ const expiry = (ms: number) => {
   return /^\d/.test(t) ? `at ${t}` : t.replace(/^(Tomorrow|Yesterday)/, (w) => w.toLowerCase())
 }
 
+// An approved "invite a person": the new person's first pairing code, for the owner to send.
+// The hub gives the code only to the owner's own devices, and only while it can be used.
+type InviteResult = { user?: { username: string; global_name?: string | null }; code?: string | null; expires_at?: number; pairing?: 'ready' | 'used' | 'expired' }
+function inviteOf(request: HubRequest) {
+  if (request.status !== 'approved' || !/^\/client\/guilds\/\d+\/invites$/.test(request.route ?? '')) return null
+  return (request.result as InviteResult | null) ?? null
+}
+
+function InviteOutcome({ request, invite }: { request: HubRequest; invite: InviteResult }) {
+  const guilds = useStore((d) => d.state?.guilds)
+  const name = invite.user ? (invite.user.global_name ?? invite.user.username) : 'They'
+  const guild = guilds?.find((g) => request.route?.includes(`/guilds/${g.id}/`))?.name ?? 'the server'
+  if (invite.code && invite.expires_at) return <CodeCard code={invite.code} expires={invite.expires_at} qr note={`Send it to ${name}. They open Vocorum on their device and enter it under New device, or scan the code.`} />
+  return (
+    <div className="request-outcome">
+      {invite.pairing === 'used' ? `${name} has joined.` : invite.pairing === 'expired' ? 'This code expired. Make a new one in Members.' : `${name} was added to ${guild}. Nothing to send.`}
+    </div>
+  )
+}
+
 export function RequestCard({ request }: { request: HubRequest }) {
   const [busy, setBusy] = useState<'approve' | 'deny' | 'undo' | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -552,10 +582,11 @@ export function RequestCard({ request }: { request: HubRequest }) {
       }
       await store.loadRequests()
     })()
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => setError(approvalError(e)))
       .finally(() => setBusy(null))
   }
   const pending = request.status === 'pending'
+  const invite = inviteOf(request)
   const failure = request.status !== 'failed' ? null : typeof request.result === 'string' ? request.result : ((request.result as { error?: string } | null)?.error ?? null)
   return (
     <div className={`request-card ${request.status}`}>
@@ -572,6 +603,7 @@ export function RequestCard({ request }: { request: HubRequest }) {
         {pending ? ` · expires ${expiry(request.expires_at)}` : ` · ${DECIDED[request.status]}${failure ? `: ${failure}` : ''}`}
       </div>
       {error && <div className="error">{error}</div>}
+      {invite && <InviteOutcome request={request} invite={invite} />}
       {pending && (
         <div className="request-actions">
           <button className="button" disabled={busy !== null} onClick={() => act('deny')}>
@@ -992,6 +1024,7 @@ export function MembersPanel({ channelId, onClose }: { channelId: string; onClos
     const p = presence[u.id]
     const st = status(u.id)
     const notes: string[] = []
+    if (u.pending) notes.push('Not joined yet')
     if (isTyping(u.id)) notes.push(u.bot ? 'working here' : 'typing here')
     for (const d of p?.devices ?? []) notes.push(`${d.name}${d.visible ? '' : ' (away)'} · ${where(d.channel_id)}`)
     if (u.bot && p?.machines?.length) notes.push(p.machines.map((m) => `${m.machine}${m.online ? '' : ' (offline)'}`).join(', '))
@@ -1003,7 +1036,7 @@ export function MembersPanel({ channelId, onClose }: { channelId: string; onClos
         </span>
         <span className="member-name">
           <span className="member-line">
-            <b>{u.global_name ?? u.username}</b>
+            <b><E>{u.global_name ?? u.username}</E></b>
             {u.bot && <span className="bot-tag">BOT</span>}
           </span>
           {notes.length > 0 && <span className="member-note">{notes[0]}{notes.length > 1 ? `, +${notes.length - 1}` : ''}</span>}

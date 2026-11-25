@@ -104,6 +104,6 @@ answers in about 20 ms.
 
 ## Backups
 
-Everything is in `~/.vocorum`. `vocorum backup` makes a full copy while the hub
-runs, in `~/.vocorum/backups/` (or give it a folder). Add `--no-files` to leave
-attachments out. The copy holds keys: keep it private.
+`vocorum backup` makes a full copy while the hub runs. See
+[Back up and recover](recovery.md) for keeping it safe and bringing the hub
+back, and [Leaving Vocorum](leaving.md) to export your messages.

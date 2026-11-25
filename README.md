@@ -47,9 +47,12 @@ or any other company.
 - [Install](docs/install.md): set up the hub and your first device.
 - [Move from Discord](docs/migrate-from-discord.md): bring your bots and history over.
 - [Daily use](docs/daily-use.md): sessions, notifications, people and machines.
+- [Back up and recover](docs/recovery.md): keep a copy and bring the hub back.
+- [Leaving Vocorum](docs/leaving.md): export your messages and uninstall.
 - Using an AI agent to set it up? Point it at [AGENTS.md](AGENTS.md).
 
-Needs Node.js 22 or newer and pnpm (no pnpm? run `corepack enable`).
+Runs on Linux, macOS and Windows. Needs Node.js 22.16 or newer and pnpm (no
+pnpm? run `corepack enable`).
 
 ```bash
 git clone https://github.com/Xipzer/vocorum && cd vocorum
