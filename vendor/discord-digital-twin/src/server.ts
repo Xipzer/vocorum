@@ -5,6 +5,7 @@
 
 import crypto from 'node:crypto'
 import http from 'node:http'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { Spiceflow } from 'spiceflow'
 import {
   ApplicationFlags,
@@ -59,6 +60,7 @@ import {
   memberToAPI,
 } from './serializers.js'
 import { generateSnowflake } from './snowflake.js'
+import { PrivateReplies, type PrivateEvent } from './private-replies.js'
 
 function commandFromRow(row: ApplicationCommandRow): APIApplicationCommand {
   return {
@@ -161,6 +163,7 @@ export type AttachmentStore = (file: { id: string; filename: string; contentType
 
 // Serves HTTP paths outside /api (a hub's own routes) and WebSocket upgrades outside /gateway.
 export interface HttpExtension {
+  privateReply?: PrivateEvent
   handle(req: http.IncomingMessage, res: http.ServerResponse): void
   upgrade?: UpgradeFallback
   // Checked before anything else, for every request and upgrade (/api and
@@ -207,6 +210,7 @@ function resolveAttachmentUrls<T>(value: T, attachments: readonly APIAttachment[
 }
 
 export interface ServerComponents {
+  privateReplies: PrivateReplies
   httpServer: http.Server
   // Who triggered each recent interaction (and the command name), for interaction_metadata on its responses.
   interactions: Map<string, StoredInteraction>
@@ -276,6 +280,11 @@ export const INTERACTION_TOKEN_TTL_MS = 15 * 60_000
 const unknownInteraction = () => new Response(JSON.stringify({ code: 10062, message: 'Unknown Interaction', errors: {} }), { status: 404, headers: { 'Content-Type': 'application/json' } })
 const unknownMessage = () => new Response(JSON.stringify({ code: 10008, message: 'Unknown Message', errors: {} }), { status: 404, headers: { 'Content-Type': 'application/json' } })
 
+function channelFlags(flags: number) {
+  if (flags & MessageFlags.Ephemeral) throw new Response('Ephemeral replies must be sent as a private interaction response', { status: 400 })
+  return flags
+}
+
 function sameSecret(a: string, b: string) {
   const x = crypto.createHash('sha256').update(a).digest()
   const y = crypto.createHash('sha256').update(b).digest()
@@ -336,6 +345,7 @@ export function createServer({
   storeAttachment,
   tokenKey,
   directAudience,
+  clientUser,
 }: {
   prisma: PrismaClient
   botUserId: string
@@ -352,7 +362,12 @@ export function createServer({
   storeAttachment?: AttachmentStore
   tokenKey?: (token: string) => string
   directAudience?: (channelId: string) => ReadonlySet<string> | null
+  // gatewayProxy mode: a client token that acts as its own bot user (null: the shared bot).
+  clientUser?: (token: string) => string | null
 }): ServerComponents {
+  // The bot user a REST request acts as: the shared bot, or the client's own user.
+  const acting = new AsyncLocalStorage<string>()
+  const actor = () => acting.getStore() ?? botUserId
   const state = { port: 0 }
   const typingEvents: TypingEventRecord[] = []
 
@@ -363,6 +378,14 @@ export function createServer({
   // A message by id, only if it is in this channel (Discord answers Unknown
   // Message otherwise): a route's channel decides what it may reach.
   const interactions = new Map<string, StoredInteraction>()
+  const privateReplies = new PrivateReplies(extension?.privateReply)
+  const privateReply = async (interaction: { interactionId: string; channelId: string; applicationId: string }, body: Parameters<PrivateReplies['create']>[4]) => {
+    const meta = interactions.get(interaction.interactionId)
+    if (!meta) throw unknownInteraction()
+    const author = await prisma.user.findUniqueOrThrow({ where: { id: actor() } })
+    return privateReplies.create(meta, userToAPI(author), interaction.channelId, interaction.applicationId, body)
+  }
+  const deferredPrivate = (interaction: { type: number; data: string | null; messageId: string | null }) => !interaction.messageId && interaction.type === InteractionResponseType.DeferredChannelMessageWithSource && Boolean((JSON.parse(interaction.data ?? '{}')?.flags ?? 0) & MessageFlags.Ephemeral)
   const interactionMeta = (id: string) => {
     const stored = interactions.get(id)
     return stored ? JSON.stringify(stored) : null
@@ -411,7 +434,7 @@ export function createServer({
   // The bot pins or unpins: CHANNEL_PINS_UPDATE, plus Discord's
   // "pinned a message" system line on pin.
   async function setPinned(channelId: string, messageId: string, pinned: boolean): Promise<Response> {
-    await pinMessage({ prisma, gateway, channelId, messageId, userId: botUserId, pinned })
+    await pinMessage({ prisma, gateway, channelId, messageId, userId: actor(), pinned })
     return new Response(null, { status: 204 })
   }
 
@@ -468,7 +491,7 @@ export function createServer({
       path: '/users/@me',
       async handler(): Promise<APIUser> {
         const user = await prisma.user.findUniqueOrThrow({
-          where: { id: botUserId },
+          where: { id: actor() },
         })
         return userToAPI(user)
       },
@@ -682,11 +705,11 @@ export function createServer({
           data: {
             id: messageId,
             channelId: params.channel_id,
-            authorId: botUserId,
+            authorId: actor(),
             content: body.content ?? '',
             tts: body.tts ?? false,
             nonce: body.nonce != null ? String(body.nonce) : null,
-            flags: body.flags ?? 0,
+            flags: channelFlags(body.flags ?? 0),
             embeds: JSON.stringify(body.embeds ?? []),
             components: JSON.stringify(body.components ?? []),
             attachments: JSON.stringify(body.uploadedAttachments),
@@ -708,12 +731,12 @@ export function createServer({
           where: { id: messageId },
         })
         const author = await prisma.user.findUniqueOrThrow({
-          where: { id: botUserId },
+          where: { id: actor() },
         })
         const guildId = channel.guildId ?? undefined
         const member = guildId
           ? await prisma.guildMember.findUnique({
-              where: { guildId_userId: { guildId, userId: botUserId } },
+              where: { guildId_userId: { guildId, userId: actor() } },
               include: { user: true },
             })
           : null
@@ -824,7 +847,7 @@ export function createServer({
             ...(body.components
               ? { components: JSON.stringify(body.components) }
               : {}),
-            ...(body.flags != null ? { flags: body.flags } : {}),
+            ...(body.flags != null ? { flags: channelFlags(body.flags) } : {}),
           },
         })
         const dbMessage = await prisma.message.findUniqueOrThrow({
@@ -968,7 +991,7 @@ export function createServer({
         gateway.notifyObservers(GatewayDispatchEvents.TypingStart, {
           channel_id: params.channel_id,
           guild_id: channel?.guildId ?? undefined,
-          user_id: botUserId,
+          user_id: actor(),
           timestamp: Math.floor(Date.now() / 1000),
         })
         if (typingEvents.length > 5_000) {
@@ -1035,19 +1058,19 @@ export function createServer({
           where: {
             messageId_userId_emoji: {
               messageId: params.message_id,
-              userId: botUserId,
+              userId: actor(),
               emoji,
             },
           },
           create: {
             messageId: params.message_id,
-            userId: botUserId,
+            userId: actor(),
             emoji,
           },
           update: {},
         })
         gateway.broadcast(GatewayDispatchEvents.MessageReactionAdd, {
-          user_id: botUserId,
+          user_id: actor(),
           channel_id: params.channel_id,
           message_id: params.message_id,
           guild_id: channel.guildId ?? undefined,
@@ -1065,7 +1088,7 @@ export function createServer({
         await prisma.reaction.deleteMany({
           where: {
             messageId: params.message_id,
-            userId: botUserId,
+            userId: actor(),
             emoji,
           },
         })
@@ -1073,7 +1096,7 @@ export function createServer({
           where: { id: params.channel_id },
         })
         gateway.broadcast(GatewayDispatchEvents.MessageReactionRemove, {
-          user_id: botUserId,
+          user_id: actor(),
           channel_id: params.channel_id,
           message_id: params.message_id,
           guild_id: channel?.guildId ?? undefined,
@@ -1220,7 +1243,7 @@ export function createServer({
             type: threadType,
             name: body.name,
             parentId: params.channel_id,
-            ownerId: botUserId,
+            ownerId: actor(),
             autoArchiveDuration: body.auto_archive_duration ?? 1440,
             archiveTimestamp: new Date(),
             rateLimitPerUser: body.rate_limit_per_user ?? 0,
@@ -1229,7 +1252,7 @@ export function createServer({
         })
         // Auto-add creator as thread member
         await prisma.threadMember.create({
-          data: { channelId: threadId, userId: botUserId },
+          data: { channelId: threadId, userId: actor() },
         })
         const thread = await prisma.channel.findUniqueOrThrow({
           where: { id: threadId },
@@ -1299,7 +1322,7 @@ export function createServer({
             type: ChannelType.PublicThread,
             name: body.name,
             parentId: params.channel_id,
-            ownerId: botUserId,
+            ownerId: actor(),
             autoArchiveDuration: body.auto_archive_duration ?? 1440,
             archiveTimestamp: new Date(),
             rateLimitPerUser: body.rate_limit_per_user ?? 0,
@@ -1308,7 +1331,7 @@ export function createServer({
           },
         })
         await prisma.threadMember.create({
-          data: { channelId: threadId, userId: botUserId },
+          data: { channelId: threadId, userId: actor() },
         })
         const thread = await prisma.channel.findUniqueOrThrow({
           where: { id: threadId },
@@ -1821,13 +1844,21 @@ export function createServer({
         ) as APIInteractionResponseCallbackData | null
 
         // Type 4 (CHANNEL_MESSAGE_WITH_SOURCE) creates a message immediately
-        if (callbackType === InteractionResponseType.ChannelMessageWithSource) {
+        const privateSource = privateReplies.forWebhook(existing, existing.messageId, interactions.get(existing.interactionId)?.user.id)
+        const privateResponse = callbackType === InteractionResponseType.ChannelMessageWithSource && Boolean((data?.flags ?? 0) & MessageFlags.Ephemeral)
+        if (privateResponse) {
+          messageId = (await privateReply(existing, data ?? {})).id
+        } else if (callbackType === InteractionResponseType.DeferredChannelMessageWithSource) {
+          messageId = null
+        } else if (privateSource && callbackType === InteractionResponseType.UpdateMessage) {
+          privateReplies.edit(privateSource, data ?? {})
+        } else if (callbackType === InteractionResponseType.ChannelMessageWithSource) {
           messageId = generateSnowflake()
           await prisma.message.create({
             data: {
               id: messageId,
               channelId: existing.channelId,
-              authorId: botUserId,
+              authorId: actor(),
               content: data?.content ?? '',
               tts: data?.tts ?? false,
               flags: data?.flags ?? 0,
@@ -1851,7 +1882,7 @@ export function createServer({
             where: { id: messageId },
           })
           const author = await prisma.user.findUniqueOrThrow({
-            where: { id: botUserId },
+            where: { id: actor() },
           })
           const channel = await prisma.channel.findUnique({
             where: { id: existing.channelId },
@@ -1859,7 +1890,7 @@ export function createServer({
           const guildId = channel?.guildId ?? undefined
           const member = guildId
             ? await prisma.guildMember.findUnique({
-                where: { guildId_userId: { guildId, userId: botUserId } },
+                where: { guildId_userId: { guildId, userId: actor() } },
                 include: { user: true },
               })
             : null
@@ -1904,7 +1935,7 @@ export function createServer({
               ...(data?.components
                 ? { components: JSON.stringify(data.components) }
                 : {}),
-              ...(data?.flags != null ? { flags: data.flags } : {}),
+              ...(data?.flags != null ? { flags: channelFlags(data.flags) } : {}),
             },
           })
           const dbMessage = await prisma.message.findUniqueOrThrow({
@@ -1944,7 +1975,7 @@ export function createServer({
             acknowledged: true,
             type: callbackType,
             messageId,
-            data: data ? JSON.stringify(data) : null,
+              data: privateResponse || (privateSource && callbackType === InteractionResponseType.UpdateMessage) ? null : data ? JSON.stringify(data) : null,
           },
         })
 
@@ -1966,12 +1997,18 @@ export function createServer({
         // Look up the interaction to find which channel to post in
         const interaction = await interactionByToken(prisma, params.webhook_id, params.webhook_token)
 
+        const firstDeferred = deferredPrivate(interaction)
+        if (firstDeferred || ((body.flags ?? 0) & MessageFlags.Ephemeral)) {
+          const message = await privateReply(interaction, body)
+          if (firstDeferred) await prisma.interactionResponse.update({ where: { interactionId: interaction.interactionId }, data: { messageId: message.id } })
+          return message
+        }
         const messageId = generateSnowflake()
         await prisma.message.create({
           data: {
             id: messageId,
             channelId: interaction.channelId,
-            authorId: botUserId,
+            authorId: actor(),
             content: body.content ?? '',
             tts: body.tts ?? false,
             flags: body.flags ?? 0,
@@ -1995,7 +2032,7 @@ export function createServer({
           where: { id: messageId },
         })
         const author = await prisma.user.findUniqueOrThrow({
-          where: { id: botUserId },
+          where: { id: actor() },
         })
         const channel = await prisma.channel.findUnique({
           where: { id: interaction.channelId },
@@ -2003,7 +2040,7 @@ export function createServer({
         const guildId = channel?.guildId ?? undefined
         const member = guildId
           ? await prisma.guildMember.findUnique({
-              where: { guildId_userId: { guildId, userId: botUserId } },
+              where: { guildId_userId: { guildId, userId: actor() } },
               include: { user: true },
             })
           : null
@@ -2023,6 +2060,8 @@ export function createServer({
       async handler({ params }): Promise<APIMessage> {
         const interaction = await interactionByToken(prisma, params.webhook_id, params.webhook_token)
         const resolvedId = resolveWebhookMessageId(params.message_id)
+        const privateMessage = privateReplies.forWebhook(interaction, resolvedId === '@original' ? interaction.messageId : resolvedId, interactions.get(interaction.interactionId)?.user.id)
+        if (privateMessage) return privateMessage
         const messageId = await (async () => {
           if (resolvedId === '@original') {
             if (!interaction || !interaction.messageId) {
@@ -2084,6 +2123,13 @@ export function createServer({
         const resolvedId = resolveWebhookMessageId(params.message_id)
 
         // For @original, look up the interaction response's messageId.
+        if (resolvedId === '@original' && !interaction.messageId && (deferredPrivate(interaction) || ((body.flags ?? 0) & MessageFlags.Ephemeral))) {
+          const message = await privateReply(interaction, body)
+          await prisma.interactionResponse.update({ where: { interactionId: interaction.interactionId }, data: { messageId: message.id } })
+          return message
+        }
+        const privateMessage = privateReplies.forWebhook(interaction, resolvedId === '@original' ? interaction.messageId : resolvedId, interactions.get(interaction.interactionId)?.user.id)
+        if (privateMessage) return privateReplies.edit(privateMessage, body)
         // If deferred (no messageId yet), create the message on first edit.
         let wasNewlyCreated = false
         const messageId = await (async () => {
@@ -2108,7 +2154,7 @@ export function createServer({
                 data: {
                   id: newId,
                   channelId: interaction.channelId,
-                  authorId: botUserId,
+                  authorId: actor(),
                   content: body.content ?? '',
                   flags: body.flags ?? 0,
                   embeds: JSON.stringify(body.embeds ?? []),
@@ -2164,7 +2210,7 @@ export function createServer({
               ...(body.components
                 ? { components: JSON.stringify(body.components) }
                 : {}),
-              ...(body.flags != null ? { flags: body.flags } : {}),
+              ...(body.flags != null ? { flags: channelFlags(body.flags) } : {}),
             },
           })
         }
@@ -2193,10 +2239,10 @@ export function createServer({
           guildId,
           member ?? undefined,
         )
-        gateway.broadcast(GatewayDispatchEvents.MessageUpdate, {
-          ...apiMessage,
-          guild_id: guildId,
-        })
+        // editReply after deferReply materialises the first visible message. Clients
+        // have nothing to edit yet; later edits target that same message id.
+        if (wasNewlyCreated) gateway.broadcastMessageCreate(apiMessage, guildId ?? '')
+        else gateway.broadcast(GatewayDispatchEvents.MessageUpdate, { ...apiMessage, guild_id: guildId })
         return apiMessage
       },
     })
@@ -2206,6 +2252,8 @@ export function createServer({
       async handler({ params }): Promise<Response> {
         const interaction = await interactionByToken(prisma, params.webhook_id, params.webhook_token)
         const resolvedId = resolveWebhookMessageId(params.message_id)
+        const privateMessage = privateReplies.forWebhook(interaction, resolvedId === '@original' ? interaction.messageId : resolvedId, interactions.get(interaction.interactionId)?.user.id)
+        if (privateMessage) { privateReplies.remove(privateMessage.id); return new Response(null, { status: 204 }) }
         const messageId = await (async () => {
           if (resolvedId === '@original') {
             if (!interaction || !interaction.messageId) {
@@ -2332,7 +2380,10 @@ export function createServer({
     }
     proxyRejection(req)
       .then(async (rejection) => {
-        if (!rejection) return handleRequest(req, res)
+        if (!rejection) {
+          const own = gatewayProxy ? clientUser?.((req.headers.authorization ?? '').replace(/^Bot\s+/i, '')) : null
+          return own ? acting.run(own, () => handleRequest(req, res)) : handleRequest(req, res)
+        }
         res.writeHead(rejection.status, { 'content-type': 'application/json' })
         res.end(await rejection.text())
       })
@@ -2372,10 +2423,12 @@ export function createServer({
     resumeUrl: gatewayUrlOverride,
     tokenKey,
     directAudience,
+    clientUser,
   })
 
   return {
     interactions,
+    privateReplies,
     httpServer,
     gateway,
     app,

@@ -28,8 +28,9 @@ const LEVELS: Array<{ id: NotifyLevel; label: string; note: string }> = [
   { id: 'nothing', label: 'Nothing', note: 'No notifications.' },
 ]
 const LEVEL_TEXT: Record<NotifyLevel, string> = { all: 'All messages', mentions: 'Only mentions', nothing: 'Nothing' }
-const CHANNEL_TYPES: Array<{ id: 0 | 5 | 15; label: string }> = [
+const CHANNEL_TYPES: Array<{ id: 0 | 2 | 5 | 15; label: string }> = [
   { id: 0, label: 'Text' },
+  { id: 2, label: 'Voice' },
   { id: 5, label: 'Announcement' },
   { id: 15, label: 'Forum' },
 ]
@@ -515,7 +516,7 @@ function ServerPage({ state }: { state: HubState }) {
 
 function CreateChannel({ guildId, categories, category, onDone }: { guildId: string; categories: Channel[]; category: boolean; onDone: () => void }) {
   const [name, setName] = useState('')
-  const [type, setType] = useState<0 | 5 | 15>(0)
+  const [type, setType] = useState<0 | 2 | 5 | 15>(0)
   const [parent, setParent] = useState('')
   const [secret, setSecret] = useState(false)
   const feedback = useFeedback()
@@ -547,7 +548,7 @@ function CreateChannel({ guildId, categories, category, onDone }: { guildId: str
         <div className="settings-two">
           <label className="settings-field">
             <span className="settings-label">Type</span>
-            <select className="settings-input" value={type} onChange={(e) => setType(Number(e.target.value) as 0 | 5 | 15)}>
+            <select className="settings-input" value={type} onChange={(e) => setType(Number(e.target.value) as 0 | 2 | 5 | 15)}>
               {CHANNEL_TYPES.map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.label}

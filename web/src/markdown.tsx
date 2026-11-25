@@ -8,6 +8,7 @@ import { Icon } from './icons.tsx'
 import { usePress } from './Sheet.tsx'
 import { plain } from './text.ts'
 import { CustomEmoji, emojify } from './emoji.tsx'
+import { footerModel, ModelBadge } from './ModelBadge.tsx'
 
 export type MarkdownContext = {
   userName: (id: string) => string | null
@@ -261,7 +262,7 @@ type Block =
   | { kind: 'heading'; level: number; text: string }
   | { kind: 'subtext'; text: string }
   | { kind: 'relay'; lines: string[] }
-  | { kind: 'meta'; items: string[] }
+  | { kind: 'meta'; items: string[]; mention?: string }
   | { kind: 'gap' }
   | { kind: 'step'; glyph: string; tool: string; rest: string }
   | { kind: 'table'; head: string[]; align: Array<'left' | 'right' | 'center'>; rows: string[][] }
@@ -444,10 +445,11 @@ function toolKind(tool: string) {
 // Kimaki's run footer ("*project ⋅ branch ⋅ 7m 16s ⋅ 19% ⋅ model*"): a quiet meta line.
 function metaLine(lines: string[]): (Block & { kind: 'meta' }) | null {
   if (lines.length !== 1) return null
-  const m = /^\s*[*_]([^*_\n]+)[*_]\s*$/.exec(lines[0]!)
+  const m = /^\s*([*_])([^*\n]+)\1(?:\s+(<@!?\d+>))?\s*$/.exec(lines[0]!)
   if (!m) return null
-  const items = m[1]!.split(/\s+[⋅·•]\s+/)
-  return items.length >= 2 && items.every((x) => x.length <= 48) ? { kind: 'meta', items } : null
+  const items = m[2]!.split(/\s+[⋅·•]\s+/)
+  if (items.length < 2 || (!items.every((x) => x.length <= 48) && !footerModel(items))) return null
+  return { kind: 'meta', items, mention: m[3] }
 }
 
 // "**Label** value" lines (two or more, optionally under one plain title line) read as a
@@ -522,7 +524,7 @@ function isJumbo(text: string) {
   return custom + unicode <= 30
 }
 
-export function Markdown({ text, ctx }: { text: string; ctx: MarkdownContext }) {
+export function Markdown({ text, ctx, runFooter = false }: { text: string; ctx: MarkdownContext; runFooter?: boolean }) {
   if (!text) return null
   if (!ctx.jumbo && isJumbo(text.trim())) ctx = { ...ctx, jumbo: true }
   return (
@@ -581,17 +583,20 @@ export function Markdown({ text, ctx }: { text: string; ctx: MarkdownContext }) 
             )
           case 'gap':
             return <div key={key} className="md-gap" aria-hidden="true" />
-          case 'meta':
+          case 'meta': {
+            const model = runFooter ? footerModel(block.items) : null
             return (
               <div key={key} className="meta-line">
                 {block.items.map((item, j) => (
                   <span key={j}>
                     {j > 0 && <span className="meta-sep"> ⋅ </span>}
-                    {inline(item, ctx, `${key}-${j}`)}
+                    {model?.at === j ? <ModelBadge {...model.model} /> : inline(item, ctx, `${key}-${j}`)}
                   </span>
                 ))}
+                {block.mention && <span>{inline(` ${block.mention}`, ctx, `${key}-mention`)}</span>}
               </div>
             )
+          }
           case 'callout': {
             const hex = block.accent
             return (

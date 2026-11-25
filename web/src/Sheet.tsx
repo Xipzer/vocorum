@@ -1,7 +1,7 @@
 // Action sheet: a bottom sheet on phones (long press), a menu at the pointer on
 // desktop (right click). One history entry, so phone Back closes it; Esc too.
 
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { Icon, type IconName } from './icons.tsx'
 
 export type SheetAction = { label: string; icon?: IconName; run: () => void; red?: boolean; radio?: boolean; checked?: boolean; sub?: string }
@@ -25,28 +25,48 @@ export const sessionActions: { rename?: (id: string) => void; pendingRename?: st
 
 const phone = () => window.matchMedia('(max-width: 767px)').matches
 
-export function Sheet({ spec, onClose }: { spec: SheetSpec; onClose: () => void }) {
+type Picker = { trigger: HTMLButtonElement; body: (finish: (run: () => void) => void, cancel: () => void) => ReactNode }
+
+export function Sheet({ spec, onClose, picker }: { spec: SheetSpec; onClose: () => void; picker?: Picker }) {
   const panel = useRef<HTMLDivElement>(null)
+  const sheetId = useId()
+  const closing = useRef(false)
   const drag = useRef<{ y: number; t: number; dy: number } | null>(null)
   const [offset, setOffset] = useState(0)
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
   // A picked action runs once the Back that closes this sheet has landed, so an action
   // that navigates (or opens another sheet) is not undone by it.
   const after = useRef<(() => void) | null>(null)
-  const isPhone = phone()
+  const [isPhone, setPhone] = useState(phone)
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 767px)')
+    const change = () => setPhone(media.matches)
+    media.addEventListener('change', change)
+    return () => media.removeEventListener('change', change)
+  }, [])
 
   useEffect(() => {
-    history.pushState({ sheet: true }, '')
+    const url = location.href
+    if (history.state?.sheet !== sheetId) history.pushState({ sheet: sheetId }, '')
     const onPop = () => {
+      if (history.state?.sheet === sheetId) return
       onClose()
+      if (picker?.trigger.isConnected) picker.trigger.focus({ preventScroll: true })
       const run = after.current
       after.current = null
       if (run) window.setTimeout(run, 0)
     }
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') return close()
+      if (e.key === 'Escape') { e.preventDefault(); close(); return }
+      if (picker && e.key === 'Tab') {
+        const buttons = [...(panel.current?.querySelectorAll<HTMLElement>('button:not(:disabled)') ?? [])]
+        if (!buttons.length) return
+        if (e.shiftKey && document.activeElement === buttons[0]) { e.preventDefault(); buttons.at(-1)!.focus() }
+        else if (!e.shiftKey && document.activeElement === buttons.at(-1)) { e.preventDefault(); buttons[0]!.focus() }
+        return
+      }
       if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
-      const items = [...(panel.current?.querySelectorAll<HTMLElement>('.sheet-item') ?? [])]
+      const items = [...(panel.current?.querySelectorAll<HTMLElement>('.sheet-item:not(:disabled)') ?? [])]
       if (!items.length) return
       e.preventDefault()
       const i = items.indexOf(document.activeElement as HTMLElement)
@@ -57,19 +77,50 @@ export function Sheet({ spec, onClose }: { spec: SheetSpec; onClose: () => void 
     return () => {
       window.removeEventListener('popstate', onPop)
       window.removeEventListener('keydown', onKey)
+      // A live edit may remove an open selector. Also tolerate the dev mount/unmount probe.
+      if (picker) queueMicrotask(() => { if (!panel.current && history.state?.sheet === sheetId && location.href === url) history.back() })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Opened from the keyboard: focus the first item, so arrows and Enter work straight away.
+  // Start on the current choice. On an action menu only move focus for keyboard input.
   useEffect(() => {
-    if (lastInput === 'key') panel.current?.querySelector<HTMLElement>('.sheet-item')?.focus()
+    if (!picker && lastInput !== 'key') return
+    const current = panel.current?.querySelector<HTMLElement>('[aria-selected=true]')
+    const first = panel.current?.querySelector<HTMLElement>('.sheet-item:not(:disabled), .choice-cancel')
+    ;(current ?? first ?? panel.current)?.focus({ preventScroll: true })
+    current?.scrollIntoView({ block: 'nearest' })
   }, [])
 
   // Desktop: open at the pointer, kept inside the window.
+  const trigger = picker?.trigger
   useLayoutEffect(() => {
-    if (isPhone || !panel.current) return
-    const { width, height } = panel.current.getBoundingClientRect()
+    const el = panel.current
+    if (isPhone || !el) return
+    // Choices belong to the field. Use its live width in split view, flip on
+    // short viewports, and scroll the options rather than covering the field.
+    if (trigger) {
+      const place = () => {
+        const r = trigger.getBoundingClientRect()
+        el.style.width = `${Math.min(r.width, window.innerWidth - 16)}px`
+        const below = window.innerHeight - r.bottom - 16, above = r.top - 16
+        const wants = Math.min(264, (el.querySelector('[role=listbox]')?.scrollHeight ?? 0) + (el.querySelector('.choice-foot')?.clientHeight ?? 0) + el.offsetHeight - el.clientHeight + 2 * parseFloat(getComputedStyle(el).paddingTop))
+        const up = below < wants && above > below
+        el.style.maxHeight = `${Math.max(0, Math.min(264, up ? above : below))}px`
+        const { width, height } = el.getBoundingClientRect()
+        const left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8))
+        const top = Math.max(8, up ? r.top - 8 - height : r.bottom + 8)
+        setPos((p) => p?.left === left && p.top === top ? p : { left, top })
+      }
+      place()
+      const observer = new ResizeObserver(place)
+      observer.observe(trigger); observer.observe(el)
+      window.addEventListener('resize', place)
+      const onScroll = (e: Event) => { if (!(e.target instanceof Node) || !el.contains(e.target)) place() }
+      window.addEventListener('scroll', onScroll, true)
+      return () => { observer.disconnect(); window.removeEventListener('resize', place); window.removeEventListener('scroll', onScroll, true); el.style.removeProperty('width'); el.style.removeProperty('max-height') }
+    }
+    const { width, height } = el.getBoundingClientRect()
     const at = spec.at ?? { x: window.innerWidth / 2 - width / 2, y: window.innerHeight / 3 }
     const clampX = (x: number) => Math.min(Math.max(8, x), window.innerWidth - width - 8)
     if ('rect' in at) {
@@ -78,31 +129,31 @@ export function Sheet({ spec, onClose }: { spec: SheetSpec; onClose: () => void 
       const top = rect.bottom + 8 + height <= window.innerHeight - 8 ? rect.bottom + 8 : Math.max(8, rect.top - 8 - height)
       setPos({ left: clampX(align === 'end' ? rect.right - width : rect.left), top })
     } else setPos({ left: clampX(at.x), top: Math.min(Math.max(8, at.y), window.innerHeight - height - 8) })
-  }, [isPhone, spec.at])
+  }, [isPhone, spec.at, trigger])
 
   const close = () => {
-    if (history.state?.sheet) history.back()
+    if (closing.current) return
+    closing.current = true
+    if (history.state?.sheet === sheetId) history.back()
     else onClose()
   }
-  const pick = (action: SheetAction) => {
-    if (history.state?.sheet) {
-      after.current = action.run
-      history.back()
-    } else {
-      onClose()
-      window.setTimeout(action.run, 0)
-    }
+  const finish = (run: () => void) => {
+    if (closing.current) return
+    if (history.state?.sheet === sheetId) after.current = run
+    else window.setTimeout(run, 0)
+    close()
   }
 
   return (
     <div className={`sheet-layer${isPhone ? ' phone' : ''}`} onPointerDown={(e) => e.target === e.currentTarget && close()} onContextMenu={(e) => e.preventDefault()}>
       <div
         ref={panel}
-        className={`sheet${spec.plain && !isPhone ? ' plain' : ''}${spec.confirm ? ' confirm' : ''}`}
-        role="menu"
+        className={`sheet${spec.plain && !isPhone ? ' plain' : ''}${spec.confirm ? ' confirm' : ''}${picker ? ' choice-sheet' : ''}`}
+        role={picker ? 'dialog' : 'menu'} aria-modal={picker ? true : undefined} aria-label={picker ? spec.title : undefined} tabIndex={picker ? -1 : undefined}
         style={isPhone ? { transform: offset ? `translateY(${offset}px)` : undefined, transition: drag.current ? 'none' : undefined } : (pos ?? { visibility: 'hidden' })}
         onPointerDown={(e) => {
           if (!isPhone || (e.target as HTMLElement).closest('button')) return
+          if (picker && !(e.target as Element).closest('.grab, .sheet-head')) return
           drag.current = { y: e.clientY, t: performance.now(), dy: 0 }
           e.currentTarget.setPointerCapture(e.pointerId)
         }}
@@ -119,6 +170,7 @@ export function Sheet({ spec, onClose }: { spec: SheetSpec; onClose: () => void 
           if (d.dy > 110 || speed > 0.55) close()
           else setOffset(0)
         }}
+        onPointerCancel={() => { drag.current = null; setOffset(0) }}
       >
         {isPhone && <div className="grab" />}
         <div className="sheet-head" hidden={spec.plain && !isPhone}>
@@ -127,13 +179,14 @@ export function Sheet({ spec, onClose }: { spec: SheetSpec; onClose: () => void 
             <div className="sheet-title">{spec.title}</div>
             {spec.subtitle && <div className="sheet-sub">{spec.subtitle}</div>}
           </div>
+          {picker && isPhone && <button className="choice-close" aria-label="Close selector" onClick={close}><Icon name="close" size={16} /></button>}
         </div>
-        {spec.groups
+        {picker ? picker.body(finish, close) : spec.groups
           .filter((g) => g.length)
           .map((group, i) => (
             <div key={i} className="sheet-group">
               {group.map((action) => (
-                <button key={action.label} className={`sheet-item${action.red ? ' red' : ''}${action.sub ? ' two-line' : ''}`} role={action.radio ? 'menuitemradio' : 'menuitem'} aria-checked={action.radio ? Boolean(action.checked) : undefined} onClick={() => pick(action)}>
+                <button key={action.label} className={`sheet-item${action.red ? ' red' : ''}${action.sub ? ' two-line' : ''}`} role={action.radio ? 'menuitemradio' : 'menuitem'} aria-checked={action.radio ? Boolean(action.checked) : undefined} onClick={() => finish(action.run)}>
                   {action.icon && <Icon name={action.icon} size={isPhone ? 22 : 18} />}
                   <span className="sheet-item-text">
                     {action.label}

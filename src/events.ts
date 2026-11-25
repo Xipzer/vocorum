@@ -9,6 +9,7 @@ import type { Duplex } from 'node:stream'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { HttpError } from './auth.ts'
 import type { Hub } from './hub.ts'
+import { traceInteraction } from './interaction-trace.ts'
 
 export const CLIENT_EVENTS = new Set([
   'MESSAGE_CREATE',
@@ -24,6 +25,7 @@ export const CLIENT_EVENTS = new Set([
   'CHANNEL_DELETE',
   'CHANNEL_PINS_UPDATE',
   'TYPING_START',
+  'VOICE_STATE_UPDATE',
   'GUILD_UPDATE',
   'GUILD_ROLE_CREATE',
   'GUILD_ROLE_UPDATE',
@@ -121,18 +123,29 @@ export class ClientEvents {
 
   // Hub-made events (session state, machine health, settings).
   send(event: string, data: unknown, audience: Audience = {}) {
-    if (this.sockets.size === 0) return
+    if (this.sockets.size === 0) {
+      if (event === 'PRIVATE_REPLY') this.traceMessage(data, 0, true)
+      return
+    }
     void this.deliver(event, data, audience).catch((error) => console.error('[events]', error))
   }
 
   private async deliver(event: string, data: unknown, audience: Audience) {
     const decisions = new Map<string, unknown | null>()
+    let sent = 0
     for (const [socket, connection] of this.sockets) {
       const userId = connection.userId
       if (!decisions.has(userId)) decisions.set(userId, (await this.allowed(userId, audience)) ? (audience.shape ? await audience.shape(userId) : data) : null)
       const payload = decisions.get(userId)
-      if (payload !== null && payload !== undefined) socket.send(this.hub.relativize(JSON.stringify({ t: event, d: payload })))
+      if (payload !== null && payload !== undefined) { socket.send(this.hub.relativize(JSON.stringify({ t: event, d: payload }))); sent++ }
     }
+    if (event === 'PRIVATE_REPLY') this.traceMessage(data, sent, true)
+  }
+
+  private traceMessage(data: unknown, recipients: number, privateReply: boolean, edited = false) {
+    const m = data as { id?: string; channel_id?: string; edited_timestamp?: string; interaction_metadata?: { id?: string } }
+    const id = m.interaction_metadata?.id
+    if (id && /^\d{15,20}$/.test(id)) traceInteraction(edited || m.edited_timestamp ? 'edited' : 'published', id, { message: m.id, channel: m.channel_id, recipients, private: privateReply, elapsedMs: Math.max(0, Date.now() - Number(BigInt(id) >> 22n) - 1420070400000) })
   }
 
   private async allowed(userId: string, audience: Audience) {
@@ -148,6 +161,7 @@ export class ClientEvents {
   private async dispatch(event: string, data: Data) {
     if (STRUCTURE.has(event) && !REMOVALS.has(event)) this.hub.access.invalidate()
     if (!CLIENT_EVENTS.has(event) || this.sockets.size === 0) {
+      if (event === 'MESSAGE_CREATE' || event === 'MESSAGE_UPDATE') this.traceMessage(data, 0, false, event === 'MESSAGE_UPDATE')
       if (REMOVALS.has(event)) this.hub.access.invalidate()
       return
     }
@@ -155,10 +169,12 @@ export class ClientEvents {
     if (guildId && !this.hub.guildIds.has(guildId)) return
     const payload = this.hub.relativize(JSON.stringify({ t: event, d: data }))
     const users = new Map<string, boolean>()
+    let sent = 0
     for (const [socket, connection] of this.sockets) {
       if (!users.has(connection.userId)) users.set(connection.userId, await this.visible(connection.userId, event, data, guildId))
-      if (users.get(connection.userId)) socket.send(payload)
+      if (users.get(connection.userId)) { socket.send(payload); sent++ }
     }
+    if (event === 'MESSAGE_CREATE' || event === 'MESSAGE_UPDATE') this.traceMessage(data, sent, false, event === 'MESSAGE_UPDATE')
     if (REMOVALS.has(event)) this.hub.access.invalidate()
     if (ACCESS.has(event) && guildId) this.send('ACCESS_CHANGED', { guild_id: guildId }, { guildId })
   }
@@ -172,6 +188,8 @@ export class ClientEvents {
       if (event === 'GUILD_MEMBER_REMOVE' && data.user?.id === userId) return true
       return Boolean(guildId && (await access.guild(userId, guildId)))
     }
+    // Voice: who is where, if they can see that channel; a leave (no channel) to the guild's people.
+    if (event === 'VOICE_STATE_UPDATE') return typeof data.channel_id === 'string' ? access.can(userId, data.channel_id, 0n) : Boolean(guildId && (await access.guild(userId, guildId)))
     const channelId = data.channel_id
     return typeof channelId === 'string' && access.can(userId, channelId, 0n)
   }

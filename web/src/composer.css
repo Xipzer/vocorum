@@ -178,3 +178,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.footer-line.command-receipt { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; height: auto; font-size: 13px; }
+.command-receipt small { color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.command-receipt .icon-button { margin-left: auto; }

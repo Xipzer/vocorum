@@ -90,6 +90,12 @@ const SCHEMA = [
     created_at INTEGER NOT NULL
   )`,
   // Which guilds each bot (machine) is in. A bot with no rows is in the primary guild.
+  // A machine bot that is its own bot user (its name in voice, presence and posts) instead of the shared bot.
+  `CREATE TABLE IF NOT EXISTS bot_users (
+    machine TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS bot_guilds (
     machine TEXT NOT NULL,
     guild_id TEXT NOT NULL,
@@ -474,6 +480,18 @@ export class HubStore {
       out.set(machine, [...(out.get(machine) ?? []), String(row['guild_id'])])
     }
     return out
+  }
+
+  async botUsers(): Promise<Map<string, { userId: string; name: string }>> {
+    const out = new Map<string, { userId: string; name: string }>()
+    for (const row of await this.rows('SELECT machine, user_id, name FROM bot_users')) out.set(String(row['machine']), { userId: String(row['user_id']), name: String(row['name']) })
+    return out
+  }
+
+  // Its own user (kept across renames, so it stays the same user), or the shared bot again (name null).
+  async setBotUser(machine: string, name: string | null, newId: () => string) {
+    if (name === null) return void (await this.db.execute({ sql: 'DELETE FROM bot_users WHERE machine = ?', args: [machine] }))
+    await this.db.execute({ sql: 'INSERT INTO bot_users (machine, user_id, name) VALUES (?, ?, ?) ON CONFLICT(machine) DO UPDATE SET name = excluded.name', args: [machine, newId(), name] })
   }
 
   async setBotGuilds(machine: string, guildIds: string[]) {

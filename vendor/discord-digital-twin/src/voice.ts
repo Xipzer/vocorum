@@ -62,8 +62,16 @@ type VoiceConnection = {
   sendNonce: number
 }
 
+// One live sender (a person on the hub) whose frames go out as they come.
+type LiveSender = { ssrc: number; sequence: number; timestamp: number; lastAt: number; told: WeakSet<VoiceConnection> }
+
 export class DiscordVoiceServer {
   streams: VoiceStream[] = []
+  // Tests read whole streams; a long-running server only forwards (record = false).
+  record = true
+  // Every decrypted frame a client sends, as it arrives.
+  onAudio: ((frame: { guildId: string; channelId: string; userId: string; opus: Buffer }) => void) | null = null
+  private live = new Map<string, LiveSender>()
   certificate = ''
   private grants = new Map<string, VoiceGrant>()
   private connections = new Set<VoiceConnection>()
@@ -88,7 +96,7 @@ export class DiscordVoiceServer {
       'openssl',
       [
         'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes',
-        '-keyout', keyPath, '-out', certPath, '-days', '1', '-subj', '/CN=127.0.0.1',
+        '-keyout', keyPath, '-out', certPath, '-days', '3650', '-subj', '/CN=127.0.0.1',
         '-addext', 'subjectAltName=IP:127.0.0.1',
       ],
       { timeout: 10_000 },
@@ -287,6 +295,34 @@ export class DiscordVoiceServer {
     }
   }
 
+  // One opus frame (20 ms) from a live sender to every client in that channel,
+  // sent at once. After a pause the sender starts a new talk spurt (Speaking
+  // again, new RTP sequence), as a real client does.
+  sendFrame({ guildId, channelId, userId, opus }: { guildId: string; channelId: string; userId: string; opus: Buffer }): void {
+    const now = Date.now()
+    let sender = this.live.get(userId)
+    if (!sender || now - sender.lastAt > 500) {
+      sender = { ssrc: sender?.ssrc ?? this.userSsrcs.get(userId) ?? this.nextSsrc++, sequence: crypto.randomInt(0, 0xffff), timestamp: crypto.randomInt(0, 0xffffffff), lastAt: now, told: new WeakSet() }
+      this.userSsrcs.set(userId, sender.ssrc)
+      this.live.set(userId, sender)
+    } else {
+      sender.sequence = (sender.sequence + 1) & 0xffff
+      sender.timestamp = (sender.timestamp + 960) >>> 0
+      sender.lastAt = now
+    }
+    for (const connection of this.connections) {
+      const grant = connection.grant
+      const { secretKey, udp } = connection
+      if (grant?.guildId !== guildId || grant.channelId !== channelId || grant.userId === userId || !secretKey || !udp) continue
+      if (!sender.told.has(connection)) {
+        this.send(connection, VoiceOpcodes.Speaking, { user_id: userId, ssrc: sender.ssrc, speaking: 1 })
+        sender.told.add(connection)
+      }
+      connection.sendNonce = (connection.sendNonce + 1) >>> 0
+      this.udp?.send(encryptRtpSize({ opus, secretKey, nonce: connection.sendNonce, ssrc: sender.ssrc, sequence: sender.sequence, timestamp: sender.timestamp }), udp.port, udp.address)
+    }
+  }
+
   private handleUdp(message: Buffer, remote: dgram.RemoteInfo): void {
     // IP discovery request: type 1, length 70, ssrc, 64 byte address, port.
     if (message.length === 74 && message.readUInt16BE(0) === 1) {
@@ -309,8 +345,9 @@ export class DiscordVoiceServer {
     const opus = decryptRtpSize({ packet: message, secretKey: connection.secretKey })
     const stream = this.currentStream(connection)
     if (!opus || !stream) return
-    stream.opusPackets.push(opus)
+    if (this.record) stream.opusPackets.push(opus)
     stream.lastPacketAt = Date.now()
+    this.onAudio?.({ guildId: stream.guildId, channelId: stream.channelId, userId: stream.userId, opus })
   }
 }
 

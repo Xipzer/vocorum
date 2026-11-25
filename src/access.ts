@@ -20,6 +20,8 @@ export const P = {
   MANAGE_MESSAGES: 1n << 13n,
   ATTACH_FILES: 1n << 15n,
   READ_MESSAGE_HISTORY: 1n << 16n,
+  CONNECT: 1n << 20n,
+  SPEAK: 1n << 21n,
   MENTION_EVERYONE: 1n << 17n,
   MANAGE_ROLES: 1n << 28n,
   USE_APPLICATION_COMMANDS: 1n << 31n,
@@ -31,7 +33,7 @@ export const P = {
 export type PermissionName = keyof typeof P
 export const ALL = Object.values(P).reduce((a, b) => a | b, 0n)
 // What a new person gets through @everyone in a new guild.
-export const DEFAULT_EVERYONE = P.VIEW_CHANNEL | P.SEND_MESSAGES | P.SEND_MESSAGES_IN_THREADS | P.CREATE_PUBLIC_THREADS | P.ADD_REACTIONS | P.ATTACH_FILES | P.READ_MESSAGE_HISTORY | P.USE_APPLICATION_COMMANDS
+export const DEFAULT_EVERYONE = P.VIEW_CHANNEL | P.SEND_MESSAGES | P.SEND_MESSAGES_IN_THREADS | P.CREATE_PUBLIC_THREADS | P.ADD_REACTIONS | P.ATTACH_FILES | P.READ_MESSAGE_HISTORY | P.USE_APPLICATION_COMMANDS | P.CONNECT | P.SPEAK
 
 const THREAD_TYPES = new Set([10, 11, 12])
 
@@ -87,6 +89,11 @@ export class Access {
   invalidate() {
     this.version++
     this.overwriteCache = null
+  }
+
+  // A write using a previously computed permission view must not outlive its grants.
+  isCurrent(view: View) {
+    return view.version === this.version
   }
 
   private async overwrites() {

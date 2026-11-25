@@ -2,13 +2,16 @@
 // Components V2 layout (Container with accent, TextDisplay, Section,
 // Separator, MediaGallery, File, Thumbnail).
 
-import { useState, type CSSProperties } from 'react'
-import type { Component } from './api.ts'
+import { useRef, useState, type CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
+import type { Attachment, Component } from './api.ts'
 import { Markdown, inline, keyValueBlock, type MarkdownContext } from './markdown.tsx'
 import { Icon, type IconName } from './icons.tsx'
 import { emojify } from './emoji.tsx'
+import { below, Sheet } from './Sheet.tsx'
+import { Lightbox } from './Media.tsx'
 
-export type Interact = (body: { type: 'button' | 'select'; customId: string; values?: string[] }) => Promise<void>
+export type Interact = (body: { type: 'button' | 'select'; customId: string; values?: string[] }) => Promise<void | false>
 
 const BUTTON_STYLES: Record<number, string> = { 1: 'primary', 2: 'secondary', 3: 'success', 4: 'danger', 5: 'link', 6: 'primary' }
 
@@ -57,69 +60,75 @@ function Button({ c, interact, disabled, first }: { c: Component; interact: Inte
   )
 }
 
+type Option = { label: string; value: string; description?: string; default?: boolean; emoji?: { name?: string } }
+
 function Select({ c, interact, disabled }: { c: Component; interact: Interact; disabled: boolean }) {
-  const options: Array<{ label: string; value: string; description?: string; default?: boolean; emoji?: { name?: string } }> = c['options'] ?? []
+  const options: Option[] = c['options'] ?? []
   const max = c['max_values'] ?? 1
-  const [open, setOpen] = useState(false)
+  const min = c['min_values'] ?? 1
+  const trigger = useRef<HTMLButtonElement>(null)
+  const [at, setAt] = useState<ReturnType<typeof below> | null>(null)
   const [picked, setPicked] = useState<string[]>(options.filter((o) => o.default).map((o) => o.value))
+  const [draft, setDraft] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const submit = async (values: string[]) => {
-    setOpen(false)
     setBusy(true)
-    await interact({ type: 'select', customId: c['custom_id'], values }).finally(() => setBusy(false))
+    try {
+      if (await interact({ type: 'select', customId: c['custom_id'], values }) !== false) setPicked(values)
+    } finally { setBusy(false) }
   }
-  const label = picked.length ? options.filter((o) => picked.includes(o.value)).map((o) => o.label).join(', ') : (c['placeholder'] ?? 'Make a selection')
+  const title = c['placeholder'] || 'Make a selection'
+  const label = options.filter((o) => picked.includes(o.value)).map((o) => o.label).join(', ')
   return (
-    <div className={`select${open ? ' open' : ''}`}>
-      <button className="select-trigger" disabled={disabled || c['disabled'] || busy} onClick={() => setOpen(!open)}>
-        <span className={picked.length ? '' : 'muted'}>{label}</span>
+    <div className={`select${at ? ' open' : ''}`}>
+      <button ref={trigger} className="select-trigger" aria-haspopup="dialog" aria-expanded={Boolean(at)} aria-busy={busy} disabled={disabled || c['disabled']} onClick={(e) => {
+        if (busy) return
+        setDraft(picked)
+        setAt(below(e.currentTarget, 'start'))
+      }}>
+        <span className={label ? '' : 'muted'}>{label || title}</span>
         <Icon name="down" size={16} />
       </button>
-      {open && (
-        <div className="select-menu">
+      {at && trigger.current && createPortal(<Sheet spec={{ title, groups: [], at, plain: true }} onClose={() => setAt(null)} picker={{ trigger: trigger.current, body: (finish, cancel) => <>
+        <div className="sheet-group choice-options" role="listbox" aria-label={title} aria-multiselectable={max > 1 || undefined}>
           {options.map((option) => {
-            const on = picked.includes(option.value)
+            const on = draft.includes(option.value)
             return (
               <button
                 key={option.value}
-                className={`select-option${on ? ' on' : ''}`}
+                className={`sheet-item${option.description ? ' two-line' : ''}`} role="option" aria-selected={on} disabled={!on && max > 1 && draft.length >= max}
                 onClick={() => {
-                  if (max === 1) {
-                    setPicked([option.value])
-                    void submit([option.value])
-                    return
-                  }
-                  setPicked(on ? picked.filter((v) => v !== option.value) : [...picked, option.value].slice(0, max))
+                  if (max === 1) finish(() => void submit([option.value]))
+                  else setDraft(on ? draft.filter((v) => v !== option.value) : [...draft, option.value])
                 }}
               >
-                {max > 1 && <Icon name={on ? 'check' : 'todo'} size={16} />}
-                <span>
-                  {emojiLabel(option.emoji)}
-                  {option.label}
-                  {option.description && <span className="option-description">{option.description}</span>}
+                <span className="sheet-item-text">
+                  <span>{emojiLabel(option.emoji)}{option.label}</span>
+                  {option.description && <span className="sheet-sub-label">{option.description}</span>}
                 </span>
+                {on && <Icon name="check" size={16} />}
               </button>
             )
           })}
-          {max > 1 && (
-            <button className="button primary select-done" disabled={picked.length < (c['min_values'] ?? 1)} onClick={() => void submit(picked)}>
-              Done
-            </button>
-          )}
+          {!options.length && <span className="choice-empty">No options available</span>}
         </div>
-      )}
+        {max > 1 && <div className="choice-foot"><span className="num">{draft.length} of {max} selected</span><button className="button choice-cancel" onClick={cancel}>Cancel</button><button className="button primary" disabled={draft.length < min} onClick={() => finish(() => void submit(draft))}>Done</button></div>}
+        {max === 1 && !options.length && <button className="button choice-cancel" onClick={cancel}>Close</button>}
+      </> }} />, document.body)}
     </div>
   )
 }
 
 function Media({ url, description, spoiler }: { url: string; description?: string; spoiler?: boolean }) {
+  const [open, setOpen] = useState(false)
+  const [revealed, reveal] = useState(!spoiler)
   const path = url.split('?')[0]!.toLowerCase()
   if (/\.(mp4|webm|mov)$/.test(path)) return <video className="media" src={url} controls preload="metadata" />
   if (/\.(mp3|ogg|wav|m4a|opus)$/.test(path)) return <audio src={url} controls preload="metadata" />
   return (
-    <a href={safeUrl(url)} target="_blank" rel="noreferrer noopener" className={spoiler ? 'spoiler-media' : ''}>
+    <><button type="button" onClick={() => revealed ? setOpen(true) : reveal(true)} aria-label={revealed ? `Preview ${description || 'image'}` : 'Show spoiler'} className={!revealed ? 'spoiler-media' : ''}>
       <img className="media" src={url} alt={description ?? ''} loading="lazy" />
-    </a>
+    </button>{open && safeUrl(url) && <Lightbox items={[{ url, name: description || 'Image' }]} start={0} onClose={() => setOpen(false)} />}</>
   )
 }
 
@@ -196,6 +205,25 @@ function Comparison({ table, ctx }: { table: NonNullable<ReturnType<typeof compa
   )
 }
 
+// Discord may supply both the attachment and a gallery entry for the same
+// image. Keep the existing attachment preview; leave unrelated items alone.
+export function uniqueGallery(components: Component[], attachments: Attachment[]): Component[] {
+  const images = attachments.filter(a => !a.missing && a.url && (a.content_type?.startsWith('image/') || /\.(?:png|jpe?g|gif|webp|avif)$/i.test(a.filename)))
+  if (!images.length) return components
+  const same = (url: unknown, a: Attachment) => {
+    if (typeof url !== 'string') return false
+    if ([a.url,a.proxy_url,`attachment://${a.filename}`].includes(url)) return true
+    try { const u = new URL(url,location.origin); return /^(https?:)$/.test(u.protocol) && u.pathname.split('/').at(-2) === a.id && u.pathname.includes('/attachments/') } catch { return false }
+  }
+  return components.flatMap(c => {
+    if (c.type === 12) {
+      const items = (c['items'] ?? []).filter((i: { media?: { url?: string; proxy_url?: string }; spoiler?: boolean; description?: string }) => i.spoiler || !images.some(a => (!i.description || i.description === a.description || i.description === a.filename) && (same(i.media?.url,a) || same(i.media?.proxy_url,a))))
+      return items.length ? [{ ...c, items }] : []
+    }
+    return [Array.isArray(c['components']) ? { ...c, components: uniqueGallery(c['components'], images) } : c]
+  })
+}
+
 export function Components({ components, ctx, interact, disabled = false }: { components: Component[]; ctx: MarkdownContext; interact: Interact; disabled?: boolean }) {
   return (
     <>
@@ -227,7 +255,10 @@ function ComponentView({ c, ctx, interact, disabled }: { c: Component; ctx: Mark
     case 6:
     case 7:
     case 8:
-      return <Select c={c.type === 3 ? c : { ...c, options: ctx.selectOptions?.(c.type, c['channel_types']) ?? [] }} interact={interact} disabled={disabled} />
+      // A bot may reuse the custom id for the next page or step. Its new options and
+      // defaults own the trigger; don't carry a selection across an edited response.
+      const options: Option[] = c.type === 3 ? c['options'] ?? [] : ctx.selectOptions?.(c.type, c['channel_types']) ?? []
+      return <Select key={JSON.stringify([c['custom_id'], c['placeholder'], c['min_values'], c['max_values'], c['disabled'], options.map((o) => [o.value, o.default])])} c={{ ...c, options }} interact={interact} disabled={disabled} />
     case 9:
       return (
         <div className="section">

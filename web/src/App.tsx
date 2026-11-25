@@ -33,6 +33,8 @@ initColumns()
 import { Icon, type IconName } from './icons.tsx'
 import { E } from './emoji.tsx'
 import { Forum } from './Forum.tsx'
+import { Notice } from './Notice.tsx'
+import { VoicePeople, VoiceStrip, VoiceView } from './Voice.tsx'
 import { plain, machineLabel, displayName, motion } from './text.ts'
 
 const LIVE_THREADS = 5
@@ -451,7 +453,7 @@ function ProjectRow({ channel, current, unread, threads, mentions, onOpen, onShe
   )
   return (
     <button data-nav={channel.id} className={`channel${current ? ' active' : ''}${unread ? ' unread' : ''}`} onClick={() => onOpen(channel.id)} {...press}>
-      <span className="hash">{channel.type === 15 ? <Icon name="threads" size={16} /> : '#'}</span>
+      <span className="hash">{channel.type === 15 ? <Icon name="threads" size={16} /> : channel.type === 2 ? <Icon name="speaker" size={16} /> : '#'}</span>
       <span className="channel-name"><E>{channel.name}</E></span>
       {mentions > 0 && <span className="badge num" aria-label={`${mentions} mentions`}>{mentions}</span>}
       {can(P.MANAGE_CHANNELS, channel) && <span
@@ -697,7 +699,7 @@ function Sidebar({ state, current, open, onOpen, ctx, guild, onGuild, onThreads 
   const inGuild = (c: Channel) => (c.guild_id ?? state.guild.id) === guild
   const guildName = guilds.find((g) => g.id === guild)?.name ?? state.guild.name
   const categories = state.channels.filter((c) => c.type === 4 && inGuild(c)).sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
-  const text = state.channels.filter((c) => (c.type === 0 || c.type === 5 || c.type === 15) && inGuild(c)).sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+  const text = state.channels.filter((c) => (c.type === 0 || c.type === 2 || c.type === 5 || c.type === 15) && inGuild(c)).sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
   const groups: Array<{ category: Channel | null; channels: Channel[] }> = [
     { category: null, channels: text.filter((c) => !c.parent_id || !categories.some((cat) => cat.id === c.parent_id)) },
     ...categories.map((category) => ({ category, channels: text.filter((c) => c.parent_id === category.id) })),
@@ -821,6 +823,7 @@ function Sidebar({ state, current, open, onOpen, ctx, guild, onGuild, onThreads 
             return [
               <div key={channel.id}>
                 <ProjectRow channel={channel} current={channel.id === current} unread={unread(channel)} threads={threads} mentions={channel.id === current ? 0 : (mentionCounts[channel.id] ?? 0)} onOpen={onOpen} onSheet={setSheet} />
+                {channel.type === 2 && <VoicePeople state={state} channel={channel} />}
                 {(visible.length > 0 || (!hidden && older.length > 0)) && (
                   <Tree>
                     {visible.map(row)}
@@ -863,6 +866,7 @@ function Sidebar({ state, current, open, onOpen, ctx, guild, onGuild, onThreads 
       </>
       )}
       </div>
+      <VoiceStrip state={state} onOpen={onOpen} />
       <UserPanel state={state} />
       <ColumnHandle id="side" label="Channel list" />
       {sheet && <Sheet spec={sheet} onClose={() => setSheet(null)} />}
@@ -1305,6 +1309,8 @@ function Main() {
         <page.Page key={`x${page.id}`} onMenu={showChannels} onOpen={open} />
       ) : inbox ? (
         <Inbox guildId={activeGuild} onMenu={showChannels} onJump={jump} onSearch={() => setPanel({ kind: 'search' })} />
+      ) : channel && channel.type === 2 ? (
+        <VoiceView key={`v${channel.id}`} channel={channel} state={state} onMenu={showChannels} />
       ) : channel && channel.type === 15 ? (
         <Forum key={`f${channel.id}`} channel={channel} state={state} onMenu={showChannels} onOpen={open} onSearch={() => setPanel({ kind: 'search' })} />
       ) : channel && !(channel.type === 4) ? (
@@ -1349,6 +1355,7 @@ function Main() {
       )}
       {panel?.kind === 'search' && <SearchPanel key="search" initial={panel.q} onClose={() => setPanel(null)} onJump={jump} />}
       {linkSheet && <Sheet spec={linkSheet} onClose={() => setLinkSheet(null)} />}
+      <Notice state={state} current={current} onOpen={(channelId, messageId) => jump(channelId, messageId)} />
       {panel?.kind === 'services' && (
         <ServicesPanel
           key={`s${panel.threadId ?? 'all'}`}

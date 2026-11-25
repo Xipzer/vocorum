@@ -8,6 +8,7 @@ import { TitleBar } from './TitleBar.tsx'
 import './styles.css'
 import './media.css'
 import './composer.css'
+import './card-edges.css'
 
 installKeyboardDock()
 installEmojiCopy()

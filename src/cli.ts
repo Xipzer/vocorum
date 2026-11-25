@@ -5,6 +5,7 @@
 //   bots add <machine> [--guild ID|NAME,...] [--out PATH] [--local]   mint a clientId:secret, print or write the Kimaki env once
 //   bots list | bots revoke <machine>
 //   bots guilds <machine> <ID|NAME,...>             set which guilds a bot is in (default: the primary one)
+//   bots user <machine> <NAME> | --shared           the machine is its own bot user (named), or the shared bot again
 //   guilds add <name> | guilds list | guilds rename <ID|NAME> <new name>
 //   people invite <username> [--guild ID|NAME,...] [--tailscale-login LOGIN]   a person with a 24-hour pairing code
 //   people list | people remove <username>                                   (the hub must be running)
@@ -19,7 +20,7 @@
 //                 getting started and moving from Discord: see src/onboard-cli.ts (all take --json)
 
 import fs from 'node:fs'
-import { botEnv, hubPaths, initHub, loadConfig, readSecret, type HubConfig } from './config.ts'
+import { botEnv, hubPaths, initHub, loadConfig, readSecret, snowflake, type HubConfig } from './config.ts'
 import { HubStore } from './store.ts'
 
 const paths = hubPaths()
@@ -137,7 +138,7 @@ Move from Discord
 
 Bots and machines
   kimaki setup <machine>   a Kimaki on this machine that lives on the hub
-  bots add|list|revoke|guilds
+  bots add|list|revoke|guilds|user
   machines icon <machine> avatar|guild_icon <image file|none>
 
 People and devices
@@ -165,6 +166,7 @@ const COMMAND_HELP: Record<string, string> = {
 vocorum bots list
 vocorum bots revoke <machine>
 vocorum bots guilds <machine> <ID|NAME,...>
+vocorum bots user <machine> <NAME> | --shared
 
 add makes a bot login for a machine and prints it once (or writes it to --out).
 guilds sets which servers the bot is in (default: the first one).`,
@@ -298,11 +300,11 @@ async function main() {
     }
     case 'bots list': {
       const config = requireConfig()
-      const { bots, guilds, memberships } = await withStore(async (store) => ({ bots: await store.listBots(), guilds: await guildList(store, config), memberships: await store.botGuilds() }))
+      const { bots, guilds, memberships, users } = await withStore(async (store) => ({ bots: await store.listBots(), guilds: await guildList(store, config), memberships: await store.botGuilds(), users: await store.botUsers() }))
       const guildName = (id: string) => guilds.find((g) => g.id === id)?.name ?? id
       for (const bot of bots) {
         const ids = memberships.get(bot.machine) ?? [config.guildId]
-        console.log(`${bot.machine}\tclient ${bot.clientId.slice(0, 8)}…\tcreated ${ago(bot.createdAt)}\t${bot.revokedAt ? `revoked ${ago(bot.revokedAt)}` : 'active'}\tin ${ids.map(guildName).join(', ')}`)
+        console.log(`${bot.machine}\tclient ${bot.clientId.slice(0, 8)}…\tcreated ${ago(bot.createdAt)}\t${bot.revokedAt ? `revoked ${ago(bot.revokedAt)}` : 'active'}\tin ${ids.map(guildName).join(', ')}${users.has(bot.machine) ? `\tas "${users.get(bot.machine)!.name}"` : ''}`)
       }
       if (bots.length === 0) console.log('No bots.')
       return
@@ -324,6 +326,21 @@ async function main() {
         await store.setBotGuilds(name, await resolveGuilds(store, config, list))
       })
       console.log(`Bot "${name}" is now in: ${list}`)
+      await reload(config)
+      return
+    }
+    case 'bots user': {
+      const config = requireConfig()
+      const rest = args.slice(3)
+      const shared = rest.includes('--shared')
+      const display = rest.filter((a) => a !== '--shared').join(' ').trim()
+      if (!name || shared === Boolean(display)) throw new Error('usage: bots user <machine> <NAME> | --shared')
+      if (display.length > 32) throw new Error('NAME is at most 32 characters')
+      await withStore(async (store) => {
+        if (!(await store.listBots()).some((b) => b.machine === name && !b.revokedAt)) throw new Error(`No active bot "${name}".`)
+        await store.setBotUser(name, shared ? null : display, snowflake)
+      })
+      console.log(shared ? `Bot "${name}" is the shared bot again.` : `Bot "${name}" is its own bot user, "${display}". Its token is unchanged; it reconnects as that user.`)
       await reload(config)
       return
     }

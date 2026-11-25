@@ -1,0 +1,23 @@
+/* One insert inside the neutral outline. Its outer corners round, its inner
+   face stays flat. Empty space at either end makes the edge look detached. */
+.container.accented, .approval.open, .request-card.pending, .reminder-row.due, .ws-row.ws-waiting, .embed-card {
+  position: relative;
+}
+.ws-row.ws-waiting, .reminder-row.due {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  box-shadow: none;
+  padding-left: 16px;
+}
+.ws-row.ws-waiting { padding-block: 6px; }
+.ws-waiting .ws-row-text { white-space: normal; overflow-wrap: anywhere; }
+.container.accented::before, .approval.open::before, .request-card.pending::before, .reminder-row.due::before, .ws-row.ws-waiting::before, .embed-card::before {
+  content: ''; position: absolute; pointer-events: none;
+  left: 0; top: 0; bottom: 0; width: 4px;
+  border-radius: calc(var(--r-control) - 1px) 0 0 calc(var(--r-control) - 1px);
+  background: var(--warn);
+}
+.container.accented::before { background: var(--bar); }
+.ws-row.ws-waiting::before, .reminder-row.due::before { background: var(--accent); }
+/* The embed's perimeter is an inset shadow rather than a layout border. */
+.embed-card::before { inset: 1px auto 1px 1px; border-radius: 3px 0 0 3px; background: var(--embed-color, var(--line-raised)); }

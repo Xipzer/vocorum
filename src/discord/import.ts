@@ -88,7 +88,8 @@ export async function scan(rest: DiscordRest, guildIds: string[] | 'all') {
       forums: channels.filter((c) => c.type === 15 || c.type === 16).length,
       private_threads: threads.filter((t) => t.type === 12).length,
       channels_with_permissions: channels.filter((c) => c.permission_overwrites?.length).length,
-      voice_channels: every.filter((c) => CHANNEL_KIND[c.type]).length,
+      voice_channels: every.filter((c) => c.type === 2).length,
+      stage_channels: every.filter((c) => CHANNEL_KIND[c.type]).length,
     }
     guilds.push({ id, name: guild.name, owner_id: guild.owner_id ?? null, categories: channels.filter((c) => c.type === 4).length, channels: channels.filter((c) => c.type !== 4).length, threads: threads.length, thread_messages: threadMessages, unreadable, community })
   }
@@ -138,7 +139,8 @@ export async function importDiscord(rest: DiscordRest, config: HubConfig, paths:
       }
       const only = options.channels?.length ? new Set(options.channels) : null
       const listed = await guildChannels(rest, guildId, { every: true })
-      const usable = listed.filter((c) => c.type === 4 || TEXT_TYPES.has(c.type))
+      // Voice channels come across as channels (the hub has voice); their text chat does not.
+      const usable = listed.filter((c) => c.type === 4 || c.type === 2 || TEXT_TYPES.has(c.type))
       const channels = only ? usable.filter((c) => only.has(c.id) || (c.type === 4 && usable.some((x) => only.has(x.id) && x.parent_id === c.id))) : usable
       if (only && !channels.some((c) => only.has(c.id))) throw new Error(`None of ${[...only].join(', ')} is a text channel the bot can see in ${guild.name}`)
       await hub.call('POST', '/admin/mirror/channels', channels.map((c) => ({ ...c, guild_id: guildId })))
@@ -147,9 +149,9 @@ export async function importDiscord(rest: DiscordRest, config: HubConfig, paths:
       for (let i = 0; i < threads.length; i += 100) await hub.call('POST', '/admin/mirror/channels', threads.slice(i, i + 100).map((t) => ({ ...t, guild_id: guildId })))
       const done = new Set(progress[guildId] ?? [])
       const community = await importStructure(rest, hub, guildId, guild, listed, channels, threads, config.ownerDiscordIds ?? [], log)
-      const stats: ImportReport['guilds'][string] = { name: guild.name, channels: channels.filter((c) => c.type !== 4).length, threads: threads.length, complete: 0, messages_created: 0, files_copied: 0, files_missing: 0, files_failed: 0, gaps: {}, unreadable: [], community }
+      const stats: ImportReport['guilds'][string] = { name: guild.name, channels: channels.filter((c) => c.type !== 4 && c.type !== 2).length, threads: threads.length, complete: 0, messages_created: 0, files_copied: 0, files_missing: 0, files_failed: 0, gaps: {}, unreadable: [], community }
       report.guilds[guildId] = stats
-      const containers = [...channels.filter((c) => c.type !== 4), ...threads]
+      const containers = [...channels.filter((c) => c.type !== 4 && c.type !== 2), ...threads]
       let index = 0
       for (const c of containers) {
         index++
@@ -340,7 +342,7 @@ const UNENFORCED: Record<string, bigint> = {
   'View audit log': 1n << 7n,
 }
 const ADMINISTRATOR = 1n << 3n
-const CHANNEL_KIND: Record<number, string> = { 2: 'voice channels', 13: 'stage channels', 14: 'directory channels' }
+const CHANNEL_KIND: Record<number, string> = { 13: 'stage channels', 14: 'directory channels' }
 
 export type Community = {
   roles: number
@@ -406,8 +408,10 @@ async function importStructure(rest: DiscordRest, hub: HubAdmin, guildId: string
   if (unenforced.length) n.push(`permissions the hub keeps but has no feature for: ${unenforced.join(', ')}`)
   for (const [type, kind] of Object.entries(CHANNEL_KIND)) {
     const count = listed.filter((c) => c.type === Number(type)).length
-    if (count) n.push(`${count} ${kind} in the server, and any text chat in them (the hub has no voice)`)
+    if (count) n.push(`${count} ${kind} in the server (the hub has voice channels, not these)`)
   }
+  const voice = channels.filter((c) => c.type === 2).length
+  if (voice) n.push(`text chat inside ${voice} voice channels (the channels themselves come across)`)
   out.forum_tags = channels.reduce((sum, c) => sum + (c.available_tags?.length ?? 0), 0)
   if (out.forum_tags) n.push(`${out.forum_tags} forum tags: forum posts come across as threads, without their tags`)
   const slow = channels.filter((c) => (c.rate_limit_per_user ?? 0) > 0).length

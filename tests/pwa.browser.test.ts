@@ -95,11 +95,11 @@ test.skipIf(!ready)('pair, chat, modal, slash command, phone layout, passkey sig
 
   // A select.
   await page.getByText('Pick a strategy').click()
-  await page.getByRole('button', { name: /Squash/ }).click()
+  await page.getByRole('option', { name: /Squash/ }).click()
   await page.getByText('answered: squash').waitFor()
 
   // Slash command with autocomplete.
-  await box.fill('/mo')
+  await box.fill('/pick-mo')
   await page.locator('.slash-item').first().waitFor()
   await page.screenshot({ path: path.join(shots, '4-slash-menu.png') })
   await box.press('Enter')

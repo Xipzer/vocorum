@@ -183,7 +183,7 @@ function SlashForm({
   channelId: string
   channels: Array<{ id: string; name: string }>
   onCancel: () => void
-  onResult: (result: InteractionResult) => void
+  onResult: (result: InteractionResult, name: string) => void
 }) {
   const subcommands = command.options.filter((o) => o.type === 1)
   const [sub, setSub] = useState<string | null>(subcommands[0]?.name ?? null)
@@ -195,6 +195,8 @@ function SlashForm({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const timer = useRef<number | undefined>(undefined)
+  const submitting = useRef(false)
+  const form = useRef<HTMLFormElement>(null)
 
   const typed = (option: CommandOption, raw: string) => (option.type === 4 ? Number.parseInt(raw, 10) : option.type === 10 ? Number(raw) : option.type === 5 ? raw === 'true' : raw)
   const built = (focus?: string) => {
@@ -223,15 +225,22 @@ function SlashForm({
 
   const missing = options.filter((o) => o.required && !values[o.name])
   const run = async () => {
+    if (submitting.current || missing.length) return
+    submitting.current = true
     setBusy(true)
     setError(null)
     try {
       const result = await api.command(channelId, command.name, built())
-      onResult(result)
+      if (!result.acknowledged) {
+        setError(`The bot did not acknowledge /${command.name} within 3 seconds. Check the thread before trying again. Ref ${result.interactionId}.`)
+        return
+      }
+      onResult(result, command.name)
       onCancel()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
+      submitting.current = false
       setBusy(false)
     }
   }
@@ -256,7 +265,7 @@ function SlashForm({
     // Move on to the next empty option, as Discord does.
     const next = options.find((o) => o.name !== option.name && !values[o.name])
     setFocused(next?.name ?? null)
-    if (next) setTimeout(() => document.querySelector<HTMLInputElement>(`[data-option="${next.name}"]`)?.focus(), 0)
+    if (next) setTimeout(() => form.current?.querySelector<HTMLInputElement>(`[data-option="${CSS.escape(next.name)}"]`)?.focus(), 0)
   }
 
   // Discord's command line: the command as a chip, then each option inline as
@@ -274,11 +283,14 @@ function SlashForm({
           ))}
         </div>
       )}
-      <div className="slash-line" onKeyDown={(e) => e.key === 'Escape' && onCancel()}>
+      <form className="slash-line" ref={form} aria-busy={busy} onSubmit={(e) => { e.preventDefault(); void run() }} onKeyDown={(e) => {
+        if (e.key === 'Enter' && (e.repeat || e.nativeEvent.isComposing)) e.preventDefault()
+        if (e.key === 'Escape' && !busy) { e.stopPropagation(); onCancel() }
+      }}>
         <span className="slash-chip">/{command.name}</span>
         {subcommands.length > 0 &&
           subcommands.map((s) => (
-            <button key={s.name} className={`slash-sub${s.name === sub ? ' on' : ''}`} onClick={() => setSub(s.name)}>
+            <button type="button" key={s.name} className={`slash-sub${s.name === sub ? ' on' : ''}`} onClick={() => setSub(s.name)}>
               {s.name}
             </button>
           ))}
@@ -306,25 +318,23 @@ function SlashForm({
                 lookup(option, e.target.value)
               }}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault()
-                  if (focused === option.name && listed.length === 1) return choose(option, listed[0]!)
-                  if (!missing.length) void run()
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing && !e.repeat && focused === option.name && listed.length === 1 && values[option.name] !== String(listed[0]!.value)) {
+                  e.preventDefault(); choose(option, listed[0]!)
                 }
                 if (e.key === 'Backspace' && i === 0 && !(values[option.name] ?? '')) onCancel()
               }}
             />
           </label>
         ))}
-        <span className="slash-hint muted">{missing.length ? `${missing.length} required` : 'Enter to run'}</span>
-        <button className="icon-button send" disabled={busy || missing.length > 0} onClick={() => void run()} aria-label="Run command" title="Run (Enter)">
+        <span className="slash-hint muted" role="status">{busy ? `Sending /${command.name}…` : missing.length ? `${missing.length} required` : 'Enter to run'}</span>
+        <button type="submit" autoFocus={!options.length} className="icon-button send" disabled={busy || missing.length > 0} aria-label="Run command" title="Run (Enter)">
           <Icon name="send" />
         </button>
-        <button className="icon-button" onClick={onCancel} aria-label="Cancel command" title="Cancel (Esc)">
+        <button type="button" disabled={busy} className="icon-button" onClick={onCancel} aria-label="Cancel command" title="Cancel (Esc)">
           <Icon name="close" size={18} />
         </button>
-      </div>
-      {error && <div className="error slash-error">{error}</div>}
+      </form>
+      {error && <div className="error slash-error" role="alert">{error}</div>}
     </div>
   )
 }
@@ -403,7 +413,7 @@ export function Composer({
   channels: Array<{ id: string; name: string }>
   replyTo: Message | null
   onCancelReply: () => void
-  onResult: (result: InteractionResult) => void
+  onResult: (result: InteractionResult, name: string) => void
   onError: (message: string) => void
 }) {
   const [text, setText] = useState(() => sessionStorage.getItem(`draft:${channelId}`) ?? '')
@@ -991,9 +1001,9 @@ export function Composer({
                   setPick((p) => (p + (e.key === 'ArrowDown' ? 1 : matches.length - 1)) % matches.length)
                   return
                 }
-                if (matches.length && e.key === 'Tab') {
+                if (matches.length && !e.nativeEvent.isComposing && !e.shiftKey && (e.key === 'Tab' || e.key === 'Enter')) {
                   e.preventDefault()
-                  chooseCommand(matches[pick]!)
+                  if (!e.repeat) chooseCommand(matches[pick] ?? matches[0]!)
                   return
                 }
                 // Up in an empty box edits your last message, like Discord.

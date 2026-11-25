@@ -242,6 +242,7 @@ export class DigitalDiscord {
   private options: DigitalDiscordOptions
   // gatewayProxy mode: client token -> authorized guild IDs.
   private gatewayClients = new Map<string, Set<string>>()
+  private gatewayClientUsers = new Map<string, string>()
   private seeded = false
   private voiceServer: DiscordVoiceServer | null = null
   private interactionEvents: DigitalDiscordInteractionEvent[] = []
@@ -295,8 +296,15 @@ export class DigitalDiscord {
       this.authorizeGatewayClient({ token: this.options.gatewayClientKey?.(this.botToken) ?? this.botToken, guildIds: this.guildIds })
     }
     if (this.options.voice && !this.voiceServer) {
-      this.voiceServer = new DiscordVoiceServer()
-      await this.voiceServer.start()
+      const voice = new DiscordVoiceServer()
+      // Without voice (no openssl for its certificate, say) the rest still runs.
+      try {
+        await voice.start()
+        this.voiceServer = voice
+      } catch (error) {
+        console.error('[twin] voice server did not start; bots cannot join voice:', error)
+        await voice.stop().catch(() => {})
+      }
     }
     this.server = createServer({
       voice: this.voiceServer ?? undefined,
@@ -314,6 +322,7 @@ export class DigitalDiscord {
       storeAttachment: this.options.storeAttachment,
       tokenKey: this.options.gatewayClientKey,
       directAudience: this.options.directAudience,
+      clientUser: (token) => this.gatewayClientUsers.get(this.options.gatewayClientKey ? this.options.gatewayClientKey(token) : token) ?? null,
     })
 
     const port = await startServer(this.server, { port: this.options.port, host: this.options.host })
@@ -322,6 +331,7 @@ export class DigitalDiscord {
 
   async stop(): Promise<void> {
     if (this.server) {
+      this.server.privateReplies.clear()
       await stopServer(this.server)
       this.server = null
     }
@@ -372,9 +382,27 @@ export class DigitalDiscord {
   }
 
   // A user joins a voice channel (channelId) or leaves voice (null).
-  async setUserVoiceChannel({ userId, guildId, channelId }: { userId: string; guildId: string; channelId: string | null }): Promise<void> {
+  async setUserVoiceChannel({ userId, guildId, channelId, selfMute = false, selfDeaf = false }: { userId: string; guildId: string; channelId: string | null; selfMute?: boolean; selfDeaf?: boolean }): Promise<void> {
     if (!this.server) throw new Error('DigitalDiscord is not started')
-    this.server.gateway.setVoiceState({ guildId, channelId, userId, sessionId: `user-${userId}` })
+    this.server.gateway.setVoiceState({ guildId, channelId, userId, sessionId: `user-${userId}`, selfMute, selfDeaf })
+  }
+
+  // Everyone in voice now: people and bots.
+  voiceStates() {
+    return this.server?.gateway.currentVoiceStates() ?? []
+  }
+
+  // The voice server, for a host that forwards live audio (sendFrame, onAudio).
+  get voice(): DiscordVoiceServer | null {
+    return this.voiceServer
+  }
+
+  // gatewayProxy mode: a client token that is its own bot user (in voice, presence and
+  // what it posts) instead of the shared bot; null makes it the shared bot again.
+  // Takes effect at its next connection.
+  setGatewayClientUser({ token, userId }: { token: string; userId: string | null }): void {
+    if (userId) this.gatewayClientUsers.set(token, userId)
+    else this.gatewayClientUsers.delete(token)
   }
 
   // gatewayProxy mode: what the website's OAuth callback does (a
@@ -638,8 +666,14 @@ export class DigitalDiscord {
 
   // gatewayProxy mode: the proxy forgets the client, like a restart whose
   // database sync failed. REST answers 401 until authorizeGatewayClient() again.
+  // Ends a client's live sessions; it identifies again (a new READY).
+  reidentifyGatewayClient({ token }: { token: string }): void {
+    this.server?.gateway.reidentifyToken(token)
+  }
+
   revokeGatewayClient({ token }: { token: string }): void {
     this.gatewayClients.delete(token)
+    this.gatewayClientUsers.delete(token)
     this.server?.gateway.disconnectToken(token)
   }
 
@@ -657,6 +691,11 @@ export class DigitalDiscord {
     return this.server?.gateway.connectedTokens() ?? new Set()
   }
 
+  // Each connected client token's activity text (a bot's custom status), with when it was set.
+  gatewayActivities(): Map<string, { text: string | null; at: number }> {
+    return this.server?.gateway.connectedActivities() ?? new Map()
+  }
+
   // Called whenever a gateway client identifies or disconnects (presence).
   observeGatewayConnections(observer: () => void): () => void {
     if (!this.server) throw new Error('Server not started')
@@ -668,6 +707,12 @@ export class DigitalDiscord {
   observeDispatches(observer: GatewayObserver): () => void {
     if (!this.server) throw new Error('Server not started')
     return this.server.gateway.observe(observer)
+  }
+
+  // A committed hub-local deletion: devices and the search index get the usual event,
+  // without putting it on a bot gateway (including an offline bridge's replay queue).
+  notifyLocalMessageDeletes(channelId: string, guildId: string | null, ids: readonly string[]): void {
+    for (const id of ids) this.server?.gateway.notifyObservers(GatewayDispatchEvents.MessageDelete, { id, channel_id: channelId, guild_id: guildId ?? '' })
   }
 
   // A user adds (or removes) a unicode emoji reaction in the Discord UI.
@@ -1067,8 +1112,8 @@ export class DigitalDiscord {
       where: { id: channelId },
     })
 
-    let messageData: APIMessage | undefined = undefined
-    if (messageId) {
+    let messageData = messageId ? this.privateReplies?.forUser(userId, channelId, messageId) : undefined
+    if (messageId && !messageData) {
       const msg = await this.prisma.message.findUniqueOrThrow({
         where: { id: messageId },
       })
@@ -1173,6 +1218,8 @@ export class DigitalDiscord {
 
     return { id: interactionId, token: interactionToken }
   }
+
+  get privateReplies() { return this.server?.privateReplies }
 
   async simulateSlashCommand({
     channelId,

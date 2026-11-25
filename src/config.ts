@@ -83,6 +83,8 @@ export function hubPaths(root = process.env['VOCORUM_DIR'] || workspaceHub() || 
     vapid: path.join(root, 'vapid.json'),
     // The hub's own CA and server certificate (keys 0600).
     ca: path.join(root, 'ca'),
+    // The twin voice server's self-signed certificate (new each start, 0600), for bots on this machine to trust.
+    voiceCert: path.join(root, 'voice-cert.pem'),
     // Published Vocorum app releases (installers, update bundles, signatures), 0700.
     apps: path.join(root, 'apps'),
   }

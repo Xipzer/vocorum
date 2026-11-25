@@ -120,6 +120,58 @@ afterAll(async () => {
   fs.rmSync(t.paths.root, { recursive: true, force: true })
 })
 
+// Check painted pixels, not a particular CSS implementation. A strip stopping
+// short, a solid rectangle with square ends, and a border curling into the
+// horizontal edges all looked plausible in computed styles.
+async function checkCardEdge(card: import('playwright-core').Locator, file?: string) {
+  const image = await card.screenshot({ animations: 'disabled', ...(file && { path: path.join(shots, file) }) })
+  const result = await card.evaluate(async (el, png) => {
+    const img = new Image()
+    img.src = `data:image/png;base64,${png}`
+    await img.decode()
+    const canvas = document.createElement('canvas')
+    canvas.width = img.width; canvas.height = img.height
+    const ctx = canvas.getContext('2d')!
+    ctx.drawImage(img, 0, 0)
+    const { data } = ctx.getImageData(0, 0, img.width, img.height)
+    const scale = img.width / el.getBoundingClientRect().width
+    const rgb = (x: number, y: number) => {
+      const i = 4 * (Math.floor(y) * img.width + Math.floor(x))
+      return (data[i]! << 16) | (data[i + 1]! << 8) | data[i + 2]!
+    }
+    const colour = rgb(3 * scale, img.height / 2)
+    const has = (x: number, y: number) => rgb(x * scale, y < 0 ? img.height + y * scale : y * scale) === colour
+    return {
+      solidMiddle: colour !== rgb(7 * scale, img.height / 2),
+      top: has(4, 3), bottom: has(4, -3),
+      roundTop: !has(1, 1), roundBottom: !has(1, -2),
+      straightInside: !has(6, 3) && !has(6, -3),
+    }
+  }, image.toString('base64'))
+  expect(result).toEqual({ solidMiddle: true, top: true, bottom: true, roundTop: true, roundBottom: true, straightInside: true })
+}
+
+test.skipIf(!ready)('card accents reach both corners on short and wrapping messages', async () => {
+  const short = await demo.website.send({ flags: 32768, components: [{ type: 17, accent_color: 0xf59e0b, components: [{ type: 10, content: 'Review the short note.' }] }] } as never)
+  const long = await demo.website.send('<callout accent="#00d2ff">\n- Check the headings before publishing the longer release note.\n- Keep each reference next to its description.\n- Record the result.\n</callout>')
+  const embed = await demo.website.send({ embeds: [{ title: 'Edition preview', description: 'Check the margins.', color: 0xf59e0b }] })
+  const ask = await demo.website.send({ content: '⚠️ **Permission Required**\n**Type:** `read`\n**Pattern:** `notes.txt`', components: [{ type: 1, components: [{ type: 2, label: 'Accept', style: 3, custom_id: 'permission_once:notes' }] }] } as never)
+  const ctx = await browser.newContext({ storageState: await page.context().storageState(), extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, deviceScaleFactor: 2, serviceWorkers: 'block', reducedMotion: 'reduce' })
+  const p = await ctx.newPage()
+  try {
+    await p.goto(`${origin}/#/c/${demo.website.id}`)
+    for (const width of [1280, 390, 320]) {
+      await p.setViewportSize({ width, height: 844 })
+      await p.mouse.move(0, 0)
+      for (const [id, selector, name] of [[short.id, '.container.accented', 'short'], [long.id, '.container.accented', 'list'], [embed.id, '.embed-card', 'embed'], [ask.id, '.approval.open', 'approval']] as const) {
+        await checkCardEdge(p.locator(`#m-${id} ${selector}`), `edge-${name}-${width}.png`)
+      }
+      const accept = p.locator(`#m-${ask.id}`).getByRole('button', { name: 'Accept', exact: true })
+      expect(await accept.evaluate((el) => [getComputedStyle(el).backgroundColor, getComputedStyle(el).color])).toEqual(['rgb(2, 133, 70)', 'rgb(255, 255, 255)'])
+    }
+  } finally { await ctx.close() }
+}, 60_000)
+
 test.skipIf(!ready)('search: Ctrl+F opens the panel, filters work, a result jumps to an older message', async () => {
   await page.goto(`${origin}/#/c/${demo.kimaki.id}`)
   await page.locator('.chat-title', { hasText: 'kimaki' }).waitFor()
@@ -142,7 +194,7 @@ test.skipIf(!ready)('pins: pin from the toolbar, see it in the panel, unpin', as
   const message = page.locator('.message', { hasText: 'Found it' }).first()
   // It's above the newest page: scroll up until it has loaded.
   for (let i = 0; i < 5 && !(await message.count()); i++) {
-    await page.locator('.messages').evaluate((el: any) => { el.scrollTop = 0 })
+    await page.getByRole('button', { name: 'Load earlier messages' }).click()
     await page.waitForTimeout(400)
   }
   await message.hover()
@@ -886,6 +938,110 @@ test.skipIf(!ready)('workspace: a thread\'s outputs, waiting items and versions 
   await page.screenshot({ path: path.join(shots, 'workspace-compare.png') })
 }, 120_000)
 
+test.skipIf(!ready)('command results: private receipt, paged picker, edited next step and cancel', async () => {
+  const channelId = demo.website.id
+  const context = await browser.newContext({ storageState: await page.context().storageState(), extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, hasTouch: true, serviceWorkers: 'block', reducedMotion: 'reduce' })
+  const screen = await context.newPage()
+  await screen.goto(`${origin}/#/c/${channelId}`)
+  const command = async (name: string) => {
+    const box = screen.locator('.composer textarea')
+    await box.fill(`/${name}`)
+    if (name === 'model') {
+      await box.press('Enter') // choose the zero-argument command; focus must survive removal of the composer
+      await screen.getByText('Enter to run').waitFor()
+      await screen.keyboard.press('Enter')
+    } else {
+      await screen.locator('.slash-item').first().click()
+      await screen.getByRole('button', { name: 'Run command' }).click()
+    }
+  }
+  try {
+    await command('accounts')
+    const receipt = screen.locator('.private-reply', { hasText: '/accounts' })
+    await receipt.getByText('Only you can see this').waitFor()
+    expect(await hub.twin.prisma.message.count({ where: { channelId, content: { contains: 'Accounts are refreshed' } } })).toBe(0)
+    await command('model')
+    const prompt = screen.locator('.message', { has: screen.locator('.used-command', { hasText: '/model' }) })
+    const next = prompt.getByRole('button', { name: 'Select a model' })
+    await next.waitFor()
+    const row = await prompt.getAttribute('id')
+    expect(await prompt.getAttribute('class')).not.toMatch(/private-reply|compact|needs/)
+    await screen.screenshot({ path: path.join(shots, 'command-phone.png') })
+    const choices = screen.getByRole('dialog', { name: 'Select a model' })
+    await next.click()
+    await choices.getByRole('option', { name: /Next page/ }).click()
+    await choices.waitFor({ state: 'detached' })
+    await expect.poll(() => screen.locator('.select-trigger:focus').allTextContents()).toEqual(['Select a model'])
+    await next.click()
+    await choices.getByRole('option', { name: /Previous page/ }).waitFor()
+    const geometry = await choices.evaluate((el) => {
+      const list = el.querySelector('[role=listbox]')!
+      const r = el.getBoundingClientRect()
+      return { bottom: Math.round(r.bottom), x: r.left, scroll: list.scrollHeight > list.clientHeight, spill: document.documentElement.scrollWidth > innerWidth }
+    })
+    expect(geometry).toEqual({ bottom: 844, x: 0, scroll: true, spill: false })
+    await screen.screenshot({ path: path.join(shots, 'command-sheet-phone.png'), animations: 'disabled' })
+    await choices.getByRole('option', { name: /^Studio 21 / }).click()
+    const level = prompt.getByRole('button', { name: 'Select a thinking level' })
+    await level.waitFor()
+    expect(await prompt.getAttribute('id')).toBe(row)
+    expect(await prompt.locator('.edited-tail').count()).toBe(1)
+    await screen.screenshot({ path: path.join(shots, 'command-next-phone.png') })
+    // Back dismisses only the picker; no interaction is sent. Desktop stays anchored.
+    await level.click(); await screen.goBack()
+    await expect.poll(() => level.evaluate((el) => el === document.activeElement)).toBe(true)
+    await screen.setViewportSize({ width: 1280, height: 820 })
+    await level.click()
+    const menu = screen.getByRole('dialog', { name: 'Select a thinking level' })
+    const field = (await level.boundingBox())!, popup = (await menu.boundingBox())!
+    expect(Math.abs(field.x - popup.x)).toBeLessThan(1)
+    expect(Math.abs(field.width - popup.width)).toBeLessThan(1)
+    expect(Math.min(Math.abs(popup.y - field.y - field.height - 8), Math.abs(field.y - popup.y - popup.height - 8))).toBeLessThan(1)
+    await screen.screenshot({ path: path.join(shots, 'command-menu-desktop.png') })
+    await screen.keyboard.press('Escape')
+    await menu.waitFor({ state: 'detached' })
+    await receipt.getByRole('button', { name: 'Dismiss message' }).click()
+    await receipt.waitFor({ state: 'detached' })
+    await screen.reload(); await level.waitFor()
+    expect(await screen.locator('.private-reply').count()).toBe(0)
+    await level.click(); await menu.getByRole('option', { name: 'Extended' }).click()
+    const badge = prompt.locator('.model-receipt .model-badge')
+    await badge.waitFor()
+    expect(await prompt.getAttribute('id')).toBe(row)
+    expect(await badge.innerText()).toMatch(/studio-21\s*extended/)
+    expect(await prompt.locator('.select-trigger').count()).toBe(0)
+    expect(await prompt.innerText()).not.toMatch(/reasoning|studio\/studio-21/i)
+    await prompt.screenshot({ path: path.join(shots, 'command-finished.png') })
+  } finally { await context.close() }
+}, 60_000)
+
+test.skipIf(!ready)('multi-select: cancellation discards the draft and Done submits once within bounds', async () => {
+  const msg = await demo.website.send({ content: 'Choose two queues', components: [{ type: 1, components: [{ type: 3, custom_id: 'queues', placeholder: 'Select queues', min_values: 2, max_values: 2, options: ['North', 'East', 'West'].map((label) => ({ label, value: label, default: label === 'West', description: 'An available queue' })) }] }] } as never)
+  const context = await browser.newContext({ storageState: { cookies: await page.context().cookies(), origins: [] }, extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, viewport: { width: 320, height: 700 }, hasTouch: true, serviceWorkers: 'block' })
+  const screen = await context.newPage()
+  await screen.goto(`${origin}/#/c/${demo.website.id}`)
+  const row = screen.locator(`[id="m-${msg.id}"]`)
+  const trigger = row.getByRole('button', { name: 'West' })
+  const dialog = screen.getByRole('dialog', { name: 'Select queues' })
+  let posted = 0
+  const count = (req: import('playwright-core').Request) => { if (req.url().endsWith('/client/interactions') && req.method() === 'POST') posted++ }
+  screen.on('request', count)
+  try {
+    await trigger.click()
+    expect(await dialog.getByRole('button', { name: 'Done' }).isDisabled()).toBe(true)
+    await dialog.getByRole('option', { name: /North/ }).click()
+    expect(await dialog.getByRole('option', { name: /East/ }).isDisabled()).toBe(true)
+    await dialog.getByRole('button', { name: 'Cancel' }).click()
+    await dialog.waitFor({ state: 'detached' }); await trigger.click()
+    expect(await dialog.getByRole('option', { name: /North/ }).getAttribute('aria-selected')).toBe('false')
+    expect(posted).toBe(0)
+    await dialog.getByRole('option', { name: /East/ }).click()
+    await dialog.getByRole('button', { name: 'Done' }).click()
+    await row.getByText('answered: West, East').waitFor()
+    expect(posted).toBe(1)
+  } finally { await context.close() }
+})
+
 // Discord's block spacing, measured from the desktop app in CSS px.
 // gap = block's visible top minus the bottom of the 22px name line; after = between blocks.
 test.skipIf(!ready)('spacing: every block kind sits where Discord puts it', async () => {
@@ -898,9 +1054,10 @@ test.skipIf(!ready)('spacing: every block kind sits where Discord puts it', asyn
     { name: 'subtext', send: '-# zz-subtext note', block: '.subtext' },
     { name: 'container', send: { flags: 32768, components: [{ type: 17, components: [{ type: 10, content: 'zz-container body' }, { type: 14, divider: true }, { type: 10, content: 'second' }] }] }, block: '.container' },
     { name: 'image', send: { files: [{ attachment: png(400, 240, [88, 101, 242]), name: 'zz-image.png' }] }, block: '.attachments' },
+    { name: 'select', send: { components: [{ type: 1, components: [{ type: 3, custom_id: 'zz-select', placeholder: 'zz-select', options: [{ label: 'First', value: 'first' }] }] }] }, block: '.select-trigger' },
   ]
   // Discord's numbers: gap from the 22px name line to the block's visible top.
-  const discord: Record<string, number> = { text: 0, code: 6, heading: 8, list: 4, quote: 4, subtext: 0, container: 2, image: 2 }
+  const discord: Record<string, number> = { text: 0, code: 6, heading: 8, list: 4, quote: 4, subtext: 0, container: 2, image: 2, select: 2 }
   // A reply always starts a group, so each case gets its own name line.
   const anchor = await demo.thread.send('zz-anchor')
   for (const c of cases) await demo.thread.send({ ...(typeof c.send === 'string' ? { content: c.send } : (c.send as object)), reply: { messageReference: anchor.id } } as never)
@@ -957,6 +1114,34 @@ test.skipIf(!ready)('spacing: every block kind sits where Discord puts it', asyn
     return { quote: color('.message blockquote') === want, subtext: color('.message .subtext') === want }
   })
   expect.soft(tones).toEqual({ quote: true, subtext: true })
+})
+
+test.skipIf(!ready)('image clicks preview once, zoom doubles a small image and only Download saves it', async () => {
+  const image = await demo.website.send({files:[{attachment:png(240,160,[24,80,140]),name:'garden.png'}]})
+  const gallery = await demo.website.send('Gallery fixture')
+  const p = await page.context().newPage()
+  try {
+    await p.route(`**/client/channels/${demo.website.id}/messages?*`, async route => {
+      const response = await route.fetch(), body = await response.json()
+      const first = body.messages.find((m: {id:string}) => m.id === image.id), second = body.messages.find((m: {id:string}) => m.id === gallery.id)
+      const components = [{type:12, items:[{media:{url:first.attachments[0].url}}]}]
+      Object.assign(first,{components,flags:32768}); Object.assign(second,{components,flags:32768})
+      await route.fulfill({response,json:body})
+    })
+    let saves = 0; p.on('download', () => saves++)
+    await p.goto(`${origin}/#/c/${demo.website.id}`)
+    for (const [width,id] of [[1280,image.id],[390,gallery.id]] as const) {
+      await p.setViewportSize({width,height:800})
+      const thumbs = p.locator(`#m-${id} .message-body button:has(img)`); await thumbs.first().waitFor(); expect(await thumbs.count()).toBe(1)
+      await thumbs.click(); const dialog = p.locator('.lightbox'), img = dialog.locator('.lightbox-stage img'); await img.waitFor()
+      const fit = (await img.boundingBox())!; await img.click()
+      const big = (await img.boundingBox())!; expect(big.width).toBeCloseTo(fit.width*2,0); expect(big.height).toBeCloseTo(fit.height*2,0)
+      await dialog.getByRole('button',{name:'Fit',exact:true}).click(); expect((await img.boundingBox())!.width).toBeCloseTo(fit.width,0)
+      expect(saves).toBe(0)
+      if (width===390) { const download=p.waitForEvent('download'); await dialog.getByRole('link',{name:'Download'}).click(); await download; expect(saves).toBe(1) }
+      await dialog.getByRole('button',{name:'Close',exact:true}).click()
+    }
+  } finally { await p.close() }
 })
 
 test.skipIf(!ready)('lightbox: a tall phone screenshot fits the screen, top to bottom', async () => {
@@ -1139,6 +1324,7 @@ test.skipIf(!ready)('requests: an agent asks, the bell counts it, the owner appr
   const cards = page.locator('.request-card')
   await expect.poll(() => cards.count()).toBe(2)
   const robin = cards.filter({ hasText: 'Robin reviews' })
+  await checkCardEdge(robin)
   await expect(robin.locator('.request-meta').textContent()).resolves.toMatch(/^from agent session docs · expires (at|tomorrow) \d\d:\d\d$/)
   const shot = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, serviceWorkers: 'block', storageState: await page.context().storageState(), deviceScaleFactor: 2, viewport: { width: 1280, height: 800 } })
   const p2 = await shot.newPage()
@@ -1308,7 +1494,7 @@ test.skipIf(!ready)('sign-in: a bad pairing code shows in the field label, in pl
   await p.getByRole('button', { name: 'Pair this device' }).click()
   const label = p.locator('.login-label.bad')
   await label.waitFor()
-  expect(await label.textContent()).toBe('Pairing code · Expired, used or not found. Ask for a new one.')
+  expect(await label.textContent()).toContain('User settings > Devices > Pair another device')
   await ctx.close()
 }, 60_000)
 
@@ -1455,6 +1641,9 @@ test.skipIf(!ready)('reminders: Remind me on a message; when it fires the Inbox 
   await hub.schedules.runDue(Date.now() + 2 * 3600_000)
   const due = p.locator('.reminder-row.due', { hasText: 'zz-remind-me' })
   await due.waitFor()
+  await checkCardEdge(due, 'edge-reminder.png')
+  expect(await due.locator('time').innerText()).toMatch(/\d\d:\d\d/)
+  expect(await due.innerText()).not.toMatch(/\bDue\b/)
   await due.getByRole('button', { name: 'Done' }).click()
   await due.waitFor({ state: 'detached' })
   await p.close()
@@ -1783,5 +1972,37 @@ test.skipIf(!ready)('custom emoji come from the hub, react and send by name; a f
   await p.getByRole('button', { name: 'Post', exact: true }).click()
   await p.locator('.message', { hasText: 'So the important ones stay in view' }).waitFor()
   await expect(p.locator('.chat-header .title-text').textContent()).resolves.toBe('Pin threads to the top')
+  await p.close()
+}, 60_000)
+
+test.skipIf(!ready)('voice: a voice channel opens its call screen; joining shows the strip, leaving clears it', async () => {
+  const p = await page.context().newPage()
+  // The hub's voice socket is mocked: this checks the client's screens and states.
+  await p.routeWebSocket(/\/client\/voice/, () => {})
+  const room = (await demo.website.guild.channels.create({ name: 'lounge', type: 2 as never })) as unknown as { id: string }
+  await p.goto(`${origin}/#/c/${room.id}`)
+  await p.getByText('No one’s here yet').waitFor()
+  await p.getByRole('button', { name: 'Join voice' }).click()
+  const strip = p.locator('.voice-strip')
+  await strip.getByText('Voice connected').waitFor()
+  await expect(strip.textContent()).resolves.toContain('lounge')
+  await p.locator('.voice-tile').first().waitFor()
+  await p.locator('.voice-controls').getByRole('button', { name: 'Leave voice' }).click()
+  await strip.waitFor({ state: 'detached' })
+  await p.getByRole('button', { name: 'Join voice' }).waitFor()
+  await p.close()
+}, 60_000)
+
+test.skipIf(!ready)('in-app notification: a mention elsewhere drops in, and a tap opens it', async () => {
+  const p = await page.context().newPage()
+  await p.goto(`${origin}/#/c/${demo.kimaki.id}`)
+  await p.getByPlaceholder('Message #kimaki').waitFor()
+  await demo.website.send(`<@${hub.options.config.ownerUserId}> the preview deploy is up`)
+  const notice = p.locator('.notice', { hasText: 'the preview deploy is up' })
+  await notice.waitFor()
+  await expect(notice.textContent()).resolves.toContain('#website')
+  await notice.click()
+  await p.waitForURL(new RegExp(demo.website.id))
+  await notice.waitFor({ state: 'detached' })
   await p.close()
 }, 60_000)

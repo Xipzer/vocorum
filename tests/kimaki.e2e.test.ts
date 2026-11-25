@@ -61,7 +61,8 @@ beforeAll(async () => {
   await t.hub.reload()
   phone = await pairedDevice(t.hub)
   server = await startOpencodeTestServer({ matchers: [reply('hello-marker', 'Hello from OpenCode, through Kimaki, through the private hub.')] as never })
-  const dataDir = path.join(server.root, 'kimaki-data')
+  // Helpers that discover the bot from HOME must see the same isolated DB as the CLI.
+  const dataDir = path.join(server.root, 'home', '.kimaki')
   fs.mkdirSync(dataDir, { recursive: true })
   // Only env vars point Kimaki at the hub. Never inherit this machine's Kimaki or OpenCode vars.
   env = {
@@ -124,6 +125,11 @@ test.skipIf(!enabled)('The owner talks to OpenCode through Kimaki, through the h
     expect(text.messages[0].id).toBe(sent.id)
     expect(events.some((e) => e.t === 'THREAD_CREATE' && e.d.id === thread.id)).toBe(true)
     expect(events.some((e) => (e.t === 'MESSAGE_CREATE' || e.t === 'MESSAGE_UPDATE') && e.d.channel_id === thread.id && JSON.stringify(e.d).includes('through the private hub'))).toBe(true)
+    // The real /model has no arguments, defers, then edits @original. Its menu
+    // must reach an already open chat as a new message, without reloading history.
+    const result = await phone.json('/client/commands', { method: 'POST', json: { channelId: thread.id, name: 'model', options: [] } })
+    expect(result.acknowledged).toBe(true)
+    await waitFor(() => events.find((e) => e.t === 'MESSAGE_CREATE' && e.d.interaction_metadata?.id === result.interactionId && e.d.components?.length), { timeout: 30_000 })
     ws.close()
   } catch (error) {
     console.error(log.slice(-4000))

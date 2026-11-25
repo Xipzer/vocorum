@@ -189,7 +189,7 @@ function parseMentions(raw: string): APIUser[] {
 
 export type StoredInteraction = { id: string; type: number; name?: string; user: APIUser; interacted_message_id?: string }
 
-function interactionFields(stored: StoredInteraction) {
+export function interactionFields(stored: StoredInteraction) {
   return {
     interaction_metadata: {
       id: stored.id,

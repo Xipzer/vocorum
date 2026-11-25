@@ -407,11 +407,12 @@
   cursor: zoom-in;
 }
 .lightbox-stage.zoomed {
-  display: block;
+  display: flex;
   overflow: auto;
   inset: 56px 0 0;
 }
 .lightbox-stage.zoomed img {
+  flex: none;
   max-width: none;
   max-height: none;
   display: block;
@@ -419,6 +420,8 @@
   cursor: zoom-out;
   border-radius: 0;
 }
+.viewer-action { display: inline-flex; align-items: center; gap: 4px; flex: none; min-height: 36px; padding: 0 8px; border-radius: var(--r-control); color: var(--text); font: 500 14px/20px var(--font); }
+.viewer-action:hover { background: var(--fill-hover); }
 .lightbox-nav {
   position: absolute;
   top: 50%;
@@ -705,7 +708,21 @@
   cursor: default;
 }
 .used-command {
-  color: var(--link);
+  padding: 1px 4px;
+  border-radius: var(--r-inline);
+  font-weight: 600;
+  background: rgb(var(--accent-rgb) / 0.1);
+  color: var(--accent);
+}
+.message.private-reply, .message.private-reply:hover {
+  background: var(--group);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.ephemeral { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.ephemeral button { color: var(--accent); font: inherit; }
+.ephemeral button:hover { text-decoration: underline; }
+@media (max-width: 767px) {
+  .ephemeral button { min-height: 32px; }
 }
 .message:has(.reply-preview.interaction) .message-head .avatar.inline {
   top: 27px;

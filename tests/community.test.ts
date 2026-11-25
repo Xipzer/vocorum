@@ -31,7 +31,8 @@ const routes: Record<string, unknown> = {
     { id: GENERAL, type: 0, name: 'general', parent_id: CATEGORY, position: 0, rate_limit_per_user: 10 },
     { id: STAFF, type: 0, name: 'staff', parent_id: CATEGORY, position: 1, permission_overwrites: [{ id: G, type: 0, allow: '0', deny: String(P.VIEW_CHANNEL) }, { id: MODS, type: 0, allow: String(P.VIEW_CHANNEL), deny: '0' }] },
     { id: FORUM, type: 15, name: 'questions', position: 2, available_tags: [{ id: '1', name: 'help' }, { id: '2', name: 'solved' }] },
-    { id: VOICE, type: 2, name: 'Lounge', position: 3 },
+    { id: VOICE, type: 2, name: 'Lounge', parent_id: CATEGORY, position: 3, permission_overwrites: [{ id: G, type: 0, allow: '0', deny: String(P.CONNECT) }, { id: MODS, type: 0, allow: String(P.CONNECT | P.SPEAK), deny: '0' }] },
+    { id: '1500000000000000308', type: 13, name: 'Town hall', position: 4 },
   ],
   [`/guilds/${G}/threads/active`]: { threads: [{ id: PRIVATE, type: 12, name: 'plans', parent_id: GENERAL, guild_id: G }, { id: POST, type: 11, name: 'Why are my tomatoes yellow?', parent_id: FORUM, guild_id: G, applied_tags: ['1'] }] },
   [`/guilds/${G}/roles`]: [
@@ -102,10 +103,10 @@ const sees = async (userId: string, channel: string) => (await t.hub.access.view
 test('a community comes across with its roles, members, permissions, private thread, forum, pins, reactions and emoji', async () => {
   const report = await importDiscord(rest, config(), t.paths, { guilds: [G], log: () => {} })
   const c = report.guilds[G]!.community!
-  expect(c).toMatchObject({ roles: 3, members: 5, overwrites: 1, private_threads: 1, private_thread_members: 2, reactions: 3, emoji: 1, forum_tags: 2 })
+  expect(c).toMatchObject({ roles: 3, members: 5, overwrites: 2, private_threads: 1, private_thread_members: 2, reactions: 3, emoji: 1, forum_tags: 2 })
   expect(c.admins.sort()).toEqual(['Carol (@carol)', 'you'])
   const missing = c.not_imported.join('\n')
-  for (const text of ['1 voice channels', '2 forum tags', 'Kick and ban members', 'slow mode on 1 channels', '1 scheduled events', 'bans, invites']) expect(missing).toContain(text)
+  for (const text of ['1 stage channels', 'text chat inside 1 voice channels', '2 forum tags', 'Kick and ban members', 'slow mode on 1 channels', '1 scheduled events', 'bans, invites']) expect(missing).toContain(text)
 
   const prisma = t.hub.twin.prisma
   expect((await prisma.role.findUnique({ where: { id: MODS } }))).toMatchObject({ name: 'Mods', guildId: G, hoist: true, color: 0x2ecc71 })
@@ -122,7 +123,11 @@ test('a community comes across with its roles, members, permissions, private thr
   expect(await sees(ALICE, PRIVATE)).toBe(true)
   expect(await sees(BOB, PRIVATE)).toBe(false)
   expect(await sees(BOB, POST)).toBe(true)
-  expect(await sees(BOB, VOICE)).toBe(false)
+  // The voice channel comes across with its permissions: everyone sees it, only Mods connect.
+  expect(await prisma.channel.findUnique({ where: { id: VOICE } })).toMatchObject({ type: 2, name: 'Lounge', parentId: CATEGORY })
+  expect(await sees(BOB, VOICE)).toBe(true)
+  expect(await t.hub.access.can(BOB, VOICE, P.CONNECT)).toBe(false)
+  expect(await t.hub.access.can(ALICE, VOICE, P.CONNECT | P.SPEAK)).toBe(true)
 
   expect((await prisma.message.findUnique({ where: { id: '1500000000000001001' } }))?.pinned).toBe(true)
   expect((await prisma.channel.findUnique({ where: { id: POST } }))).toMatchObject({ type: 11, parentId: FORUM })
@@ -157,7 +162,7 @@ test('a later import adds what is new but never undoes what the owner changed on
   await t.hub.store.setOverwrite(STAFF, { id: G, remove: true })
   t.hub.access.invalidate()
   const report = await importDiscord(rest, config(), t.paths, { guilds: [G], log: () => {} })
-  expect(report.guilds[G]!.community!.kept).toEqual({ roles: 3, members: 4, overwrites: 1 })
+  expect(report.guilds[G]!.community!.kept).toEqual({ roles: 3, members: 4, overwrites: 2 })
   expect((await prisma.guildMember.findUnique({ where: { guildId_userId: { guildId: G, userId: ALICE } } }))?.roles).toBe('[]')
   expect((await prisma.role.findUnique({ where: { id: MODS } }))?.name).toBe('Gardeners')
   expect(await sees(BOB, STAFF)).toBe(true)

@@ -17,6 +17,8 @@ export const P = {
   ATTACH_FILES: 1n << 15n,
   READ_MESSAGE_HISTORY: 1n << 16n,
   MENTION_EVERYONE: 1n << 17n,
+  CONNECT: 1n << 20n,
+  SPEAK: 1n << 21n,
   MANAGE_ROLES: 1n << 28n,
   USE_APPLICATION_COMMANDS: 1n << 31n,
   MANAGE_THREADS: 1n << 34n,
@@ -57,6 +59,13 @@ export const PERMISSION_GROUPS: Array<{ title: string; items: Array<{ bit: bigin
       { bit: P.CREATE_PUBLIC_THREADS, label: 'Create threads', note: 'Start threads from channels.', channel: true },
       { bit: P.SEND_MESSAGES_IN_THREADS, label: 'Send messages in threads', note: 'Post in threads, including agent sessions.', channel: true },
       { bit: P.MANAGE_THREADS, label: 'Manage threads', note: 'Rename, archive and delete any thread.', channel: true },
+    ],
+  },
+  {
+    title: 'Voice',
+    items: [
+      { bit: P.CONNECT, label: 'Connect', note: 'Join voice channels and hear who is talking.', channel: true },
+      { bit: P.SPEAK, label: 'Speak', note: 'Talk in voice channels.', channel: true },
     ],
   },
   {

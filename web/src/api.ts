@@ -56,6 +56,7 @@ export type Message = {
   interaction?: { id: string; type: number; name: string; user: User }
   reactions_summary?: Reaction[]
   pending?: boolean
+  private_reply?: boolean // received on the viewer-only path
   pinned?: boolean
 }
 export type Channel = {
@@ -86,7 +87,8 @@ export type Privacy = { show_presence: boolean; show_activity: boolean }
 export type CommandOption = { name: string; description: string; type: number; required?: boolean; autocomplete?: boolean; choices?: Array<{ name: string; value: string | number }>; options?: CommandOption[] }
 export type Command = { id: string; name: string; description: string; options: CommandOption[] }
 export type PresenceStatus = 'online' | 'idle' | 'offline'
-export type Presence = { user_id: string; status: PresenceStatus; devices?: Array<{ id: string; name: string; channel_id: string | null; visible: boolean }>; machines?: Array<{ machine: string; online: boolean }> }
+// activity: what a bot is doing now, from its custom status ("Thinking", "Searching the web").
+export type Presence = { user_id: string; status: PresenceStatus; activity?: string | null; devices?: Array<{ id: string; name: string; channel_id: string | null; visible: boolean }>; machines?: Array<{ machine: string; online: boolean; activity?: string | null }> }
 export type NotifyLevel = 'all' | 'mentions' | 'nothing'
 export type NotifySetting = { level: NotifyLevel | null; muted_until: number | null }
 export type NotificationState = { settings: Record<string, NotifySetting>; default_level: NotifyLevel; vapid_public_key: string; push_subscribed: boolean }
@@ -100,7 +102,10 @@ export type MachineRoutines = { machine: string; updated_at?: number; routines: 
 export type Reminder = { id: string; channel_id: string; message_id: string | null; at: number; note: string | null; due: boolean; message: Schedule['message'] }
 export const toReminder = (s: Schedule): Reminder => ({ id: s.id, channel_id: s.channel_id, message_id: s.message_id, at: s.next_at ?? s.last_run_at ?? s.created_at, note: s.content || null, due: s.status !== 'pending', message: s.message ?? null })
 
+// Who is in which voice channel (Discord's voice state); channel_id null once they leave.
+export type VoiceState = { guild_id?: string; channel_id: string | null; user_id: string; self_mute?: boolean; self_deaf?: boolean }
 export type HubState = {
+  voice_states?: VoiceState[]
   machine_icons?: Record<string, MachineIcon>
   presence?: Record<string, Presence>
   notifications?: NotificationState
@@ -205,11 +210,13 @@ export const api = {
   logout: () => call('/client/auth/logout', { method: 'POST', json: {} }),
   state: () => call<HubState>('/client/state'),
   messages: (channelId: string, before?: string) =>
-    call<{ messages: Message[]; hasMore: boolean }>(`/client/channels/${channelId}/messages?limit=50${before ? `&before=${before}` : ''}`),
+    call<{ messages: Message[]; hasMore: boolean; privateReplies?: Message[] }>(`/client/channels/${channelId}/messages?limit=50${before ? `&before=${before}` : ''}`),
+  dismissReply: (channelId: string, id: string) => call(`/client/channels/${channelId}/private-replies/${id}`, { method: 'DELETE' }),
   send: (channelId: string, body: { content: string; attachmentIds?: string[]; descriptions?: Record<string, string>; replyTo?: string; voice?: boolean }) =>
     call<Message>(`/client/channels/${channelId}/messages`, { method: 'POST', json: body }),
   edit: (channelId: string, messageId: string, content: string) => call<Message>(`/client/channels/${channelId}/messages/${messageId}`, { method: 'PATCH', json: { content } }),
   remove: (channelId: string, messageId: string) => call(`/client/channels/${channelId}/messages/${messageId}`, { method: 'DELETE' }),
+  bulkDelete: (channelId: string, ids: readonly string[]) => call<{ deleted_ids: string[] }>(`/client/channels/${channelId}/messages/bulk-delete`, { method: 'POST', json: { message_ids: ids } }),
   react: (channelId: string, messageId: string, emoji: string, on: boolean) =>
     call(`/client/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`, { method: on ? 'PUT' : 'DELETE' }),
   patchThread: (channelId: string, body: { name?: string; archived?: boolean }) => call<Channel>(`/client/channels/${channelId}`, { method: 'PATCH', json: body }),
@@ -264,7 +271,7 @@ export const api = {
   guildEmojis: (id: string) => call<CustomEmojiInfo[]>(`/client/guilds/${id}/emojis`),
   patchGuild: (id: string, body: { name: string }) => call<Guild>(`/client/guilds/${id}`, { method: 'PATCH', json: body }),
   setGuildIcon: (id: string, image: Blob | null) => call<Guild>(`/client/guilds/${id}/icon`, image ? { method: 'PUT', body: image } : { method: 'DELETE' }),
-  createChannel: (guildId: string, body: { name: string; type?: 0 | 4 | 5 | 15; topic?: string | null; parent_id?: string | null; position?: number; permission_overwrites?: Overwrite[] }) => call<Channel>(`/client/guilds/${guildId}/channels`, { method: 'POST', json: body }),
+  createChannel: (guildId: string, body: { name: string; type?: 0 | 2 | 4 | 5 | 15; topic?: string | null; parent_id?: string | null; position?: number; permission_overwrites?: Overwrite[] }) => call<Channel>(`/client/guilds/${guildId}/channels`, { method: 'POST', json: body }),
   patchChannel: (id: string, body: { name?: string; topic?: string | null; parent_id?: string | null; position?: number }) => call<Channel>(`/client/channels/${id}/settings`, { method: 'PATCH', json: body }),
   reorderChannels: (guildId: string, moves: Array<{ id: string; position?: number; parent_id?: string | null }>) => call<{ channels: Channel[] }>(`/client/guilds/${guildId}/channels`, { method: 'PATCH', json: moves }),
   deleteChannel: (id: string) => call<{ deleted: string }>(`/client/channels/${id}`, { method: 'DELETE' }),

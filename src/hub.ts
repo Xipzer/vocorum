@@ -31,6 +31,7 @@ import { Community } from './community.ts'
 import { Mirror } from './mirror.ts'
 import { Requests } from './requests.ts'
 import { DirectMessages } from './dms.ts'
+import { VoiceRooms } from './voice.ts'
 import { Schedules } from './schedules.ts'
 import { AppReleases, sendDownload } from './app-releases.ts'
 import { Routines } from './routines.ts'
@@ -82,6 +83,7 @@ export class Hub {
   readonly members: Members
   readonly requests: Requests
   readonly dms: DirectMessages
+  readonly voice: VoiceRooms
   readonly schedules: Schedules
   readonly apps: AppReleases
   readonly routines: Routines
@@ -93,6 +95,8 @@ export class Hub {
   private readonly adminToken: string
   // Registered token key -> machine.
   private activeBotTokens = new Map<string, string>()
+  // Bot token -> its own bot user, for machines that have one.
+  private botUsers = new Map<string, string>()
   // The hub's guilds (spaces), primary first. Refreshed on start and reload.
   guilds: GuildRow[] = []
 
@@ -114,6 +118,8 @@ export class Hub {
       port: options.port ?? config.port,
       host,
       gatewayProxy: true,
+      // Voice channels: bots join through the twin's voice server; people through /client/voice.
+      voice: true,
       // Bot secrets are stored hashed; the twin looks clients up by this key.
       gatewayClientKey: botTokenKey,
       // What bots see as a member's permissions in interactions: the hub's own answer.
@@ -133,6 +139,10 @@ export class Hub {
         return { url: saved.url, width: saved.width, height: saved.height }
       },
       extension: {
+        privateReply: (userId, message, removed) => {
+          const { id, channel_id } = message
+          this.events.send(removed ? 'PRIVATE_REPLY_DELETE' : 'PRIVATE_REPLY', removed ? { id, channel_id } : message, { userId, channelId: channel_id })
+        },
         // Only our own names reach anything, so a page that rebinds its DNS name to this address gets nowhere.
         accept: (req) => this.allowedHost(req.headers.host),
         // A bot gets the gateway on the listener it reached us through: loopback stays plain, the private listener is TLS.
@@ -163,6 +173,7 @@ export class Hub {
     this.members = new Members(this)
     this.requests = new Requests(this)
     this.dms = new DirectMessages(this)
+    this.voice = new VoiceRooms(this)
     this.schedules = new Schedules(this)
     this.apps = new AppReleases(paths.apps)
     this.routines = new Routines(this)
@@ -276,6 +287,7 @@ export class Hub {
       await this.refreshLogins()
     })
     this.events.start()
+    this.voice.start()
     await timed('sessions', () => this.sessions.start())
     await timed('search', () => this.search.start())
     await timed('presence', () => this.presence.start())
@@ -302,6 +314,7 @@ export class Hub {
     this.notifications.stop()
     this.presence.stop()
     this.sessions.stop()
+    this.voice.stop()
     this.events.stop()
     await this.twin.stop()
     // Closes twin.db: Windows cannot move or delete a file that is still open.
@@ -376,6 +389,7 @@ export class Hub {
   private async syncBots() {
     const bots = await this.store.listBots()
     const memberships = await this.store.botGuilds()
+    const ownUsers = await this.store.botUsers()
     const known = this.guildIds
     const active = new Map<string, string>()
     for (const bot of bots) {
@@ -394,10 +408,28 @@ export class Hub {
         continue
       }
       const guildIds = (memberships.get(bot.machine) ?? []).filter((id) => known.has(id) && id !== admin)
-      await this.twin.setGatewayClientGuilds({ token, guildIds: guildIds.length ? guildIds : [this.options.config.guildId] })
+      const inGuilds = guildIds.length ? guildIds : [this.options.config.guildId]
+      await this.twin.setGatewayClientGuilds({ token, guildIds: inGuilds })
+      const own = ownUsers.get(bot.machine)
+      if (own) await this.ownBotUser(own, inGuilds)
+      // A change of user takes effect on the next connection, so the live one ends.
+      if ((this.botUsers.get(token) ?? null) !== (own?.userId ?? null)) this.twin.reidentifyGatewayClient({ token })
+      this.twin.setGatewayClientUser({ token, userId: own?.userId ?? null })
+      if (own) this.botUsers.set(token, own.userId)
+      else this.botUsers.delete(token)
     }
     for (const token of this.activeBotTokens.keys()) if (!active.has(token)) this.twin.revokeGatewayClient({ token })
     this.activeBotTokens = active
+  }
+
+  // A machine's own bot user: a bot account with its name, a member of exactly the machine's guilds.
+  private async ownBotUser({ userId, name }: { userId: string; name: string }, guildIds: string[]) {
+    const username = name.toLowerCase().replace(/[^a-z0-9_.]/g, '').slice(0, 32) || 'bot'
+    await this.twin.mirrorUser({ id: userId, username, globalName: name, bot: true })
+    for (const guildId of guildIds) await this.twin.addGuildMember({ guildId, userId })
+    for (const m of await this.twin.prisma.guildMember.findMany({ where: { userId } })) {
+      if (!guildIds.includes(m.guildId)) await this.twin.removeGuildMember({ guildId: m.guildId, userId })
+    }
   }
 
   // Without a signed URL, a signed-in person gets a file only if they uploaded
@@ -648,6 +680,10 @@ export class Hub {
       pathname = new URL(req.url ?? '/', 'http://localhost').pathname
     } catch {
       return false
+    }
+    if (pathname === '/client/voice') {
+      void this.voice.upgrade(req, socket, head)
+      return true
     }
     if (pathname !== '/client/events') return false
     void this.events.upgrade(req, socket, head)

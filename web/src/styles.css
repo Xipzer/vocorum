@@ -55,6 +55,7 @@
   --busy-rgb: 255 46 136;
   --link: #ff7ab8;
   --ok: #3fb68b;
+  --success-button: #028546;
   --warn: #e5a50a;
   --danger: #ff4d5e;
   --emoji-font: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', Twemoji;
@@ -835,18 +836,12 @@ html[data-keyboard='open'] .footer {
   position: absolute;
   right: 16px;
   top: -14px;
-  display: none;
+  display: flex;
   background: var(--sheet);
   border-radius: var(--r-float);
   box-shadow: var(--shadow-float);
   padding: 2px;
   z-index: 3;
-}
-@media (hover: hover) {
-  .message:hover .message-actions,
-  .message:focus-within .message-actions {
-    display: flex;
-  }
 }
 .message-actions > button {
   width: 30px;
@@ -1096,41 +1091,12 @@ html[data-keyboard='open'] .footer {
 .select.open .select-trigger {
   box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / 0.55);
 }
-.select-menu {
-  position: absolute;
-  z-index: 10;
-  left: 0;
-  right: 0;
-  top: calc(100% + 4px);
-  background: var(--sheet);
-  border-radius: var(--r-float);
-  box-shadow: var(--shadow-float);
-  max-height: 320px;
-  overflow-y: auto;
-  padding: 4px;
-}
-.select-option {
-  width: 100%;
-  display: flex;
-  gap: 8px;
-  padding: 8px;
-  border-radius: var(--r-control);
-  text-align: left;
-  font-size: 14px;
-}
-.select-option:hover,
-.select-option.on {
-  background: var(--active);
-}
-.option-description {
-  display: block;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-.select-done {
-  width: 100%;
-  margin-top: 4px;
-}
+.select-trigger > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.select-trigger > svg { flex: none; }
+.select-trigger[aria-busy=true] { opacity: var(--disabled-opacity); cursor: progress; }
+.action-row > .select:only-child { margin: 0; }
+.message-body > .action-row:has(> .select:only-child) { margin: 8px 0 2px; }
+.message-body > .action-row:first-child:has(> .select), .message-body > .message-head + .action-row:has(> .select) { margin-top: 2px; }
 /* Components V2 container: a content-width card, Discord's geometry (r8, 1px rule,
    16px inset, 8px between children), accent as a 4px bar on the left. */
 .container {
@@ -2142,6 +2108,47 @@ html[data-keyboard='open'] .footer {
 }
 .sheet-layer.phone .sheet-item:active {
   background: var(--active);
+}
+
+/* Message component choices share the action sheet's frame. Only its option list
+   scrolls: the title, drag handle and multi-select Done stay in reach. */
+.sheet.choice-sheet { display: flex; flex-direction: column; max-height: min(400px, calc(100dvh - 16px)); }
+.sheet-layer:not(.phone) .choice-sheet { min-width: 0; max-width: none; overflow: hidden; }
+.sheet-layer:not(.phone) .choice-sheet .sheet-item.two-line { height: auto; min-height: 52px; }
+.sheet-layer:not(.phone) .choice-sheet .sheet-sub-label { font: 400 14px/18px var(--font); }
+@media (min-width: 768px) {
+  .select-trigger { height: 40px; box-shadow: inset 0 0 0 1px var(--line-raised); }
+  .select.open .select-trigger > svg { transform: rotate(180deg); }
+}
+.choice-sheet .choice-options { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.choice-sheet .sheet-item { height: auto; min-height: 32px; padding-block: 6px; }
+.choice-sheet .sheet-item-text { flex: 1; overflow-wrap: anywhere; }
+.choice-sheet .sheet-item[aria-selected=true] { background: var(--fill-selected); }
+.choice-sheet .sheet-item[aria-selected=true] > svg { color: var(--accent); }
+.choice-sheet .sheet-item:disabled { opacity: var(--disabled-opacity); }
+.choice-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 8px 4px 0; flex: none; }
+.choice-foot .num, .choice-empty { font: 400 13px/18px var(--font); color: var(--text-muted); }
+.choice-foot .num { margin-right: auto; }
+.choice-empty { display: block; padding: 12px; }
+.sheet-layer.phone .choice-sheet {
+  /* About half a portrait screen for a full page of choices, more room in landscape. */
+  max-height: min(90dvh, max(54dvh, 320px)); touch-action: auto; overflow: hidden;
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+}
+.sheet-layer.phone .choice-sheet :is(.grab, .sheet-head) { flex: none; touch-action: none; }
+.sheet-layer.phone .choice-sheet .sheet-head { position: relative; justify-content: center; padding-inline: 32px; text-align: center; }
+.choice-close { position: absolute; right: 0; top: -10px; display: grid; place-items: center; width: 44px; height: 44px; color: var(--text-faint); }
+.sheet-layer.phone .choice-options { margin: 0; touch-action: pan-y; }
+.sheet-layer.phone .choice-options .sheet-item { height: auto; min-height: 52px; padding: 10px 12px; }
+.sheet-layer.phone .choice-options .two-line { min-height: 58px; }
+.sheet-layer.phone .choice-options .sheet-sub-label { font: 400 13px/18px var(--font); }
+.sheet-layer.phone .choice-options .sheet-item + .sheet-item::before { left: 12px; }
+@media (prefers-reduced-motion: reduce) {
+  .sheet-layer.phone, .sheet-layer.phone .sheet { animation: none; transition: none; }
+}
+@media (max-width: 767px) {
+  .select-trigger { box-shadow: inset 0 0 0 1px var(--line-raised); }
+  .select-trigger > svg { transform: rotate(-90deg); }
 }
 
 /* Overview */
@@ -3478,6 +3485,16 @@ a.crumb-parent:hover {
   font-size: 16px;
   line-height: 22px;
 }
+/* Plain messages wrap at the chat gutter. Embeds and file previews keep their own widths. */
+.message > .message-body,
+.message-body > .markdown {
+  max-width: none;
+}
+@media (min-width: 768px) {
+  .message-body > .markdown {
+    font-size: 14px;
+  }
+}
 @media (hover: hover) {
   .message:not(.needs):hover {
     background: rgb(255 255 255 / 0.035);
@@ -4460,8 +4477,9 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
 
 /* Discord's button colours carry meaning: success green, danger red, primary accent, secondary neutral. */
 .button.success {
-  background: var(--ok);
-  color: #04130d;
+  background: var(--success-button);
+  color: #fff;
+  box-shadow: inset 0 0 0 1px #298f55;
 }
 .button.danger {
   background: var(--danger);
@@ -4469,7 +4487,7 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
 }
 @media (hover: hover) {
   .button.success:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--ok), #000 12%);
+    background: color-mix(in srgb, var(--success-button), #000 12%);
   }
   .button.danger:hover:not(:disabled) {
     background: color-mix(in srgb, var(--danger), #000 12%);
@@ -6055,6 +6073,28 @@ svg.flip {
   font-style: normal;
   white-space: pre;
 }
+.meta-line > span { min-width: 0; max-width: 100%; }
+.model-badge {
+  display: inline-flex;
+  align-items: stretch;
+  vertical-align: middle;
+  max-width: 100%;
+  border: 1px solid var(--line-raised);
+  border-radius: var(--r-inline);
+  background: var(--bg-3);
+  color: var(--text);
+  font: 500 12px/16px var(--font);
+}
+.model-name { padding: 0 5px; min-width: 0; overflow-wrap: anywhere; }
+.model-effort {
+  align-self: stretch; align-content: center; padding: 0 5px;
+  min-width: 0; max-width: 50%; overflow-wrap: anywhere;
+  border-left: 1px solid var(--line-raised);
+  border-radius: 0 3px 3px 0;
+  background: rgb(var(--accent-rgb) / .09); color: var(--accent);
+}
+.model-receipt { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 2px; }
+.model-receipt > :last-child { color: var(--text-muted); font: 400 12px/18px var(--font); }
 
 /* Discord parity, from a side-by-side comparison: */
 .md-gap {
@@ -6195,25 +6235,12 @@ svg.flip {
   border: 1px solid transparent;
 }
 
-/* Discord 1:1: an accent never paints over the card's own rule. The 1px border runs all
-   the way round; the 4px bar sits inside it, following the inner corner, and the text
-   stays 17px in (1px rule + 16px padding, the bar inside the padding). */
+/* Inside the neutral border, a full-height insert shares the outer corner. */
 .container.accented {
   position: relative;
   border-left: 1px solid var(--card-line, var(--line-raised));
   border-radius: 8px;
   padding-left: 16px;
-}
-.container.accented::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
-  border-radius: 7px 0 0 7px;
-  background: var(--bar);
-  pointer-events: none;
 }
 /* The bottom pill lives outside the scrolling list (so nothing clips it), anchored to
    the foot of the sidebar column and lifted to 6px above the user panel. */
@@ -6701,8 +6728,10 @@ svg.flip {
   border-radius: 8px;
 }
 .reminder-row.due {
+  position: relative;
   background: var(--bg-3);
-  box-shadow: inset 2px 0 0 var(--accent);
+  border: 1px solid var(--line-strong);
+  padding-left: 16px;
 }
 .reminder-main {
   flex: 1;
@@ -6718,9 +6747,6 @@ svg.flip {
   gap: 6px;
   font: 600 12px/16px var(--font);
   color: var(--text-muted);
-}
-.reminder-row.due .reminder-when {
-  color: var(--accent);
 }
 .reminder-where {
   min-width: 0;
@@ -6835,26 +6861,28 @@ button.member {
   border-radius: 8px;
   background: var(--bg-3);
 }
-/* Waiting: the 4px amber bar inside the rule, as on accented containers. */
+/* One full-height insert inside the card rule. Only the two outside
+   corners round; the inner face stays flat, including on short cards. */
 .approval,
 .request-card {
   position: relative;
 }
 .approval.open::before,
-.request-card.pending::before {
+.request-card.pending::before,
+.container.accented::before,
+.reminder-row.due::before {
   content: '';
   position: absolute;
   left: 0;
   top: 0;
   bottom: 0;
   width: 4px;
-  border-radius: 7px 0 0 7px;
+  border-radius: calc(var(--r-control) - 1px) 0 0 calc(var(--r-control) - 1px);
   background: var(--warn);
   pointer-events: none;
 }
-.request-card.pending::before {
-  border-radius: calc(var(--r-control) - 1px) 0 0 calc(var(--r-control) - 1px);
-}
+.reminder-row.due::before { background: var(--accent); }
+.container.accented::before { background: var(--bar); }
 .approval-head {
   display: flex;
   align-items: center;
@@ -7174,6 +7202,18 @@ html[data-chrome] :is(.overlay, .sheet-layer, .lightbox, .settings-layer) {
 }
 
 /* Offline: a pill at the top of the window, over the header, never moving the layout. */
+.chat-history { scrollbar-gutter: stable; scrollbar-color: transparent transparent; }
+.chat-history[data-scrolling] { scrollbar-color: #44444c transparent; }
+.chat-history[data-prepending] { overflow-anchor: none; }
+.history-edge { display: flex; justify-content: center; }
+.history-edge button { display: inline-flex; align-items: center; gap: 4px; min-height: var(--control); color: var(--text-muted); font: 500 13px/18px var(--font); }
+.history-edge svg { transform: rotate(90deg); }
+@media (prefers-reduced-motion: no-preference) {
+  .history-edge button:disabled svg { animation: history-edge-pull 360ms ease-out; }
+  @keyframes history-edge-pull { 0% { transform: translateY(4px) rotate(90deg); } 55% { transform: translateY(-1px) rotate(90deg); } }
+}
+@media (forced-colors: active) { .chat-history { scrollbar-color: auto; } }
+
 .offline-notice {
   position: fixed;
   top: calc(var(--chrome, 0px) + env(safe-area-inset-top) + var(--header) + 8px);
@@ -7285,3 +7325,523 @@ html[data-chrome] :is(.overlay, .sheet-layer, .lightbox, .settings-layer) {
   justify-content: flex-end;
   gap: 8px;
 }
+
+/* Voice: Discord's call screen. Tiles with a ring while someone speaks, a raised control
+   bar (red when the mic is off, a red leave), and a strip above the user panel. */
+.voice-view {
+  display: flex;
+  flex-direction: column;
+}
+.voice-stage {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  overflow-y: auto;
+}
+.voice-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  text-align: center;
+  font: 400 16px/22px var(--font);
+  color: var(--text-muted);
+}
+.voice-empty b {
+  font-weight: 600;
+  color: var(--text-strong);
+}
+.voice-tiles {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  max-width: 960px;
+}
+.voice-tiles.n2,
+.voice-tiles.n3,
+.voice-tiles.n4 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.voice-tile {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--r-float);
+  background: var(--bg-3);
+  box-shadow: inset 0 0 0 1px var(--line-card);
+  transition: box-shadow var(--t-fast);
+}
+.voice-tiles.n1 .voice-tile {
+  max-width: 720px;
+  margin: 0 auto;
+  width: 100%;
+}
+.voice-tile.speaking {
+  box-shadow: inset 0 0 0 2px var(--ok), 0 0 0 1px var(--ok);
+}
+.voice-tile .avatar {
+  width: 80px;
+  height: 80px;
+  font-size: 32px;
+}
+.voice-tile-name {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 24px);
+  padding: 4px 10px;
+  border-radius: var(--r-control);
+  background: rgb(0 0 0 / 0.55);
+  font: 600 14px/18px var(--font);
+  color: var(--text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.voice-flag {
+  flex: none;
+  color: var(--danger);
+}
+.voice-error {
+  margin: 0 16px 8px;
+  padding: 10px 12px;
+  border-radius: var(--r-control);
+  background: rgb(255 77 94 / 0.1);
+  color: var(--danger-text);
+  font: 400 14px/18px var(--font);
+}
+.voice-dock-bar {
+  padding: 0 16px calc(16px + env(safe-area-inset-bottom));
+}
+.voice-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 12px 16px;
+  border-radius: var(--r-sheet);
+  background: var(--bg-2);
+  box-shadow: inset 0 0 0 1px var(--line-raised);
+}
+.voice-button {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  flex: none;
+  border-radius: 16px;
+  background: var(--fill-hover);
+  color: var(--text);
+  transition: background-color var(--t-fast), color var(--t-fast);
+}
+@media (hover: hover) {
+  .voice-button:hover {
+    background: var(--fill-control-hover);
+  }
+}
+.voice-button.off {
+  background: rgb(255 77 94 / 0.14);
+  color: var(--danger);
+}
+.voice-button.leave {
+  background: var(--danger-fill);
+  color: #fff;
+}
+.voice-join {
+  flex: 1;
+  height: 56px;
+  border-radius: 16px;
+  background: var(--ok);
+  color: #04130d;
+  font: 600 16px/20px var(--font);
+}
+.voice-join:disabled {
+  opacity: var(--disabled-opacity);
+}
+@media (max-width: 767px) {
+  .voice-tile {
+    aspect-ratio: 1;
+  }
+  .voice-tiles.n1 .voice-tile {
+    aspect-ratio: 1;
+  }
+}
+
+/* Sidebar: who is in a voice channel, under its row. */
+.voice-people {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 4px 32px;
+}
+.voice-person {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--r-control);
+  font: 500 14px/18px var(--font);
+  color: var(--text-muted);
+  min-width: 0;
+}
+.voice-person .avatar {
+  width: 22px;
+  height: 22px;
+  font-size: 11px;
+  flex: none;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px transparent;
+  transition: box-shadow var(--t-fast);
+}
+.voice-person.speaking .avatar {
+  box-shadow: 0 0 0 2px var(--ok);
+}
+.voice-person-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Connected: where, floating just above the user panel, with the same edges. */
+.voice-strip {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: calc(max(8px, env(safe-area-inset-bottom)) + var(--dock-h) + 8px);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 8px 8px 10px;
+  border-radius: var(--r-control);
+  background: var(--bg-3);
+  box-shadow: inset 0 0 0 1px var(--line-card);
+}
+.voice-strip-where {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+}
+.voice-strip-status {
+  font: 600 14px/18px var(--font);
+  color: var(--ok);
+}
+.voice-strip-status.connecting {
+  color: var(--warn);
+}
+.voice-strip-channel {
+  font: 400 12px/16px var(--font);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.voice-strip .icon-button.off {
+  color: var(--danger);
+}
+.voice-strip .icon-button.leave {
+  color: var(--danger);
+}
+html[data-voice='on'] .sidebar .rail,
+html[data-voice='on'] .side-main {
+  padding-bottom: calc(var(--dock-h) + 80px + env(safe-area-inset-bottom));
+}
+
+/* A bot's activity in voice: "Thinking", "Searching the web", with three soft dots. */
+.voice-activity {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font: 400 12px/16px var(--font);
+  color: var(--accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.voice-activity.tile {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100% - 24px);
+  padding: 4px 10px;
+  border-radius: var(--r-control);
+  background: rgb(var(--accent-rgb) / 0.12);
+  font-size: 13px;
+}
+.voice-activity-dots {
+  display: inline-flex;
+  gap: 3px;
+  flex: none;
+}
+.voice-activity-dots b {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: voice-dot 1.2s infinite ease-in-out;
+}
+.voice-activity-dots b:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.voice-activity-dots b:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes voice-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.3;
+  }
+  30% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .voice-activity-dots b {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+.voice-person-name {
+  display: flex;
+  flex-direction: column;
+}
+.voice-person:has(.voice-activity) {
+  height: auto;
+  min-height: 28px;
+  padding: 2px 8px;
+}
+.voice-person-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* In-app notification: drops in at the top on phones (bottom right on desktop), raised, with a bar that
+   runs down while it stays. */
+.notice {
+  position: fixed;
+  z-index: 90;
+  top: calc(8px + env(safe-area-inset-top));
+  left: 50%;
+  width: min(560px, calc(100vw - 16px));
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 12px 14px;
+  overflow: hidden;
+  border-radius: var(--r-sheet);
+  background: var(--bg-4);
+  box-shadow: inset 0 0 0 1px var(--line-raised), var(--shadow-float);
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  animation: notice-in 220ms var(--ease-out);
+  transition: transform 160ms var(--ease-out), opacity 160ms;
+}
+@media (min-width: 768px) {
+  /* Desktop: bottom right, above the composer, clear of the header's controls. */
+  .notice {
+    left: auto;
+    right: 16px;
+    top: auto;
+    bottom: 88px;
+    width: 400px;
+    transform: none;
+    animation-name: notice-in-side;
+  }
+}
+@keyframes notice-in {
+  from {
+    transform: translate(-50%, -120%);
+  }
+}
+@keyframes notice-in-side {
+  from {
+    transform: translateX(120%);
+  }
+}
+.notice-avatar .avatar {
+  width: 40px;
+  height: 40px;
+  font-size: 16px;
+}
+.notice-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.notice-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font: 600 15px/20px var(--font);
+  color: var(--text-strong);
+  white-space: nowrap;
+}
+.notice-head b {
+  flex: none;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.notice-dot {
+  color: var(--text-faint);
+}
+.notice-where {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-muted);
+}
+.notice-where svg {
+  flex: none;
+}
+.notice-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font: 400 15px/20px var(--font);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.notice-close {
+  flex: none;
+  align-self: flex-start;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-control);
+  color: var(--text-faint);
+}
+@media (hover: hover) {
+  .notice-close:hover {
+    background: var(--fill-control-hover);
+    color: var(--text);
+  }
+}
+@media (hover: none) {
+  .notice-close {
+    display: none;
+  }
+}
+.notice-bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  width: 100%;
+  background: var(--accent);
+  transform-origin: left;
+  animation: notice-bar linear forwards;
+}
+.notice.paused .notice-bar {
+  animation-play-state: paused;
+}
+@keyframes notice-bar {
+  to {
+    transform: scaleX(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .notice {
+    animation: none;
+  }
+}
+.notice-clip {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.notice-avatar .avatar {
+  background-color: var(--bg-2);
+}
+
+/* Select messages borrows the avatar gutter and the composer dock. Neither
+   the text column nor its drag-to-copy behaviour changes in ordinary chat. */
+.picking > :is(.footer, .archived-bar, .output-bar) { display: none; }
+.pick-row { position: relative; }
+.pick-row, .pick-row .message .markdown { -webkit-user-select: none; user-select: none; }
+.pick-row.picked { background: rgb(var(--accent-rgb) / .10); }
+.pick-row.unavailable .message { opacity: .62; }
+.pick-row:not(.unavailable) :is(.message-head .avatar.inline, .message.system > svg),
+.pick-row .message-actions { visibility: hidden; }
+.message-choice {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  padding: 0;
+  text-align: start;
+  touch-action: pan-y;
+}
+.pick-mark {
+  position: absolute;
+  top: 4px;
+  left: calc(var(--gutter) / 2 - 9px);
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border: 1.5px solid var(--text-faint);
+  border-radius: var(--r-inline);
+  color: var(--accent-ink);
+}
+.picked .pick-mark { border-color: var(--accent); background: var(--accent); }
+.message-choice:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+@media (hover: hover) { .message-choice:hover { background: var(--fill-hover); } }
+.selection-dock {
+  flex: none;
+  margin: 8px;
+  padding: 8px 12px;
+  background: var(--bg-3);
+  border: 1px solid var(--line-card);
+  border-radius: var(--r-control);
+}
+.selection-controls { display: flex; gap: 8px; align-items: center; min-height: 40px; }
+.selection-controls strong { flex: 1; font-size: 14px; color: var(--text-strong); }
+.selection-controls .pick-delete { color: var(--danger-text); }
+.selection-dock > p { margin: 0 0 6px; color: var(--danger-text); overflow-wrap: anywhere; }
+.delete-review {
+  margin: auto;
+  width: min(360px, calc(100% - 32px));
+  padding: 20px;
+  color: var(--text);
+  background: var(--bg-3);
+  border: 1px solid var(--line-raised);
+  border-radius: var(--r-float);
+  box-shadow: var(--shadow-float);
+}
+.delete-review::backdrop { background: rgb(0 0 0 / .65); }
+.delete-review h2 { margin: 0; font: 600 18px/24px var(--font); }
+.delete-review p { margin: 8px 0 20px; color: var(--text-muted); }
+.delete-review > div { display: flex; justify-content: flex-end; gap: 8px; }
+@media (pointer: coarse) {
+  .pick-row .message { min-height: 44px; }
+  .selection-controls .button, .delete-review .button { min-height: 44px; }
+}
+@media (max-width: 767px) { .selection-dock { margin-bottom: max(8px, env(safe-area-inset-bottom)); } }

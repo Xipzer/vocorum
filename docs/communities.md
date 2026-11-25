@@ -25,7 +25,7 @@ vocorum discord scan <server id> --token-file ~/discord-token
 This changes nothing. For each server it shows:
 - its channels and threads;
 - what comes across: roles, the member list, channel permissions, custom emoji, forums, private threads;
-- what stays on Discord: voice and stage channels;
+- what stays on Discord: stage channels, and the text chat inside voice channels;
 - a PROBLEM line for each missing intent.
 
 ## Import
@@ -42,6 +42,7 @@ To try it on a few channels first, add `--channels <id>,<id>`. Roles and members
 |---|---|
 | Categories, text and announcement channels | The same, in the same order |
 | Forums | A forum whose posts are threads. Tags are not kept |
+| Voice channels | The same, with who may connect and speak. Their text chat stays on Discord |
 | Roles: name, colour, order, shown separately, mentionable | The same, with the same ids |
 | Role and channel permissions | The same. The hub enforces viewing, sending, threads, files, reactions, pins, managing messages, channels, roles and the server, and Administrator |
 | Members, their roles and nicknames | People on the hub, who cannot sign in until you invite them |
@@ -51,7 +52,7 @@ To try it on a few channels first, add `--channels <id>,<id>`. Roles and members
 | Custom emoji | Stored on the hub, so they keep working after you leave Discord |
 
 **Not imported** (the import's report says which of these your server has):
-- voice and stage channels, and any text chat in them;
+- stage channels, and the text chat inside voice channels;
 - forum tags;
 - slow mode and the age-restricted mark;
 - role icons;

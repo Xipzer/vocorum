@@ -36,7 +36,7 @@ let page: Page
 let origin: string
 
 const shown = () => page.locator('.messages .message').count()
-const scrollToTop = () => page.locator('.messages').evaluate((el) => (el.scrollTop = 0))
+const scrollToTop = () => page.getByRole('button', { name: 'Load earlier messages' }).click()
 
 beforeAll(async () => {
   if (!ready) return
@@ -87,6 +87,70 @@ test.skipIf(!ready)('a message toolbar exists only under the pointer or focus', 
   // Keyboard: a focused message shows its toolbar too.
   await last.focus()
   await last.locator('.message-actions').waitFor()
+})
+
+test.skipIf(!ready)('click one message, hover another, then leave: just one toolbar and no sticky mouse focus', async () => {
+  await page.goto(`${origin}/#/c/${demo.kimaki.id}`)
+  const a = page.locator('.message').filter({ has: page.getByText('history line 255', { exact: true }) })
+  const b = page.locator('.message').filter({ has: page.getByText('history line 257', { exact: true }) })
+  const bars = page.getByRole('toolbar', { name: 'Message actions' })
+  await a.getByText('history line 255', { exact: true }).click()
+  expect(await a.evaluate((el) => el === document.activeElement)).toBe(true)
+  await b.getByText('history line 257', { exact: true }).hover()
+  await b.getByRole('toolbar').waitFor()
+  expect(await bars.count()).toBe(1)
+  await page.mouse.move(5, 5)
+  await expect.poll(() => bars.count()).toBe(0)
+  // A key on the still-focused message moves to its neighbour and exposes its actions.
+  await page.keyboard.press('ArrowDown')
+  await bars.waitFor()
+  await page.keyboard.press('Tab')
+  expect(await bars.evaluate((el) => el.contains(document.activeElement))).toBe(true)
+  await b.hover()
+  await b.getByRole('button', { name: 'More', exact: true }).click()
+  await page.mouse.move(5, 5)
+  await page.getByRole('menuitem', { name: 'Reply', exact: true }).click()
+  await page.getByRole('button', { name: 'Cancel reply' }).click()
+})
+
+test.skipIf(!ready)('history stays quiet on open and preserves the reader when older messages arrive', async () => {
+  const p = await page.context().newPage()
+  let release = () => {}
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  let older = 0
+  try {
+    await p.route('**/client/channels/*/messages?**', async (r) => {
+      if (new URL(r.request().url()).searchParams.has('before')) { older++; await gate }
+      await r.continue()
+    })
+    await p.goto(`${origin}/#/c/${demo.kimaki.id}`)
+    await p.getByText('history line 259').waitFor()
+    const log = p.locator('.chat-history')
+    const rows = log.locator('.message[id]')
+    const count = await rows.count()
+    expect(count).toBe(50)
+    await log.evaluate((el) => { el.scrollTop = 74 })
+    await p.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))))
+    expect(older).toBe(0)
+    expect(await log.getAttribute('data-scrolling')).toBeNull()
+    const box = (await log.boundingBox())!
+    await p.mouse.move(box.x + 120, box.y + 140)
+    await p.mouse.wheel(0, -10)
+    await expect.poll(() => older).toBe(1)
+    await p.getByText('Loading earlier messages…').waitFor()
+    // The user moves a little more while the request is outstanding.
+    const anchor = await log.evaluate((el) => {
+      el.scrollTop = 41
+      const top = el.getBoundingClientRect().top
+      const row = [...el.querySelectorAll('.message[id]')].find((n) => n.getBoundingClientRect().top >= top)!
+      return { id: row.id, y: row.getBoundingClientRect().top }
+    })
+    release()
+    await expect.poll(() => rows.count()).toBeGreaterThan(count)
+    expect(Math.abs((await p.locator(`#${anchor.id}`).boundingBox())!.y - anchor.y)).toBeLessThan(2)
+    expect(older).toBe(1)
+    await expect.poll(() => log.getAttribute('data-scrolling')).toBeNull()
+  } finally { release(); await p.close() }
 })
 
 test.skipIf(!ready)('history read far back is let go when the channel is left', async () => {

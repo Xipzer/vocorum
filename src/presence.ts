@@ -12,15 +12,23 @@ export type UserPresence = {
   status: PresenceStatus
   // People: each connected app window.
   devices?: Array<{ id: string; name: string; channel_id: string | null; visible: boolean }>
-  // Bots: each machine that logs in as this bot user.
-  machines?: Array<{ machine: string; online: boolean }>
+  // Bots: each machine that logs in as this bot user, with what it says it is doing.
+  machines?: Array<{ machine: string; online: boolean; activity: string | null; activity_at?: number }>
+  // A bot's custom status (op 3), the newest among the machines shown; null when cleared.
+  activity?: string | null
+}
+
+// The newest activity among these machines.
+function newestActivity(machines: NonNullable<UserPresence['machines']>) {
+  const set = machines.filter((m) => m.online && m.activity_at !== undefined).sort((a, b) => b.activity_at! - a.activity_at!)[0]
+  return set?.activity ?? null
 }
 
 export class Presence {
   private last = new Map<string, string>()
   private timer: NodeJS.Timeout | null = null
   private unobserve: (() => void) | null = null
-  private bots: Array<{ machine: string; token: string }> = []
+  private bots: Array<{ machine: string; token: string; userId: string | null }> = []
 
   constructor(private readonly hub: Hub) {}
 
@@ -36,7 +44,8 @@ export class Presence {
 
   // Bot tokens change only through the CLI.
   async reload() {
-    this.bots = (await this.hub.store.listBots()).filter((b) => !b.revokedAt).map((b) => ({ machine: b.machine, token: `${b.clientId}:${b.secretHash}` }))
+    const own = await this.hub.store.botUsers()
+    this.bots = (await this.hub.store.listBots()).filter((b) => !b.revokedAt).map((b) => ({ machine: b.machine, token: `${b.clientId}:${b.secretHash}`, userId: own.get(b.machine)?.userId ?? null }))
     this.changed()
   }
 
@@ -51,8 +60,15 @@ export class Presence {
     }
     for (const entry of out.values()) entry.status = entry.devices!.some((d) => d.visible) ? 'online' : 'idle'
     const connected = this.hub.twin.connectedGatewayTokens()
-    const machines = this.bots.map((b) => ({ machine: b.machine, online: connected.has(b.token) }))
-    out.set(botUserId, { user_id: botUserId, status: machines.some((m) => m.online) ? 'online' : 'offline', machines })
+    const activities = this.hub.twin.gatewayActivities()
+    // Each bot user with its machines: the shared bot, and machines that are their own bot user.
+    const byUser = new Map<string, NonNullable<UserPresence['machines']>>([[botUserId, []]])
+    for (const b of this.bots) {
+      const activity = connected.has(b.token) ? activities.get(b.token) : undefined
+      const userId = b.userId ?? botUserId
+      byUser.set(userId, [...(byUser.get(userId) ?? []), { machine: b.machine, online: connected.has(b.token), activity: activity?.text ?? null, ...(activity && { activity_at: activity.at }) }])
+    }
+    for (const [userId, machines] of byUser) out.set(userId, { user_id: userId, status: machines.some((m) => m.online) ? 'online' : 'offline', machines, activity: newestActivity(machines) })
     return out
   }
 
@@ -62,7 +78,7 @@ export class Presence {
     if (presence.machines) {
       const visible = await this.hub.visibleMachines(viewer)
       const machines = presence.machines.filter((m) => visible.has(m.machine.toLowerCase()))
-      return machines.length ? { ...presence, status: machines.some((m) => m.online) ? 'online' : 'offline', machines } : null
+      return machines.length ? { ...presence, status: machines.some((m) => m.online) ? 'online' : 'offline', activity: newestActivity(machines), machines: machines.map(({ activity_at: _at, ...m }) => m) } : null
     }
     if (presence.user_id === viewer) return presence
     const profile = profiles[presence.user_id]

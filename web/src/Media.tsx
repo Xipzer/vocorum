@@ -50,7 +50,8 @@ export type Viewable = { url: string; name: string; size?: number; width?: numbe
 
 export function Lightbox({ items, start, onClose }: { items: Viewable[]; start: number; onClose: () => void }) {
   const [index, setIndex] = useState(start)
-  const [zoom, setZoom] = useState<{ x: number; y: number } | null>(null)
+  const [zoom, setZoom] = useState<{ x: number; y: number; width: number; clientX: number; clientY: number } | null>(null)
+  const picture = useRef<HTMLImageElement>(null)
   const stage = useRef<HTMLDivElement>(null)
   const close = useRef<HTMLButtonElement>(null)
   const item = items[index] ?? items[0]!
@@ -78,9 +79,17 @@ export function Lightbox({ items, start, onClose }: { items: Viewable[]; start: 
   useLayoutEffect(() => {
     const el = stage.current
     if (!el || !zoom) return
-    el.scrollLeft = zoom.x * el.scrollWidth - el.clientWidth / 2
-    el.scrollTop = zoom.y * el.scrollHeight - el.clientHeight / 2
+    const r = picture.current?.getBoundingClientRect()
+    if (!r) return
+    el.scrollLeft += r.left + zoom.x * r.width - zoom.clientX
+    el.scrollTop += r.top + zoom.y * r.height - zoom.clientY
   }, [zoom])
+  const magnify = (x?: number, y?: number) => {
+    const r = picture.current?.getBoundingClientRect()
+    if (!r) return
+    const clientX = x ?? r.left + r.width / 2, clientY = y ?? r.top + r.height / 2
+    setZoom(zoom ? null : { x: (clientX-r.left)/r.width, y: (clientY-r.top)/r.height, width: r.width * 2, clientX, clientY })
+  }
   const stop = (e: { stopPropagation: () => void }) => e.stopPropagation()
   return createPortal(
     <div className="lightbox" role="dialog" aria-modal="true" aria-label={item.name} onClick={onClose}>
@@ -91,11 +100,9 @@ export function Lightbox({ items, start, onClose }: { items: Viewable[]; start: 
           {items.length > 1 && item.size != null && ' · '}
           {item.size != null && bytes(item.size)}
         </span>
-        <a className="icon-button" href={item.url} target="_blank" rel="noreferrer noopener" aria-label="Open original" title="Open original">
-          <Icon name="external" size={20} />
-        </a>
-        <a className="icon-button" href={item.url} download={item.name} aria-label="Download" title="Download">
-          <Icon name="download" size={20} />
+        {!item.video && <button className="viewer-action" onClick={() => magnify()}>{zoom ? 'Fit' : 'Zoom in'}</button>}
+        <a className="viewer-action" href={item.url} download={item.name} aria-label="Download" title="Download">
+          <Icon name="download" size={16} /> Download
         </a>
         <button ref={close} className="icon-button" onClick={onClose} aria-label="Close" title="Close (Esc)">
           <Icon name="close" size={20} />
@@ -107,12 +114,13 @@ export function Lightbox({ items, start, onClose }: { items: Viewable[]; start: 
         ) : (
           <img
             key={item.url}
+            ref={picture}
+            style={zoom ? { width: zoom.width, height: 'auto' } : undefined}
             src={item.url}
             alt={item.name}
             onClick={(e) => {
               e.stopPropagation()
-              const r = e.currentTarget.getBoundingClientRect()
-              setZoom(zoom ? null : { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height })
+              magnify(e.clientX, e.clientY)
             }}
           />
         )}

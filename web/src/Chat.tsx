@@ -6,10 +6,11 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { api, type Channel, type Component, type HubState, type InteractionResult, type Message } from './api.ts'
 import { Avatar, DmAvatar, machineIcon } from './Avatar.tsx'
 import { EmojiPicker } from './EmojiPicker.tsx'
-import { Components, type Interact } from './components.tsx'
+import { Components, uniqueGallery, type Interact } from './components.tsx'
 import { Attachments, Embeds, Forwarded, onlyEmbedLink, PollCard, stamp, Stickers } from './Media.tsx'
 import { Composer } from './Composer.tsx'
 import { Markdown, type MarkdownContext } from './markdown.tsx'
+import { modelReceipt } from './ModelBadge.tsx'
 import { dmName, dmUser, isDm, KEEP_AT_BOTTOM, machineOf, snowflakeGt, store, THREAD_TYPES, useStore } from './store.ts'
 import { workspaceWaiting } from './Workspace.tsx'
 import { Icon, type IconName } from './icons.tsx'
@@ -17,6 +18,9 @@ import { E, Emoji, emojify } from './emoji.tsx'
 import { clock, displayName, plain, wallHue, machineLabel, motion } from './text.ts'
 import { shareOrigin } from './native.ts'
 import { remindSheet, remindTime } from './remind.ts'
+import { useMessageHistory } from './useMessageHistory.ts'
+import { useMessageToolbar } from './useMessageToolbar.ts'
+import { PickRow, SelectionDock, useMessageSelection } from './MessageSelection.tsx'
 import { parsePermission, PermissionCard } from './Permission.tsx'
 import { RequestCard } from './Panels.tsx'
 import type { HubRequest } from './api.ts'
@@ -31,7 +35,6 @@ const editors = new Map<string, () => void>()
 
 const IS_COMPONENTS_V2 = 1 << 15
 const IS_VOICE = 1 << 13
-const EPHEMERAL = 1 << 6
 const SPEEDS = [1, 1.5, 2]
 
 function VoiceMessage({ url, duration, waveform }: { url: string; duration?: number; waveform?: string }) {
@@ -121,26 +124,28 @@ function toolName(line: string) {
   return plain(line.replace(/^-#\s*/, '').replace(/^(┣|◼︎|◼|■)\s*/, '')).split(/\s+/).slice(0, 2).join(' ')
 }
 
-function Steps({ messages, ctx }: { messages: Message[]; ctx: MarkdownContext }) {
+type RenderMessage = (m: Message, compact: boolean) => ReactNode
+function Steps({ messages, ctx, render, picked }: { messages: Message[]; ctx: MarkdownContext; render: RenderMessage; picked: Set<string> | null }) {
   const [open, setOpen] = useState(false)
+  const holdsPick = messages.some((m) => picked?.has(m.id))
   const lines = messages.flatMap((m) => m.content.split('\n').filter((l) => l.trim()))
   // The newest step says what the agent is doing: "Add the session.links route…".
   const latest = plain(lines.at(-1)!.replace(/^-#\s*/, '').replace(/^(┣|◼︎|◼|■)\s*/, ''))
   const summary = latest.replace(/^(shell|bash|write|edit|read|grep|glob|task|subagent|webfetch|websearch|thinking|todowrite|apply_patch)\s+/i, '') || toolName(lines.at(-1)!)
   return (
     <div className="message compact">
-      <button className={`steps${open ? ' open' : ''}`} onClick={() => setOpen(!open)} aria-expanded={open}>
+      <button className={`steps${open || holdsPick ? ' open' : ''}`} disabled={holdsPick} onClick={() => setOpen(!open)} aria-expanded={open || holdsPick}>
         <Icon name="chevron" size={14} />
         <b>
           {lines.length} {lines.length === 1 ? 'step' : 'steps'}
         </b>
         <span className="what">{summary}</span>
       </button>
-      {open && (
+      {(open || holdsPick) && (picked ? messages.map((m) => render(m, true)) : (
         <div className="steps-list">
           <Markdown text={lines.join('\n')} ctx={ctx} />
         </div>
-      )}
+      ))}
     </div>
   )
 }
@@ -218,6 +223,7 @@ function MessageItem({
   onError,
   botName,
   onSheet,
+  onSelect,
   current,
   feed = false,
 }: {
@@ -225,6 +231,7 @@ function MessageItem({
   current: boolean
   botName: string | null
   onSheet: (spec: SheetSpec) => void
+  onSelect?: () => void
   message: Message
   compact: boolean
   ctx: MarkdownContext
@@ -237,6 +244,15 @@ function MessageItem({
   onError: (text: string) => void
 }) {
   const [editing, setEditing] = useState<string | null>(null)
+  const answeredFrom = useRef<HTMLElement | null>(null)
+  useLayoutEffect(() => {
+    const button = answeredFrom.current
+    if (!button) return
+    answeredFrom.current = null
+    if (button.isConnected || document.activeElement !== document.body) return
+    const row = document.getElementById(`m-${message.id}`)
+    ;(row?.querySelector<HTMLElement>('.select-trigger:not(:disabled)') ?? row)?.focus({ preventScroll: true })
+  }, [message.components, message.id])
   const [picker, setPicker] = useState<DOMRect | null>(null)
   useEffect(() => {
     editors.set(message.id, () => {
@@ -245,15 +261,7 @@ function MessageItem({
     })
     return () => void editors.delete(message.id)
   }, [message.id, message.content])
-  // The hover toolbar exists only while a pointer or focus is on the message: a long
-  // channel would otherwise hold a dozen buttons per message.
-  const [hot, setHot] = useState(false)
-  const warm = {
-    onPointerEnter: (e: React.PointerEvent) => e.pointerType !== 'touch' && setHot(true),
-    onPointerLeave: (e: React.PointerEvent) => !e.currentTarget.contains(document.activeElement) && setHot(false),
-    onFocus: () => setHot(true),
-    onBlur: (e: React.FocusEvent) => !e.currentTarget.contains(e.relatedTarget as Node | null) && !e.currentTarget.matches(':hover') && setHot(false),
-  }
+  const { hot, warm } = useMessageToolbar()
   // Reactions toggle like Discord's: yours lights up; clicking it again (on the message or
   // the toolbar) takes it off.
   const mineOn = (emoji: string) => Boolean(message.reactions_summary?.find((r) => r.emoji === emoji)?.me)
@@ -273,6 +281,7 @@ function MessageItem({
   const embeds = message.embeds.filter((embed) => !feed || !embed.type || embed.type === 'rich')
   const used = message.interaction_metadata ?? message.interaction
   const usedName = message.interaction_metadata?.name ?? message.interaction?.name
+  const receipt = message.author.bot && usedName === 'model' && !message.components?.length ? modelReceipt(message.content) : null
   // Kimaki's permission prompt shows as an approval card.
   const ask = message.author.bot ? parsePermission(message.content) : null
   // A link to one of the hub's requests (an agent filed it) carries the request's card,
@@ -280,15 +289,19 @@ function MessageItem({
   const requestIds = message.author.bot ? [...new Set([...message.content.matchAll(/#\/requests\/([0-9a-f]{12})\b/g)].map((m) => m[1]!))] : []
   const allRequests = useStore((d) => (requestIds.length ? d.requests : NO_REQUESTS))
   const linked = requestIds.length ? allRequests.filter((r) => requestIds.includes(r.id)) : NO_REQUESTS
-  const needs = !ask && current && message.author.bot && (hasOpenComponents(message.components) || (message.content.includes(`<@${state.me.id}>`) && !FOOTER.test(message.content)))
+  const privateReply = message.private_reply
+  const needs = !ask && !used && !privateReply && current && message.author.bot && (hasOpenComponents(message.components) || (message.content.includes(`<@${state.me.id}>`) && !FOOTER.test(message.content)))
   // Kimaki's errors start with a cross: they read red, and an actionable one gets a red band.
   const failed = message.author.bot && /^\s*[×✗✕❌]\s/.test(message.content)
   const interact: Interact = async (body) => {
+    if (body.type === 'select' && document.activeElement instanceof HTMLElement && document.activeElement.matches('.select-trigger')) answeredFrom.current = document.activeElement
     try {
       const result = await api.interaction({ ...body, channelId, messageId: message.id })
       onResult(result, message.id)
+      if (!result.acknowledged) return false
     } catch (e) {
       onError(e instanceof Error ? e.message : String(e))
+      return false
     }
   }
   const openMenu = (at: SheetAt) =>
@@ -300,6 +313,7 @@ function MessageItem({
         [
           { label: 'Add reaction', icon: 'smile', run: () => setPicker('rect' in at ? at.rect : new DOMRect(at.x, at.y, 0, 0)) },
           { label: 'Reply', icon: 'reply', run: () => onReply(message) },
+          ...(onSelect ? [{ label: 'Select messages', icon: 'check' as const, run: onSelect }] : []),
         ],
         [
           ...(message.content ? [{ label: 'Copy text', icon: 'copy' as const, run: () => void navigator.clipboard?.writeText(message.content) }] : []),
@@ -389,7 +403,7 @@ function MessageItem({
     )
   }
   return (
-    <div id={`m-${message.id}`} className={`message${compact ? ' compact' : ''}${mine ? ' you' : ''}${needs ? ' needs' : ''}${failed ? ' failed' : ''}`} {...press} {...warm} tabIndex={-1} onKeyDown={onKey} onClick={markOnAlt}>
+    <div id={`m-${message.id}`} className={`message${compact ? ' compact' : ''}${mine ? ' you' : ''}${needs ? ' needs' : ''}${failed ? ' failed' : ''}${privateReply ? ' private-reply' : ''}`} {...(privateReply ? {} : press)} {...warm} tabIndex={-1} onKeyDown={privateReply ? undefined : onKey} onClick={privateReply ? undefined : markOnAlt}>
       {replyId &&
         (reference ? (
           <div className="reply-preview" onClick={() => onJump(reference.id)}>
@@ -427,7 +441,7 @@ function MessageItem({
               <E>{name}</E>
             </span>
             {message.author.bot && <span className="bot-tag">BOT</span>}
-            <span className="message-time">{clock(message.timestamp)}</span>
+            <span className="message-time" title={receipt && message.edited_timestamp ? `Edited ${stamp(message.edited_timestamp)}` : undefined}>{clock(message.timestamp)}</span>
           </div>
         )}
         {editing !== null ? (
@@ -447,9 +461,9 @@ function MessageItem({
             <div className="subtext">Esc to cancel, Enter to save</div>
           </div>
         ) : (
-          ask ? <PermissionCard ask={ask} components={message.components} interact={interact} /> : !v2 && !onlyEmbedLink(message.content, embeds) && <Markdown text={message.content} ctx={ctx} />
+          ask ? <PermissionCard ask={ask} components={message.components} interact={interact} /> : !v2 && !onlyEmbedLink(message.content, embeds) && (receipt || <Markdown text={message.content} ctx={ctx} runFooter={message.author.bot} />)
         )}
-        {editing === null && message.edited_timestamp && !message.author.bot && (
+        {editing === null && !receipt && message.edited_timestamp && (!message.author.bot || used) && (
           <span className="edited-tail" title={`Edited ${stamp(message.edited_timestamp)}`}>
             (edited)
           </span>
@@ -466,8 +480,8 @@ function MessageItem({
             ))}
           </div>
         )}
-        {message.components?.length && !ask ? <Components components={message.components} ctx={ctx} interact={interact} /> : null}
-        {((message.flags ?? 0) & EPHEMERAL) !== 0 && <div className="ephemeral">Only you can see this</div>}
+        {message.components?.length && !ask ? <Components components={uniqueGallery(message.components, message.attachments)} ctx={ctx} interact={interact} /> : null}
+        {privateReply && <div className="ephemeral"><Icon name="eye" size={14} /><span>Only you can see this</span><span aria-hidden="true">·</span><button onClick={() => void api.dismissReply(channelId, message.id).then(() => store.dismissPrivateReply(channelId, message.id), (e: Error) => onError(e.message))}>Dismiss message</button></div>}
         {message.reactions_summary?.length ? (
           <div className="reactions">
             {message.reactions_summary.map((r) => (
@@ -484,7 +498,7 @@ function MessageItem({
         {picker && <EmojiPicker anchor={picker} guildId={(state.channels.find((c) => c.id === channelId) ?? state.threads.find((c) => c.id === channelId))?.guild_id ?? state.guild.id} onPick={(e) => !mineOn(e) && toggle(e)} onClose={() => setPicker(null)} />}
         {!feed && (message as Message & { thread?: { id: string } }).thread?.id !== channelId && message.id !== channelId && <StarterThread messageId={message.id} threadId={(message as Message & { thread?: { id: string } }).thread?.id} state={state} ctx={ctx} />}
       </div>
-      {hot && <div className="message-actions" role="toolbar" aria-label="Message actions">
+      {hot && !privateReply && <div className="message-actions" role="toolbar" aria-label="Message actions">
         {QUICK.map((emoji) => (
           <button key={emoji} className={`quick${mineOn(emoji) ? ' on' : ''}`} onClick={() => toggle(emoji)} aria-pressed={mineOn(emoji)} aria-label={`React ${emoji}`} title={mineOn(emoji) ? `Remove ${emoji}` : `React ${emoji}`}>
             <Emoji emoji={emoji} />
@@ -592,6 +606,27 @@ const dayLabel = (iso: string) => {
   return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })
 }
 
+// The callback and the first visible reply are two different events. A late
+// reply can be fetched without sending the command (and its side effects) twice.
+function CommandReceipt({ name, id, channelId, dismiss }: { name: string; id: string; channelId: string; dismiss: () => void }) {
+  const [late, setLate] = useState(false)
+  const [checking, setChecking] = useState(false)
+  const [error, setError] = useState(false)
+  useEffect(() => {
+    const timer = window.setTimeout(() => setLate(true), 10_000)
+    return () => window.clearTimeout(timer)
+  }, [])
+  const refresh = async () => {
+    setChecking(true); setError(false)
+    try { await store.loadMessages(channelId, { refresh: true }) } catch { setError(true) } finally { setChecking(false) }
+  }
+  return <div className="footer-line command-receipt">
+    <span role="status">{error ? 'Could not check the thread.' : late ? `The bot accepted /${name}. No reply yet.` : `Waiting for /${name}…`}</span>
+    {late && <><small>Ref {id}</small><button className="link-button" disabled={checking} onClick={() => void refresh()}>{checking ? 'Checking…' : 'Check for reply'}</button></>}
+    <button className="icon-button" aria-label="Dismiss command status" onClick={dismiss}><Icon name="close" size={14} /></button>
+  </div>
+}
+
 const when = (iso: string) => {
   const label = dayLabel(iso)
   return label === 'Today' || label === 'Yesterday' ? label.toLowerCase() : `on ${label}`
@@ -608,13 +643,13 @@ function items(list: Message[]): Item[] {
       prev = undefined
     }
     const last = out.at(-1)
-    if (isToolOnly(message)) {
+    if (!message.private_reply && !message.interaction_metadata && isToolOnly(message)) {
       if (last?.kind === 'steps') last.messages.push(message)
       else out.push({ kind: 'steps', id: message.id, messages: [message] })
       prev = message
       continue
     }
-    const compact = Boolean(prev && prev.author.id === message.author.id && !message.message_reference && !message.interaction_metadata && !message.interaction && (prev.type === 0 || prev.type === 19 || prev.type === 20) && new Date(message.timestamp).getTime() - new Date(prev.timestamp).getTime() < 7 * 60_000)
+    const compact = Boolean(prev && !prev.private_reply && !message.private_reply && prev.author.id === message.author.id && !message.message_reference && !message.interaction_metadata && !message.interaction && (prev.type === 0 || prev.type === 19 || prev.type === 20) && new Date(message.timestamp).getTime() - new Date(prev.timestamp).getTime() < 7 * 60_000)
     out.push({ kind: 'message', message, compact })
     prev = message
   }
@@ -625,6 +660,7 @@ type FeedItem = Item | { kind: 'run'; id: string; messages: Message[] }
 
 // The headline shape of a post, numbers and hashes blanked: "Deployed build #".
 function signature(m: Message): string {
+  if (m.private_reply || m.interaction_metadata || m.interaction) return ''
   const head = (m.content || m.embeds[0]?.title || m.embeds[0]?.description || '').split('\n').find((l) => l.trim()) ?? ''
   return plain(head).toLowerCase().replace(/0x[0-9a-f]+|[\d.,:%$£€+-]+/g, '#').replace(/\s+/g, ' ').slice(0, 40)
 }
@@ -663,7 +699,7 @@ function ago(iso: string): string {
 }
 
 // The output panel: the newest pinned bot message, kept on top and updated in place.
-function usePanel(channelId: string, output: boolean): Message | null {
+function usePanel(channelId: string, output: boolean) {
   const [pins, setPins] = useState<Message[]>([])
   const list = useStore((d) => d.messages[channelId]?.list)
   const pinnedKey = (list ?? []).filter((m) => m.pinned).map((m) => m.id).join(',')
@@ -677,23 +713,24 @@ function usePanel(channelId: string, output: boolean): Message | null {
   }, [channelId, output, pinnedKey])
   const pin = pins.find((m) => m.author.bot)
   // Prefer the loaded copy: it carries live edits.
-  return pin ? (list?.find((m) => m.id === pin.id) ?? pin) : null
+  return [pin ? (list?.find((m) => m.id === pin.id) ?? pin) : null, (ids: readonly string[]) => setPins((prev) => prev.filter((m) => !ids.includes(m.id)))] as const
 }
 
 // Look-alike posts folded behind the newest: "83 more like this".
-function Run({ messages, render }: { messages: Message[]; render: (m: Message, compact: boolean) => ReactNode }) {
+function Run({ messages, render, picked }: { messages: Message[]; render: RenderMessage; picked: Set<string> | null }) {
   const [open, setOpen] = useState(false)
   const latest = messages.at(-1)!
   const earlier = messages.slice(0, -1)
+  const holdsPick = earlier.some((m) => picked?.has(m.id))
   return (
     <div className="run">
-      <button className="run-fold" onClick={() => setOpen(!open)} aria-expanded={open}>
+      <button className="run-fold" disabled={holdsPick} onClick={() => setOpen(!open)} aria-expanded={open || holdsPick}>
         <Icon name="chevron" size={14} />
         <span className="num">
-          {open ? 'Hide' : `${earlier.length} more like this`} · since {clock(earlier[0]!.timestamp)}
+          {open || holdsPick ? 'Hide' : `${earlier.length} more like this`} · since {clock(earlier[0]!.timestamp)}
         </span>
       </button>
-      {open && earlier.map((m) => render(m, true))}
+      {(open || holdsPick) && earlier.map((m) => render(m, true))}
       {render(latest, false)}
     </div>
   )
@@ -738,6 +775,7 @@ export function Chat({
   const waiting = workspaceWaiting(entry?.list, state.me.id)
   const typing = useStore((d) => d.typing[channel.id])
   const [replyTo, setReplyTo] = useState<Message | null>(null)
+  const [receipts, setReceipts] = useState<Array<{ id: string; name: string; channelId: string }>>([])
   const [sheet, setSheet] = useState<SheetSpec | null>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
@@ -752,7 +790,7 @@ export function Chat({
   const scroller = useRef<HTMLDivElement>(null)
   const content = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
-  const previousHeight = useRef(0)
+  const history = useMessageHistory(channel.id, entry, scroller, pinned)
   const typingSince = useRef<Record<string, number>>({})
   const isThread = THREAD_TYPES.has(channel.type)
   const manageThread = isThread && (can(P.MANAGE_THREADS, channel) || channel.owner_id === state.me.id)
@@ -774,6 +812,7 @@ export function Chat({
       title,
       subtitle: [parent ? `#${parent.name}` : null, project.topic].filter(Boolean).join(' · ') || undefined,
       groups: [
+        !selection.picked && (list.some(selectable) || (panel && selectable(panel))) ? [{ label: 'Select messages', icon: 'check' as const, run: () => selection.start() }] : [],
         (phone()
           ? [
               { label: 'Threads', icon: 'threads', run: onThreads },
@@ -803,7 +842,10 @@ export function Chat({
   // Mentions waiting in other channels, on the back button like Discord's.
   const elsewhere = useStore((d) => Object.entries(d.mentions).reduce((sum, [id, n]) => (id === channel.id ? sum : sum + n), 0))
   const output = useStore((d) => d.output[channel.id] ?? Boolean(channel.thread_metadata?.locked))
-  const panel = usePanel(channel.id, output)
+  const [panel, removePins] = usePanel(channel.id, output)
+  const selection = useMessageSelection(channel.id, (ids) => { store.removeMessages(channel.id, ids); removePins(ids) })
+  const manageMessages = can(P.MANAGE_MESSAGES, channel)
+  const selectable = (m: Message) => m.channel_id === channel.id && !m.private_reply && (m.author.id === state.me.id || manageMessages)
   // Read up to here when the thread was opened: the "New messages" line goes after it.
   // Marking a message unread moves the line to it.
   const heldAt = useStore((d) => d.held[channel.id])
@@ -813,7 +855,13 @@ export function Chat({
   useEffect(() => store.show(channel.id), [channel.id])
   const parent = isThread ? state.channels.find((c) => c.id === channel.parent_id) : undefined
   const project = parent ?? channel
-  const list = entry?.list ?? []
+  const privateReplies = useStore((d) => d.privateReplies[channel.id])
+  const list = useMemo(() => privateReplies?.length ? [...entry?.list ?? [], ...privateReplies].sort((a, b) => snowflakeGt(a.id, b.id) ? 1 : -1) : entry?.list ?? [], [entry?.list, privateReplies])
+  useEffect(() => {
+    if (!receipts.length) return
+    const keep = receipts.filter((r) => !list.some((m) => (m.interaction_metadata ?? m.interaction)?.id === r.id))
+    if (keep.length !== receipts.length) setReceipts(keep)
+  }, [list, receipts])
   const category = state.channels.find((c) => c.id === project.parent_id)
   const botName = machineOf(state, channel)
 
@@ -856,9 +904,7 @@ export function Chat({
   useLayoutEffect(() => {
     const el = scroller.current
     if (!el) return
-    if (pinned.current) el.scrollTop = el.scrollHeight
-    else if (previousHeight.current && el.scrollTop < 50) el.scrollTop = el.scrollHeight - previousHeight.current
-    previousHeight.current = el.scrollHeight
+    if (pinned.current && el.scrollHeight - el.clientHeight - el.scrollTop > 1) el.scrollTop = el.scrollHeight
     measure(el)
   }, [list])
 
@@ -881,7 +927,7 @@ export function Chat({
     const inner = content.current
     if (!el || !inner) return
     const observer = new ResizeObserver(() => {
-      if (pinned.current) el.scrollTop = el.scrollHeight
+      if (pinned.current && el.scrollHeight - el.clientHeight - el.scrollTop > 1) el.scrollTop = el.scrollHeight
     })
     observer.observe(inner)
     observer.observe(el)
@@ -938,8 +984,9 @@ export function Chat({
 
   const byId = new Map(list.map((m) => [m.id, m]))
   // Only the current turn can still be waiting: an answer from the owner settles everything above it.
-  const firstNew = seenAtOpen ? list.find((m) => snowflakeGt(m.id, seenAtOpen) && (m.author.id !== state.me.id || heldAt))?.id : undefined
-  const newCount = seenAtOpen ? list.filter((m) => snowflakeGt(m.id, seenAtOpen) && (m.author.id !== state.me.id || heldAt)).length : 0
+  const unread = seenAtOpen ? entry?.list.filter((m) => snowflakeGt(m.id, seenAtOpen) && (m.author.id !== state.me.id || heldAt)) : undefined
+  const firstNew = unread?.[0]?.id
+  const newCount = unread?.length ?? 0
   const firstNewAt = firstNew ? byId.get(firstNew)?.timestamp : undefined
   const lastOwnerId = list.findLast((m) => m.author.id === state.me.id && (m.type === 0 || m.type === 19))?.id
   const lastEditable = list.findLast((m) => m.author.id === state.me.id && (m.type === 0 || m.type === 19) && m.content && !((m.flags ?? 0) & IS_VOICE))?.id
@@ -967,8 +1014,18 @@ export function Chat({
   // Why this channel takes no messages, with the machine named as everywhere else.
   const note = channel.note ? (channel.machine ? channel.note.replace(channel.machine, machineLabel(channel.machine)) : channel.note) : null
 
+  const message = (m: Message, compact: boolean, inPanel = false) => {
+    const allowed = selectable(m)
+    const row = <MessageItem key={m.id} feed={output} current={!inPanel && (!lastOwnerId || snowflakeGt(m.id, lastOwnerId))} botName={botName} onSheet={setSheet} onSelect={allowed ? () => selection.start(m.id) : undefined} message={m} compact={compact} ctx={ctx} state={state} channelId={channel.id} byId={byId} onReply={setReplyTo} onJump={(id) => void jump(id)} onResult={onResult} onError={setToast} />
+    return selection.picked ? <PickRow key={m.id} message={m} allowed={allowed} selection={selection}>{row}</PickRow> : row
+  }
+
   return (
-    <section className={`chat${split ? ' split' : ''}${adminHere ? ' admin' : ''}`} style={{ '--wall': adminHere ? '245 166 35' : wallHue(project.name ?? '') } as CSSProperties}>
+    <section ref={selection.pane} className={`chat${split ? ' split' : ''}${adminHere ? ' admin' : ''}${selection.picked ? ' picking' : ''}`} style={{ '--wall': adminHere ? '245 166 35' : wallHue(project.name ?? '') } as CSSProperties} onKeyDownCapture={(e) => {
+      if (e.key === 'Escape' && selection.picked && !sheet && !selection.review && !document.querySelector('.overlay,.sheet')) {
+        e.preventDefault(); e.stopPropagation(); selection.cancel()
+      }
+    }}>
       <header className="chat-header" ref={header}>
         {!split && <button className="icon-button menu" onClick={onMenu} aria-label="Channels">
           <Icon name="back" size={22} className="phone-only" />
@@ -1090,7 +1147,7 @@ export function Chat({
       </header>
       {output && panel && (
         <div className="output-panel">
-          <MessageItem feed current={false} botName={botName} onSheet={setSheet} message={panel} compact={false} ctx={ctx} state={state} channelId={channel.id} byId={byId} onReply={setReplyTo} onJump={(id) => void jump(id)} onResult={onResult} onError={setToast} />
+          {message(panel, false, true)}
           <div className="panel-fresh num">Updated {ago(panel.edited_timestamp ?? panel.timestamp)}</div>
         </div>
       )}
@@ -1115,10 +1172,15 @@ export function Chat({
         )}
       </div>
       <div
-        className={`messages${output ? ' feed' : ''}`}
+        className={`messages chat-history${output ? ' feed' : ''}`}
         ref={scroller}
         tabIndex={0}
         aria-label="Messages"
+        onWheel={history.onWheel}
+        onTouchStart={history.onTouchStart}
+        onTouchMove={history.onTouchMove}
+        onPointerDown={history.onPointerDown}
+        onKeyDownCapture={(e) => { if (!e.altKey && !e.ctrlKey && !e.metaKey && !(e.target as Element).closest('textarea,input,[role=dialog]')) history.key(e.key, e.shiftKey) }}
         onKeyDown={(e) => {
           // Arrows on the list itself pick the newest message on screen; from there they move.
           if (e.target !== e.currentTarget || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') || e.altKey || e.metaKey || e.ctrlKey) return
@@ -1133,15 +1195,15 @@ export function Chat({
           const el = e.currentTarget
           pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
           // Back at the newest after reading far back: let the old pages go.
-          if (pinned.current && list.length > 2 * KEEP_AT_BOTTOM) store.trimMessages(channel.id, KEEP_AT_BOTTOM)
+          if (pinned.current && !selection.picked && list.length > 2 * KEEP_AT_BOTTOM) store.trimMessages(channel.id, KEEP_AT_BOTTOM)
           measure(el)
-          if (el.scrollTop < 200 && entry?.hasMore && !entry.loading) {
-            previousHeight.current = el.scrollHeight
-            void store.loadMessages(channel.id, { older: true })
-          }
+          history.scrolled(el)
         }}
       >
         <div ref={content}>
+          {entry?.hasMore && entry.list.length > 0 && <div className="history-edge" aria-live="polite"><button aria-label="Load earlier messages" disabled={history.state === 'loading'} onClick={() => void history.older()}>
+            <Icon name="back" size={14} /><span>{history.state === 'loading' ? 'Loading earlier messages…' : history.state === 'error' ? 'Could not load history. Try again' : 'Load earlier messages'}</span>
+          </button></div>}
           {entry && !entry.hasMore && dm && (
             <div className="channel-start dm-start">
               <DmAvatar channel={channel} size="panel" />
@@ -1175,11 +1237,8 @@ export function Chat({
             </div>
           )}
           {(output ? feedItems(list.filter((m) => m.id !== panel?.id && m.type !== 6)) : items(list)).map((item) => {
-            const message = (m: Message, compact: boolean) => (
-              <MessageItem key={m.id} feed={output} current={!lastOwnerId || snowflakeGt(m.id, lastOwnerId)} botName={botName} onSheet={setSheet} message={m} compact={compact} ctx={ctx} state={state} channelId={channel.id} byId={byId} onReply={setReplyTo} onJump={(id) => void jump(id)} onResult={onResult} onError={setToast} />
-            )
             const render = () => {
-              if (item.kind === 'steps') return <Steps key={item.id} messages={item.messages} ctx={ctx} />
+              if (item.kind === 'steps') return <Steps key={item.id} messages={item.messages} ctx={ctx} render={message} picked={selection.picked} />
               if (item.kind === 'day')
                 return (
                   <div key={item.id} className="day-divider">
@@ -1189,7 +1248,7 @@ export function Chat({
                     </span>
                   </div>
                 )
-              if (item.kind === 'run') return <Run key={item.id} messages={item.messages} render={message} />
+              if (item.kind === 'run') return <Run key={item.id} messages={item.messages} render={message} picked={selection.picked} />
               return message(item.message, item.compact && item.message.id !== firstNew)
             }
             const holds = firstNew && (item.kind === 'message' ? item.message.id === firstNew : item.kind !== 'day' && item.messages.some((m) => m.id === firstNew))
@@ -1214,6 +1273,7 @@ export function Chat({
           </div>
         )}
       </div>
+      {selection.picked && <SelectionDock selection={selection} />}
       {output || note ? (
         <div className="output-bar">
           {toast ? (
@@ -1285,6 +1345,7 @@ export function Chat({
               </button>
             </div>
           )}
+          {receipts.filter((r) => r.channelId === channel.id).map((r) => <CommandReceipt key={r.id} {...r} dismiss={() => setReceipts((rows) => rows.filter((x) => x.id !== r.id))} />)}
           <Composer
             channelId={channel.id}
             placeholder={adminHere && !isThread ? 'Ask your admin agent' : `Message ${dm ? `@${title}` : isThread ? clip(title, window.matchMedia('(max-width: 767px)').matches ? 22 : 36) : `#${channel.name ?? ''}`}`}
@@ -1292,7 +1353,10 @@ export function Chat({
             channels={state.channels.filter((c) => c.type === 0 && (c.guild_id ?? state.guild.id) === (channel.guild_id ?? state.guild.id)).map((c) => ({ id: c.id, name: c.name ?? '' }))}
             replyTo={replyTo}
             onCancelReply={() => setReplyTo(null)}
-            onResult={(result) => onResult(result)}
+            onResult={(result, name) => {
+              if (result.acknowledged && (result.type === 4 || result.type === 5)) setReceipts((rows) => [...rows.slice(-4), { id: result.interactionId, name, channelId: channel.id }])
+              onResult(result)
+            }}
             onError={setToast}
           />
         </div>

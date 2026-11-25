@@ -47,6 +47,10 @@ interface ConnectedClient {
   address: string
   // The Host it connected with, for its resume URL.
   host?: string
+  // The bot user this connection is: the shared bot, or the client's own user.
+  userId?: string
+  // What the bot says it is doing (op 3: a custom status, else its activity name), and when it said so.
+  activity?: { text: string | null; at: number }
 }
 
 // Result of authenticating a token: the guilds it may see, null = all guilds,
@@ -95,6 +99,13 @@ export interface GatewayState {
   guilds: GatewayGuildState[]
 }
 
+// What a bot says it is doing: a custom status (type 4) gives its state, else the first activity's name.
+function activityText(activities: ReadonlyArray<{ type?: number; name?: string; state?: string | null }>): string | null {
+  const custom = activities.find((a) => a.type === 4)
+  const raw = custom ? (custom.state ?? null) : (activities[0]?.name ?? null)
+  return typeof raw === 'string' && raw.trim() ? raw.trim().slice(0, 128) : null
+}
+
 export class DiscordGateway {
   wss: WebSocketServer
   clients: ConnectedClient[] = []
@@ -113,6 +124,7 @@ export class DiscordGateway {
   private gatewayUrlFor: ((host: string | undefined) => string | undefined) | null
   private tokenKey: (token: string) => string
   private directAudience: ((channelId: string) => ReadonlySet<string> | null) | null
+  private clientUser: ((token: string) => string | null) | null
 
   constructor({
     httpServer,
@@ -128,6 +140,7 @@ export class DiscordGateway {
     resumeUrl,
     tokenKey,
     directAudience,
+    clientUser,
   }: {
     httpServer: http.Server
     port: number
@@ -147,7 +160,10 @@ export class DiscordGateway {
     tokenKey?: (token: string) => string
     // Direct message channels: the client keys that may see one (null: not one).
     directAudience?: (channelId: string) => ReadonlySet<string> | null
+    // A client token that is its own bot user (null: the shared bot).
+    clientUser?: (token: string) => string | null
   }) {
+    this.clientUser = clientUser ?? null
     this.tokenKey = tokenKey ?? ((token) => token)
     this.directAudience = directAudience ?? null
     this.port = port
@@ -222,6 +238,17 @@ export class DiscordGateway {
   }
 
   // Tokens with at least one identified connection right now.
+  // Each identified client token's latest activity text (null: cleared).
+  connectedActivities(): Map<string, { text: string | null; at: number }> {
+    const out = new Map<string, { text: string | null; at: number }>()
+    for (const client of this.clients) {
+      if (!client.identified || !client.token || !client.activity) continue
+      const known = out.get(client.token)
+      if (!known || known.at < client.activity.at) out.set(client.token, client.activity)
+    }
+    return out
+  }
+
   connectedTokens(): Set<string> {
     return new Set(this.clients.flatMap((client) => (client.identified && client.token ? [client.token] : [])))
   }
@@ -232,6 +259,13 @@ export class DiscordGateway {
       if (client.token === token) client.ws.close(4004, 'Authentication failed')
     }
     this.offlineEvents.delete(token)
+  }
+
+  // Ends a client token's sessions so it identifies again (4009: session timed out, a fresh session).
+  reidentifyToken(token: string): void {
+    for (const client of this.clients) {
+      if (client.token === token) client.ws.close(4009, 'Session timed out')
+    }
   }
 
   broadcast<T>(event: string, data: T): void {
@@ -279,6 +313,11 @@ export class DiscordGateway {
     this.broadcast(GatewayDispatchEvents.MessageCreate, data)
   }
 
+  // Everyone in a voice channel now (people and bots).
+  currentVoiceStates(): APIVoiceState[] {
+    return [...this.voiceStates.values()]
+  }
+
   // Moves a user (or the bot) into a voice channel, or out with channelId null,
   // and broadcasts VOICE_STATE_UPDATE to the guild.
   setVoiceState({
@@ -321,23 +360,24 @@ export class DiscordGateway {
     { guildId, channelId, selfMute, selfDeaf }: { guildId: string; channelId: string | null; selfMute: boolean; selfDeaf: boolean },
   ): void {
     if (!this.voice) return
+    const userId = client.userId ?? this.botUserId
     if (client.guilds && !client.guilds.has(guildId)) return
-    const current = this.voiceStates.get(`${guildId}:${this.botUserId}`)
+    const current = this.voiceStates.get(`${guildId}:${userId}`)
     // Like Discord: a join for the channel this session is already in only
     // updates mute/deaf, with no new voice token. No change sends no events.
     if (channelId && current?.channel_id === channelId && current.session_id === client.sessionId) {
       if (current.self_mute === selfMute && current.self_deaf === selfDeaf) return
-      this.setVoiceState({ guildId, channelId, userId: this.botUserId, sessionId: client.sessionId, selfMute, selfDeaf })
+      this.setVoiceState({ guildId, channelId, userId: userId, sessionId: client.sessionId, selfMute, selfDeaf })
       return
     }
     if (!channelId) {
       if (!current) return
-      this.voice.revoke({ guildId, userId: this.botUserId })
-      this.setVoiceState({ guildId, channelId: null, userId: this.botUserId, sessionId: client.sessionId })
+      this.voice.revoke({ guildId, userId: userId })
+      this.setVoiceState({ guildId, channelId: null, userId: userId, sessionId: client.sessionId })
       return
     }
-    this.setVoiceState({ guildId, channelId, userId: this.botUserId, sessionId: client.sessionId, selfMute, selfDeaf })
-    const token = this.voice.grant({ guildId, channelId, userId: this.botUserId, sessionId: client.sessionId })
+    this.setVoiceState({ guildId, channelId, userId: userId, sessionId: client.sessionId, selfMute, selfDeaf })
+    const token = this.voice.grant({ guildId, channelId, userId: userId, sessionId: client.sessionId })
     const server: GatewayVoiceServerUpdateDispatchData = { token, guild_id: guildId, endpoint: this.voice.endpoint }
     // Only the session that asked gets the voice token.
     this.sendDispatch(client, GatewayDispatchEvents.VoiceServerUpdate, server)
@@ -426,9 +466,10 @@ export class DiscordGateway {
       if (client.identified) this.connectionsChanged()
       // The bot leaves voice when the gateway session that joined ends.
       for (const state of [...this.voiceStates.values()]) {
-        if (state.user_id !== this.botUserId || state.session_id !== client.sessionId || !state.guild_id) continue
-        this.voice?.revoke({ guildId: state.guild_id, userId: this.botUserId })
-        this.setVoiceState({ guildId: state.guild_id, channelId: null, userId: this.botUserId, sessionId: client.sessionId })
+        const userId = client.userId ?? this.botUserId
+        if (state.user_id !== userId || state.session_id !== client.sessionId || !state.guild_id) continue
+        this.voice?.revoke({ guildId: state.guild_id, userId })
+        this.setVoiceState({ guildId: state.guild_id, channelId: null, userId, sessionId: client.sessionId })
       }
     })
   }
@@ -457,9 +498,22 @@ export class DiscordGateway {
         }
         client.guilds = guilds
         client.token = this.tokenKey(bareToken)
+        client.userId = this.clientUser?.(bareToken) ?? this.botUserId
+        // The presence it identifies with (discord.js: the presence client option).
+        const initial = activityText(Array.isArray(payload.d.presence?.activities) ? payload.d.presence.activities : [])
+        if (initial) client.activity = { text: initial, at: Date.now() }
         client.identified = true
         client.intents = intents
         await this.sendReadySequence(client)
+        this.connectionsChanged()
+        break
+      }
+      case GatewayOpcodes.PresenceUpdate: {
+        if (!client.identified) return
+        const activities = Array.isArray(payload.d.activities) ? payload.d.activities : []
+        const text = activityText(activities)
+        if (client.activity?.text === text) return
+        client.activity = { text, at: Date.now() }
         this.connectionsChanged()
         break
       }
@@ -479,9 +533,11 @@ export class DiscordGateway {
       guilds: loaded.guilds.filter((guild) => !client.guilds || client.guilds.has(guild.id)),
     }
 
+    // A client with its own bot user is that user (a member of its guilds); the application stays shared.
+    const own = client.userId && client.userId !== state.botUser.id ? state.guilds.flatMap((g) => g.members).find((m) => m.user?.id === client.userId)?.user : undefined
     const readyData: GatewayReadyDispatchData = {
       v: 10,
-      user: state.botUser,
+      user: own ?? state.botUser,
       guilds: state.guilds.map((g) => ({
         id: g.id,
         unavailable: true,

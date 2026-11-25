@@ -15,6 +15,8 @@ export const KEEP_AT_BOTTOM = 200
 type Data = {
   state: HubState | null
   messages: Record<string, ChannelMessages>
+  // In conversation order, but never used as a history cursor or counted as unread.
+  privateReplies: Record<string, Message[]>
   // channel id -> user id -> typing until (ms)
   typing: Record<string, Record<string, number>>
   online: boolean
@@ -62,7 +64,7 @@ export function dmName(c: Channel, me: string) {
 }
 
 class Store {
-  data: Data = { state: null, messages: {}, typing: {}, online: false, seen: JSON.parse(localStorage.getItem('seen') ?? '{}'), sessions: {}, machines: [], favourites: [], mentions: {}, links: {}, output: {}, services: null, linked: {}, requests: [], held: {}, reminders: null, scheduled: [], routines: [], notice: null }
+  data: Data = { state: null, messages: {}, privateReplies: {}, typing: {}, online: false, seen: JSON.parse(localStorage.getItem('seen') ?? '{}'), sessions: {}, machines: [], favourites: [], mentions: {}, links: {}, output: {}, services: null, linked: {}, requests: [], held: {}, reminders: null, scheduled: [], routines: [], notice: null }
   private unsentRead: Record<string, string> = {}
   private readTimer: number | undefined
   private accessTimer: number | undefined
@@ -181,18 +183,25 @@ class Store {
     this.setMessages(channelId, { list: current?.list ?? [], hasMore: current?.hasMore ?? true, loading: true })
     try {
       const before = older ? current?.list[0]?.id : undefined
+      const priorPrivate = this.data.privateReplies[channelId]
       const page = await api.messages(channelId, before)
+      if (page.privateReplies && this.data.privateReplies[channelId] === priorPrivate) this.set({ privateReplies: { ...this.data.privateReplies, [channelId]: page.privateReplies.map((m) => ({ ...m, private_reply: true })) } })
       const latest = this.data.messages[channelId]?.list ?? []
       const list = older ? [...page.messages, ...latest] : mergeById(page.messages, refresh ? latest.filter((m) => snowflakeGt(m.id, page.messages.at(-1)?.id)) : [])
       this.setMessages(channelId, { list, hasMore: page.hasMore, loading: false })
     } catch (error) {
-      this.setMessages(channelId, { list: current?.list ?? [], hasMore: false, loading: false })
+      this.setMessages(channelId, { list: this.data.messages[channelId]?.list ?? current?.list ?? [], hasMore: current?.hasMore ?? false, loading: false })
       throw error
     }
   }
 
   private setMessages(channelId: string, value: ChannelMessages) {
     this.set({ messages: { ...this.data.messages, [channelId]: value } })
+  }
+
+  dismissPrivateReply(channelId: string, id: string) {
+    const here = this.data.privateReplies[channelId]
+    if (here?.some((m) => m.id === id)) this.set({ privateReplies: { ...this.data.privateReplies, [channelId]: here.filter((m) => m.id !== id) } })
   }
 
   // Discord's Mark Unread: read up to just before the message, here and on every device.
@@ -297,6 +306,14 @@ class Store {
     this.set({ state: { ...state, [key]: next } })
   }
 
+  removeMessages(channelId: string, ids: readonly string[]) {
+    const gone = new Set(ids)
+    const remove = (list: Message[]) => list.filter((m) => !(m.channel_id === channelId && gone.has(m.id)))
+    this.patchMessages(channelId, remove)
+    // A loaded thread can also show its parent's starter.
+    for (const t of this.data.state?.threads ?? []) if (t.parent_id === channelId && this.data.messages[t.id]?.list.some((m) => gone.has(m.id))) this.patchMessages(t.id, remove)
+  }
+
   private patchMessages(channelId: string, fn: (list: Message[]) => Message[]) {
     const current = this.data.messages[channelId]
     if (current) this.setMessages(channelId, { ...current, list: fn(current.list) })
@@ -339,8 +356,17 @@ class Store {
         }
         break
       }
+      case 'PRIVATE_REPLY':
+      case 'PRIVATE_REPLY_DELETE': {
+        const here = this.data.privateReplies[d.channel_id] ?? []
+        const list = t === 'PRIVATE_REPLY' ? mergeById(here, [{ ...d, private_reply: true }]) : here.filter((m) => m.id !== d.id)
+        this.set({ privateReplies: { ...this.data.privateReplies, [d.channel_id]: list } })
+        break
+      }
       case 'MESSAGE_CREATE': {
         const message = d as Message
+        // Only fresh ones: a message older than a minute is history arriving late, not news.
+        if (Date.now() - Number((BigInt(message.id) >> 22n) + 1420070400000n) < 60_000) for (const listener of incoming) listener(message)
         const me = this.data.state?.me.id
         if (me && message.author.id !== me && (message.content ?? '').includes(`<@${me}>`) && snowflakeGt(message.id, this.data.seen[message.channel_id]))
           this.set({ mentions: { ...this.data.mentions, [message.channel_id]: (this.data.mentions[message.channel_id] ?? 0) + 1 } })
@@ -363,7 +389,10 @@ class Store {
         }
         break
       case 'MESSAGE_DELETE':
-        this.patchMessages(d.channel_id, (list) => list.filter((m) => m.id !== d.id))
+        this.removeMessages(d.channel_id, [d.id])
+        break
+      case 'MESSAGE_DELETE_BULK':
+        this.removeMessages(d.channel_id, d.ids)
         break
       case 'MESSAGE_REACTION_ADD':
       case 'MESSAGE_REACTION_REMOVE': {
@@ -479,6 +508,13 @@ class Store {
       case 'SESSION_STATE': {
         const { [d.id]: _, ...rest } = this.data.sessions
         this.set({ sessions: d.removed ? rest : { ...this.data.sessions, [d.id]: d as SessionSummary } })
+        break
+      }
+      case 'VOICE_STATE_UPDATE': {
+        const state = this.data.state
+        if (!state) break
+        const rest = (state.voice_states ?? []).filter((v) => v.user_id !== d.user_id)
+        this.set({ state: { ...state, voice_states: d.channel_id ? [...rest, d] : rest } })
         break
       }
       case 'PRESENCE_UPDATE': {
@@ -598,7 +634,14 @@ class Store {
 }
 
 // Events that only set something in the state, so applying one twice changes nothing.
-const REPLAYED = new Set(['THREAD_CREATE', 'THREAD_UPDATE', 'THREAD_DELETE', 'CHANNEL_CREATE', 'CHANNEL_UPDATE', 'CHANNEL_DELETE', 'CHANNEL_PERMISSIONS_UPDATE', 'GUILD_UPDATE', 'GUILD_ROLE_CREATE', 'GUILD_ROLE_UPDATE', 'GUILD_ROLE_DELETE', 'GUILD_MEMBER_ADD', 'GUILD_MEMBER_UPDATE', 'GUILD_MEMBER_REMOVE', 'MACHINE_ICONS_UPDATE', 'USER_UPDATE', 'OUTPUT_VIEW', 'SESSION_LINKS', 'NOTIFICATION_SETTINGS_UPDATE', 'PRESENCE_UPDATE'])
+// New messages as they arrive, for the in-app notification.
+const incoming = new Set<(message: Message) => void>()
+export const onIncoming = (listener: (message: Message) => void) => {
+  incoming.add(listener)
+  return () => void incoming.delete(listener)
+}
+
+const REPLAYED = new Set(['THREAD_CREATE', 'THREAD_UPDATE', 'THREAD_DELETE', 'CHANNEL_CREATE', 'CHANNEL_UPDATE', 'CHANNEL_DELETE', 'CHANNEL_PERMISSIONS_UPDATE', 'GUILD_UPDATE', 'GUILD_ROLE_CREATE', 'GUILD_ROLE_UPDATE', 'GUILD_ROLE_DELETE', 'GUILD_MEMBER_ADD', 'GUILD_MEMBER_UPDATE', 'GUILD_MEMBER_REMOVE', 'MACHINE_ICONS_UPDATE', 'USER_UPDATE', 'OUTPUT_VIEW', 'SESSION_LINKS', 'NOTIFICATION_SETTINGS_UPDATE', 'PRESENCE_UPDATE', 'VOICE_STATE_UPDATE'])
 
 const sortReminders = (list: Reminder[]) => [...list].sort((a, b) => a.at - b.at)
 // A scheduled message still to post, or one that failed and should be seen.

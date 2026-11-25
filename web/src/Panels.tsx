@@ -426,12 +426,12 @@ function ReminderRow({ reminder: r, due, onJump, onOpen }: { reminder: Reminder;
   return (
     <div className={`reminder-row${due ? ' due' : ''}`}>
       <button className="reminder-main" onClick={go}>
+        {text && <span className="reminder-text">{message?.author && !r.note ? <b>{displayName(message.author)}: </b> : null}{text.slice(0, 140)}</span>}
         <span className="reminder-when num">
           <Icon name="bell" size={14} />
-          {due ? `Due ${remindTime(r.at)}` : remindTime(r.at)}
+          <time dateTime={new Date(r.at).toISOString()}>{remindTime(r.at)}</time>
           <span className="reminder-where">{where}</span>
         </span>
-        {text && <span className="reminder-text">{message?.author && !r.note ? <b>{displayName(message.author)}: </b> : null}{text.slice(0, 140)}</span>}
         {error && <span className="reminder-error">{error}</span>}
       </button>
       {due ? (
@@ -1025,6 +1025,7 @@ export function MembersPanel({ channelId, onClose }: { channelId: string; onClos
     const st = status(u.id)
     const notes: string[] = []
     if (u.pending) notes.push('Not joined yet')
+    if (u.bot && p?.activity && !p.machines?.length) notes.push(p.activity)
     if (isTyping(u.id)) notes.push(u.bot ? 'working here' : 'typing here')
     for (const d of p?.devices ?? []) notes.push(`${d.name}${d.visible ? '' : ' (away)'} · ${where(d.channel_id)}`)
     if (u.bot && p?.machines?.length) notes.push(p.machines.map((m) => `${m.machine}${m.online ? '' : ' (offline)'}`).join(', '))
@@ -1045,7 +1046,7 @@ export function MembersPanel({ channelId, onClose }: { channelId: string; onClos
     )
   }
   // The shared bot shows as one member per machine, each with its own Discord picture.
-  type Row = { key: string; user: (typeof state.users)[number]; machine?: { machine: string; online: boolean } }
+  type Row = { key: string; user: (typeof state.users)[number]; machine?: { machine: string; online: boolean; activity?: string | null } }
   const rows: Row[] = state.users.flatMap((u) => {
     const machines = u.bot ? presence[u.id]?.machines : undefined
     return machines?.length ? machines.map((m) => ({ key: `${u.id}:${m.machine}`, user: u, machine: m })) : [{ key: u.id, user: u }]
@@ -1065,7 +1066,7 @@ export function MembersPanel({ channelId, onClose }: { channelId: string; onClos
             <b>{machineLabel(r.machine.machine)}</b>
             <span className="bot-tag">BOT</span>
           </span>
-          {isTyping(u.id) && <span className="member-note">working here</span>}
+          {isTyping(u.id) ? <span className="member-note">working here</span> : r.machine.activity && <span className="member-note">{r.machine.activity}</span>}
         </span>
       </button>
     )

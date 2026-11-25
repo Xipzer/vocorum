@@ -75,18 +75,31 @@ export async function startDemoBot(hub: Hub) {
   await website.send('Deployed **kimaki.dev** ✅')
 
   await guild.commands.set([
-    { name: 'model', description: 'Change the model for this session', options: [{ name: 'model', description: 'Model', type: 3, required: true, autocomplete: true }] },
+    { name: 'model', description: 'Change the model for this session' },
+    { name: 'pick-model', description: 'Set a model by name', options: [{ name: 'model', description: 'Model', type: 3, required: true, autocomplete: true }] },
+    { name: 'accounts', description: 'Show your connected accounts' },
     { name: 'new-session', description: 'Start a new session', options: [{ name: 'prompt', description: 'Prompt', type: 3, required: true }] },
     { name: 'abort', description: 'Stop the current run' },
   ])
 
   const models = ['claude-opus-5-5', 'claude-sonnet-5', 'gpt-6', 'gemini-4-pro']
+  const modelPicker = (second: boolean) => new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+    new StringSelectMenuBuilder().setCustomId('choose-model').setPlaceholder('Select a model').addOptions(
+      { label: second ? '← Previous page (1/2)' : 'Next page (2/2) →', value: second ? 'prev' : 'next' },
+      ...Array.from({ length: 12 }, (_, i) => { const n = i + (second ? 13 : 1); return { label: `Studio ${n}`, description: `studio-${n}`, value: `studio-${n}` } }),
+    ),
+  )
+  const modelPrompt = '**Set model preference**\nProvider: **Studio**\nSelect a model:'
   bot.on('interactionCreate', async (interaction) => {
     if (interaction.isAutocomplete()) {
       const typed = interaction.options.getFocused().toLowerCase()
       await interaction.respond(models.filter((m) => m.includes(typed)).map((m) => ({ name: m, value: m })))
     } else if (interaction.isChatInputCommand()) {
-      if (interaction.commandName === 'model') await interaction.reply({ content: `Model set to **${interaction.options.getString('model')}** for this session.` })
+      if (interaction.commandName === 'accounts') await interaction.reply({ flags: MessageFlags.Ephemeral, content: '**Studio**\n- Workspace · active\n- Sandbox · usage limit until noon\n**Local**\n- On device · active\n-# Accounts are refreshed on the next request.' })
+      else if (interaction.commandName === 'model') {
+        await interaction.deferReply()
+        await interaction.editReply({ content: modelPrompt, components: [modelPicker(false)] })
+      } else if (interaction.commandName === 'pick-model') await interaction.reply({ content: `Model set to **${interaction.options.getString('model')}** for this session.` })
       else await interaction.reply({ content: `Running /${interaction.commandName}` })
     } else if (interaction.isButton() && interaction.customId === 'other') {
       await interaction.showModal(
@@ -99,7 +112,15 @@ export async function startDemoBot(hub: Hub) {
       await interaction.update({ components: [] })
       await interaction.followUp({ flags: MessageFlags.IsComponentsV2, components: [CALLOUT(0x22c55e, 'Committed `affdd529` and pushed.') as never] })
     } else if (interaction.isStringSelectMenu()) {
-      await interaction.update({ content: `**Question:** Which strategy should I use for the migration?\n-# answered: ${interaction.values.join(', ')}`, components: [] })
+      if (interaction.customId === 'choose-model') {
+        const value = interaction.values[0]!
+        if (value === 'next' || value === 'prev') await interaction.update({ content: modelPrompt, components: [modelPicker(value === 'next')] })
+        else await interaction.update({ content: `**Set model preference**\nModel: **Studio / ${value}**\nSelect a thinking level:`, components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(new StringSelectMenuBuilder().setCustomId('level').setPlaceholder('Select a thinking level').addOptions({ label: 'Standard', value: 'standard' }, { label: 'Extended', value: 'extended' }))] })
+      } else if (interaction.customId === 'level') {
+        const model = /Studio \/ ([\w-]+)/.exec(interaction.message.content)?.[1] ?? 'studio'
+        const effort = interaction.values[0]!
+        await interaction.update({ content: `Model set for this session:\n**Studio** / **${model}** (${effort})\n\`studio/${model} (${effort})\`\nApplies from the next step.`, components: [] })
+      } else await interaction.update({ content: `**Question:** Which strategy should I use for the migration?\n-# answered: ${interaction.values.join(', ')}`, components: [] })
     } else if (interaction.isModalSubmit()) {
       await interaction.reply({ content: `You answered: ${interaction.fields.getTextInputValue('answer')}` })
     }

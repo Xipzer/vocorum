@@ -676,9 +676,9 @@ async function discordCommand(sub: string | undefined, rest: string[], flags: Re
         if (g.owner_id && !(loadConfig(paths)?.ownerDiscordIds ?? []).includes(g.owner_id)) console.log(`  owner: ${g.owner_id}. If that is you: vocorum config set ownerDiscordIds ${g.owner_id}`)
         if (g.unreadable.length) console.log(`  the bot cannot read ${g.unreadable.length}: ${g.unreadable.slice(0, 10).join(', ')}${g.unreadable.length > 10 ? ', …' : ''}`)
         const c = g.community
-        console.log(`  comes across: ${c.roles} roles, ${c.member_list ? 'the member list with everyone\'s roles' : 'no member list'}, permissions of ${c.channels_with_permissions} channels, ${c.emoji} custom emoji${c.forums ? `, ${c.forums} forums (posts as threads, no tags)` : ''}${c.private_threads ? `, ${c.private_threads} private threads` : ''}, pins and reactions`)
+        console.log(`  comes across: ${c.voice_channels ? `${c.voice_channels} voice channels (not their text chat), ` : ''}${c.roles} roles, ${c.member_list ? 'the member list with everyone\'s roles' : 'no member list'}, permissions of ${c.channels_with_permissions} channels, ${c.emoji} custom emoji${c.forums ? `, ${c.forums} forums (posts as threads, no tags)` : ''}${c.private_threads ? `, ${c.private_threads} private threads` : ''}, pins and reactions`)
         if (!c.member_list) console.log('  PROBLEM: no member list (and no roles per person, or who is in private threads) without the Server Members intent: Discord developer portal, your app, Bot, Privileged Gateway Intents, Server Members.')
-        if (c.voice_channels) console.log(`  stays on Discord: ${c.voice_channels} voice or stage channels (the hub has no voice)`)
+        if (c.stage_channels) console.log(`  stays on Discord: ${c.stage_channels} stage or directory channels`)
       }
       console.log(`\nImport takes about ${result.estimate.import_minutes} minute${result.estimate.import_minutes === 1 ? '' : 's'} plus channel history; deleting its threads from Discord later (purge --threads) about ${result.estimate.purge_hours < 1 ? `${Math.max(1, Math.round(result.estimate.purge_hours * 60))} minutes` : `${result.estimate.purge_hours} hours`}, plus about 2 minutes per 1000 channel messages.`)
       console.log('Next: vocorum discord import <guild id> (or all) --detach')

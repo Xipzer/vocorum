@@ -20,9 +20,11 @@ import type { Hub } from './hub.ts'
 import type { DeviceRow, NotificationSetting } from './store.ts'
 import { DEFAULT_LEVEL } from './notifications.ts'
 import { P } from './access.ts'
+import { traceInteraction } from './interaction-trace.ts'
 
 const THREAD_TYPES = [ChannelType.PublicThread, ChannelType.PrivateThread, ChannelType.AnnouncementThread]
 const INTERACTION_WAIT_MS = 3000
+const MAX_SELECTED_MESSAGES = 100
 
 export type ClientReaction = { emoji: string; count: number; me: boolean }
 export type ClientMessage = APIMessage & { reactions_summary?: ClientReaction[] }
@@ -32,6 +34,20 @@ export type Viewer = { userId: string; device: DeviceRow }
 const str = (value: unknown, name: string): string => {
   if (typeof value !== 'string' || value.length === 0) throw new HttpError(400, `${name} is required`)
   return value
+}
+
+function selectedIds(body: unknown): string[] {
+  const ids = body && typeof body === 'object' && Object.keys(body).length === 1 && 'message_ids' in body ? body.message_ids : null
+  if (!Array.isArray(ids) || ids.length < 1 || ids.length > MAX_SELECTED_MESSAGES ||
+      !ids.every((id): id is string => typeof id === 'string' && /^[1-9]\d{0,19}$/.test(id)) || new Set(ids).size !== ids.length) {
+    throw new HttpError(400, `Select 1 to ${MAX_SELECTED_MESSAGES} distinct message IDs`)
+  }
+  return ids
+}
+
+function requireMessageDelete(userId: string, authorId: string, permissions: bigint) {
+  if (!(permissions & P.VIEW_CHANNEL)) throw new HttpError(404, 'Unknown channel')
+  if (userId !== authorId && !(permissions & P.MANAGE_MESSAGES)) throw new HttpError(403, 'You can only delete your own messages')
 }
 
 export class ClientApi {
@@ -112,6 +128,16 @@ export class ClientApi {
     if ((params = match('/client/channels/:id/messages', pathname))) {
       if (method === 'GET') return send(200, await this.messages(v, params['id']!, new URL(req.url ?? '/', 'http://x').searchParams))
       if (method === 'POST') return send(200, await this.postMessage(v, params['id']!, await readJson(req)))
+    }
+    if (method === 'POST' && (params = match('/client/channels/:id/messages/bulk-delete', pathname))) {
+      return send(200, await this.deleteSelectedMessages(v, params['id']!, selectedIds(await readJson(req))))
+    }
+    if ((params = match('/client/channels/:id/private-replies/:mid', pathname)) && method === 'DELETE') {
+      const id = params['mid']!, channelId = params['id']!
+      await this.channel(v, channelId)
+      const privateReplies = this.hub.twin.privateReplies
+      if (privateReplies?.forUser(v.userId, channelId, id)) privateReplies.remove(id)
+      return send(204, undefined)
     }
     if ((params = match('/client/channels/:id/messages/:mid', pathname))) {
       if (method === 'PATCH') return send(200, await this.editMessage(v, params['id']!, params['mid']!, await readJson(req)))
@@ -320,6 +346,8 @@ export class ClientApi {
       sessionThreads: (await this.hub.sessions.links.whenReady(), Object.fromEntries(Object.entries(this.hub.sessions.links.sessionThreads()).filter(([, thread]) => visible.has(thread)))),
       favourites: (await this.hub.store.favourites(v.userId)).filter((id) => visible.has(id)),
       presence: await this.hub.presence.snapshotFor(v.userId),
+      // Who is in which voice channel (people and bots), where the viewer can see it.
+      voice_states: await this.hub.voice.statesFor(v.userId),
       notifications: await this.notificationState(v),
       output: await this.hub.store.outputViews(v.userId),
       machines: machines.map((m) => m.name).filter((name) => this.hub.access.isHubOwner(v.userId) || categoryMachines.has(name.toLowerCase())),
@@ -457,7 +485,7 @@ export class ClientApi {
       const starter = await this.prisma.message.findUnique({ where: { id: channel.starterMessageId } })
       if (starter) rows.unshift(starter)
     }
-    return { messages: await this.toClient(v, rows, () => channel.guildId ?? undefined), hasMore }
+    return { messages: await this.toClient(v, rows, () => channel.guildId ?? undefined), hasMore, ...(!before && { privateReplies: this.hub.twin.privateReplies?.list(v.userId, channelId) ?? [] }) }
   }
 
   // A channel the viewer can view (404 otherwise, so hidden channels do not
@@ -544,8 +572,36 @@ export class ClientApi {
   // Your own messages, or anyone's with Manage Messages.
   async deleteMessage(v: Viewer, channelId: string, messageId: string) {
     const message = await this.messageIn(v, channelId, messageId)
-    if (message.authorId !== v.userId && !(await this.hub.access.can(v.userId, channelId, P.MANAGE_MESSAGES))) throw new HttpError(403, 'You can only delete your own messages')
+    requireMessageDelete(v.userId, message.authorId, await this.hub.access.channel(v.userId, channelId))
     await this.hub.twin.simulateUserMessageDelete({ channelId: message.channelId, messageId })
+  }
+
+  private async deleteSelectedMessages(v: Viewer, channelId: string, ids: string[]) {
+    await this.channel(v, channelId)
+    const access = this.hub.access
+    const view = await access.view(v.userId)
+    const permissions = view.channels.get(channelId) ?? 0n
+    const stale = () => new HttpError(409, 'Selection changed. Refresh this chat and select again.')
+    const guildId = await this.prisma.$transaction(async (tx) => {
+      const channel = await tx.channel.findUnique({ where: { id: channelId }, select: { guildId: true, lastMessageId: true, messageCount: true } })
+      const where = { channelId, id: { in: ids } }
+      const selected = await tx.message.findMany({ where, select: { authorId: true } })
+      // A missing ID and an ID from another chat are indistinguishable. This also excludes
+      // a thread's parent-channel starter, even when the app displays it alongside the replies.
+      if (!channel || selected.length !== ids.length || !access.isCurrent(view)) throw stale()
+      for (const row of selected) requireMessageDelete(v.userId, row.authorId, permissions)
+      const deleted = await tx.message.deleteMany({ where })
+      if (deleted.count !== ids.length) throw stale() // roll back even a partial storage-level delete
+      const replaceLast = channel.lastMessageId !== null && ids.includes(channel.lastMessageId)
+      const last = replaceLast ? await tx.message.findFirst({ where: { channelId }, orderBy: [{ timestamp: 'desc' }, { id: 'desc' }], select: { id: true } }) : null
+      await tx.channel.update({ where: { id: channelId }, data: {
+        messageCount: Math.max(0, channel.messageCount - deleted.count), ...(replaceLast && { lastMessageId: last?.id ?? null }),
+      } })
+      if (!access.isCurrent(view)) throw stale()
+      return channel.guildId
+    })
+    this.hub.twin.notifyLocalMessageDeletes(channelId, guildId, ids)
+    return { deleted_ids: ids }
   }
 
   // The thread's starter, or anyone with Manage Threads.
@@ -598,13 +654,19 @@ export class ClientApi {
 
   // Discord gives a bot 3 seconds to acknowledge. Returns the ack (a modal
   // to open, a message update, a deferral) or {acknowledged: false}.
-  private async waitForAck(interactionId: string) {
-    const deadline = Date.now() + INTERACTION_WAIT_MS
+  private async waitForAck(interactionId: string, trace: { channel: string; kind: string; command?: string }) {
+    const started = Date.now()
+    traceInteraction('dispatched', interactionId, trace)
+    const deadline = started + INTERACTION_WAIT_MS
     while (Date.now() < deadline) {
       const row = await this.prisma.interactionResponse.findUnique({ where: { interactionId } })
-      if (row?.acknowledged) return { interactionId, acknowledged: true, type: row.type, data: row.data ? (JSON.parse(row.data) as unknown) : null }
+      if (row?.acknowledged) {
+        traceInteraction('acknowledged', interactionId, { ...trace, responseType: row.type, elapsedMs: Date.now() - started })
+        return { interactionId, acknowledged: true, type: row.type, data: row.data ? (JSON.parse(row.data) as unknown) : null }
+      }
       await new Promise((resolve) => setTimeout(resolve, 40))
     }
+    traceInteraction('no-ack', interactionId, { ...trace, elapsedMs: Date.now() - started })
     return { interactionId, acknowledged: false, type: null, data: null }
   }
 
@@ -614,9 +676,11 @@ export class ClientApi {
     await this.channel(v, channelId)
     const customId = str(body['customId'], 'customId')
     const messageId = typeof body['messageId'] === 'string' ? body['messageId'] : undefined
-    const source = messageId ? await this.messageIn(v, channelId, messageId) : null
+    const privateSource = messageId && this.hub.twin.privateReplies?.forUser(v.userId, channelId, messageId)
+    const source = privateSource || !messageId ? null : await this.messageIn(v, channelId, messageId)
+    const components = privateSource ? privateSource.components ?? [] : source ? JSON.parse(source.components) as unknown[] : []
     // Like Discord: a button or menu can only be used if it is on that message.
-    if ((body['type'] === 'button' || body['type'] === 'select') && !(source && hasComponent(JSON.parse(source.components) as unknown[], customId))) throw new HttpError(400, 'No such component on this message')
+    if ((body['type'] === 'button' || body['type'] === 'select') && !hasComponent(components, customId)) throw new HttpError(400, 'No such component on this message')
     const base = { channelId, userId: v.userId, customId }
     let started: { id: string }
     switch (body['type']) {
@@ -625,7 +689,7 @@ export class ClientApi {
         break
       case 'select': {
         let values = Array.isArray(body['values']) ? body['values'].filter((value): value is string => typeof value === 'string').slice(0, 25) : []
-        const componentType = findComponent(JSON.parse(source!.components) as unknown[], customId)?.['type']
+        const componentType = findComponent(components, customId)?.['type']
         const entity = componentType === 5 || componentType === 6 || componentType === 7 || componentType === 8 ? componentType : undefined
         // A channel menu can only pick channels the person can see.
         if (entity === 8) {
@@ -650,7 +714,7 @@ export class ClientApi {
       default:
         throw new HttpError(400, 'type must be button, select or modal')
     }
-    return this.waitForAck(started.id)
+    return this.waitForAck(started.id, { channel: channelId, kind: String(body['type']) })
   }
 
   // Discord hides a command from members without its default_member_permissions; so does the hub.
@@ -671,7 +735,8 @@ export class ClientApi {
     const channelId = str(body['channelId'], 'channelId')
     await this.checkCommand(v, channelId, str(body['name'], 'name'))
     const started = await this.hub.twin.simulateSlashCommand({ channelId, userId: v.userId, name: str(body['name'], 'name'), options: commandOptions(body['options']) })
-    return this.waitForAck(started.id)
+    const name = String(body['name'])
+    return this.waitForAck(started.id, { channel: channelId, kind: 'command', command: /^[\w-]{1,32}$/.test(name) ? name : '(command)' })
   }
 
   async autocomplete(v: Viewer, body: Body) {

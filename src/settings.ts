@@ -15,7 +15,7 @@ import type { Overwrite } from './store.ts'
 import type { Viewer } from './client-api.ts'
 
 const IMAGE_LIMIT = 4 * 1024 * 1024
-const CHANNEL_TYPES = new Set([0, 4, 5, 15]) // text, category, announcement, forum
+const CHANNEL_TYPES = new Set([0, 2, 4, 5, 15]) // text, voice, category, announcement, forum
 const THREAD_TYPES = new Set([10, 11, 12])
 
 // Only real images, by their first bytes (never the declared type).
@@ -35,7 +35,7 @@ const text = (value: unknown, field: string, max: number) => {
 
 // Discord's text channel names: lower case, no spaces.
 export function channelName(name: string, type: number) {
-  if (type === 4) return name
+  if (type === 4 || type === 2) return name
   const clean = name.toLowerCase().replace(/\s+/g, '-').replace(/[^\p{L}\p{N}_-]/gu, '').replace(/-{2,}/g, '-').slice(0, 100)
   if (!clean) throw new HttpError(400, 'name has no usable characters')
   return clean
@@ -243,7 +243,7 @@ export class Settings {
   // Overwrites are in place before CHANNEL_CREATE goes out, so a private channel is never briefly public.
   private async createChannel(v: Viewer, guildId: string, body: Record<string, unknown>) {
     const type = body['type'] === undefined ? 0 : body['type']
-    if (typeof type !== 'number' || !CHANNEL_TYPES.has(type)) throw new HttpError(400, 'type must be 0 (text), 4 (category), 5 (announcement) or 15 (forum)')
+    if (typeof type !== 'number' || !CHANNEL_TYPES.has(type)) throw new HttpError(400, 'type must be 0 (text), 2 (voice), 4 (category), 5 (announcement) or 15 (forum)')
     const parentId = type === 4 ? null : await this.parent(guildId, body['parent_id'])
     const topic = body['topic'] == null ? null : text(body['topic'], 'topic', 1024)
     const position = body['position'] === undefined ? undefined : this.position(body['position'])
