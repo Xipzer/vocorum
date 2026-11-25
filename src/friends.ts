@@ -15,6 +15,7 @@ import { execFile } from 'node:child_process'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { fingerprint } from './ca.ts'
+import { tool } from './platform.ts'
 import type { HubConfig, HubPaths } from './config.ts'
 
 const run = promisify(execFile)
@@ -24,7 +25,7 @@ export const FRIENDS_SERVER = 'Friends'
 type Tailnet = { ip: string | null; dnsName: string | null; hostName: string | null; login: string | null }
 
 async function tailnet(): Promise<Tailnet> {
-  const status = await run('tailscale', ['status', '--json'], { timeout: 5000 }).then((r) => JSON.parse(r.stdout) as { Self?: { TailscaleIPs?: string[]; DNSName?: string; HostName?: string; UserID?: number }; User?: Record<string, { LoginName?: string }> }, () => null)
+  const status = await run(tool('tailscale'), ['status', '--json'], { timeout: 5000, windowsHide: true }).then((r) => JSON.parse(r.stdout) as { Self?: { TailscaleIPs?: string[]; DNSName?: string; HostName?: string; UserID?: number }; User?: Record<string, { LoginName?: string }> }, () => null)
   const self = status?.Self
   return { ip: self?.TailscaleIPs?.find((ip) => !ip.includes(':')) ?? null, dnsName: self?.DNSName?.replace(/\.$/, '') ?? null, hostName: self?.HostName ?? null, login: self?.UserID !== undefined ? (status?.User?.[String(self.UserID)]?.LoginName ?? null) : null }
 }

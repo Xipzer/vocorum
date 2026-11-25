@@ -18,7 +18,8 @@ import {
   StringSelectMenuBuilder,
   type TextChannel,
 } from 'discord.js'
-import { hubPaths, initHub } from '../src/config.ts'
+import { hubPaths, initHub, readSecret, saveConfig } from '../src/config.ts'
+import { ADMIN_GUILD_NAME, ADMIN_MACHINE, shieldPng } from '../src/admin.ts'
 import { Hub } from '../src/hub.ts'
 
 const out = path.resolve(process.argv[2] ?? 'docs/images')
@@ -38,15 +39,19 @@ function findChromium() {
   throw new Error('No Chromium found. Set PLAYWRIGHT_CHROMIUM.')
 }
 
-async function machineBot(hub: Hub, name: string) {
+async function machineBot(hub: Hub, name: string, guildId = hub.options.config.guildId) {
   const minted = await hub.store.addBot(name)
+  if (guildId !== hub.options.config.guildId) await hub.store.setBotGuilds(name, [guildId])
   await hub.reload()
   const bot = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent], rest: { api: `${hub.localUrl}/api`, version: '10' } })
   const ready = new Promise<void>((resolve) => bot.once('clientReady', () => resolve()))
   await bot.login(`${minted.clientId}:${minted.secret}`)
   await ready
-  return { bot, guild: await bot.guilds.fetch(hub.options.config.guildId) }
+  return { bot, guild: await bot.guilds.fetch(guildId) }
 }
+
+// The demo hub never lists this machine's own services.
+process.env['VOCORUM_SYSTEMCTL'] = 'false'
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vocorum-demo-'))
 const paths = hubPaths(root)
@@ -107,7 +112,7 @@ await t2.send(
     FOOTER('3m 15s', 22),
   ].join('\n'),
 )
-await t2.send({
+const question = await t2.send({
   content: '**Question:** How should old blog links keep working?',
   components: [
     new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
@@ -127,7 +132,6 @@ await t3.send(`Most of the 1.4 s goes to loading the version manager on every st
 await t3.send({ flags: MessageFlags.IsComponentsV2, components: [CALLOUT(0xf59e0b, 'One plugin still prints a warning on start. I left it alone: it comes from the plugin, not your config.') as never] })
 await say(t3.id, 'Can you silence that warning anyway?')
 await t3.send(`Done. It now loads with \`--quiet\`, so the start is clean.\n${FOOTER('41s', 12)}`)
-await say(t3.id, 'Thanks, that is much better')
 await recipes.send(`Nightly tests passed 96 tests, 41 s.`)
 
 await say(general.id, 'Morning. Anything blocked overnight?')
@@ -140,11 +144,46 @@ await desk.guild.commands.set([
   { name: 'abort', description: 'Stop the current run' },
 ])
 
+const token = readSecret(paths.adminToken)
+const admin = async (method: string, route: string, body?: unknown) => {
+  const res = await fetch(`${hub.localUrl}${route}`, { method, headers: { authorization: `Bearer ${token}`, ...(body !== undefined && { 'content-type': 'application/json' }) }, body: body === undefined ? undefined : JSON.stringify(body) })
+  return (await res.json()) as any
+}
+
+// A friend on the hub, and a direct message with them.
+const alex = (await admin('POST', '/admin/people', { username: 'alex', guilds: [config.guildId] })).user as { id: string }
+await hub.twin.simulateUserUpdate({ userId: alex.id, globalName: 'Alex' })
+
+// Reminders and a scheduled message.
+const hour = 3600_000
+
+// The Admin server: only you and your admin agent.
+const adminGuild = (await hub.store.addGuild(ADMIN_GUILD_NAME)).id
+saveConfig(paths, { ...config, adminGuildId: adminGuild, adminBotReady: true })
+await hub.reload()
+await fetch(`${hub.localUrl}/admin/mirror/guilds/${adminGuild}/icon`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/octet-stream' }, body: shieldPng() })
+const adminBot = await machineBot(hub, ADMIN_MACHINE, adminGuild)
+const adminChannel = (await adminBot.guild.channels.create({ name: 'admin', type: ChannelType.GuildText })) as TextChannel
+await say(adminChannel.id, 'Let Robin into the server to review the docs, and sign out the old laptop. It was stolen.')
+const robin = await admin('POST', '/admin/requests', { method: 'POST', route: `/client/guilds/${config.guildId}/invites`, body: { username: 'robin' }, reason: 'Robin reviews the docs before the release', origin: 'admin' })
+await adminChannel.send(`I asked to invite robin. Approve it here: https://hub.example/#/requests/${robin.id}`)
+await adminChannel.send('The old laptop was last seen 3 days ago. Revoking it signs it out at once.')
+await adminChannel.send({
+  content: '⚠️ **Permission Required**\n**Type:** `bash`\n**Pattern:** `vocorum devices revoke old-laptop`',
+  components: [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId('permission_once:demo').setLabel('Accept').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('permission_always:demo').setLabel('Accept Always').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('permission_reject:demo').setLabel('Deny').setStyle(ButtonStyle.Secondary),
+    ),
+  ] as never,
+})
+
 fs.mkdirSync(out, { recursive: true })
 const browser = await chromium.launch({ executablePath: findChromium() })
 
-async function device(viewport: { width: number; height: number }, scale: number) {
-  const context = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, viewport, serviceWorkers: 'block', deviceScaleFactor: scale, colorScheme: 'dark' })
+async function device(viewport: { width: number; height: number }, scale: number, userAgent?: string) {
+  const context = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, viewport, serviceWorkers: 'block', deviceScaleFactor: scale, colorScheme: 'dark', ...(userAgent && { userAgent }) })
   const page = await context.newPage()
   const cdp = await context.newCDPSession(page)
   await cdp.send('WebAuthn.enable')
@@ -163,12 +202,13 @@ const page = await device({ width: 1440, height: 900 }, 2)
 await page.goto(origin)
 await page.getByText('Sign in with passkey').waitFor()
 await shot(page, 'pair')
-await page.getByPlaceholder('Pairing code').fill(await hub.store.createPairing('Desktop'))
+await page.getByLabel('Pairing code').fill(await hub.store.createPairing('Desktop'))
 await page.getByText('Pair this device').click()
-await page.getByRole('heading', { name: /Needs you/ }).waitFor()
+await page.locator('.sidebar').waitFor()
 await page.evaluate(() => fetch('/client/me', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ global_name: 'Sam' }) }))
+await page.goto(`${origin}/#/overview`)
 await page.reload()
-await page.getByRole('heading', { name: /Needs you/ }).waitFor()
+await page.getByText(/^Needs you/).first().waitFor()
 await page.waitForTimeout(500)
 await shot(page, 'overview')
 
@@ -189,11 +229,73 @@ await page.waitForTimeout(300)
 await shot(page, 'slash-commands')
 await box.fill('')
 
+// A direct message with a friend.
+const dm = (await page.evaluate(async (id) => (await (await fetch('/client/dms', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ recipient_id: id }) })).json()) as { id: string }, alex.id)).id
+await hub.twin.simulateUserMessage({ channelId: dm, userId: alex.id, content: 'Is the site move done? I want to send the new link round.' })
+await say(dm, 'Nearly. One question left about the old blog links, then it ships.')
+await hub.twin.simulateUserMessage({ channelId: dm, userId: alex.id, content: 'Great, ping me when it is live' })
+await page.goto(`${origin}/#/c/${dm}`)
+await page.getByText('ping me when it is live').waitFor()
+await page.waitForTimeout(500)
+await shot(page, 'dms')
+
+// Reminders and scheduled messages, with the Scheduled panel open.
+const schedule = (body: unknown) => page.evaluate(async (b) => void (await fetch('/client/schedules', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) })), body)
+const tomorrow9 = new Date(Date.now() + 24 * hour)
+tomorrow9.setHours(9, 0, 0, 0)
+await schedule({ kind: 'reminder', channel_id: t2.id, message_id: question.id, at: Date.now() + 3 * hour })
+await schedule({ kind: 'message', channel_id: t2.id, content: 'Run the link check again and post the result', at: tomorrow9.getTime() })
+await schedule({ kind: 'message', channel_id: t2.id, content: 'Weekly: summarise what changed on the site', at: tomorrow9.getTime(), cron: `0 ${tomorrow9.getUTCHours()} * * 1` })
+await page.goto(`${origin}/#/c/${t2.id}`)
+await page.getByText('How should old blog links').waitFor()
+await page.locator('.chat-header button[aria-label="More"]').click()
+await page.locator('.sheet-item', { hasText: /^Scheduled/ }).click()
+await page.locator('.side-panel').getByText('Run the link check').waitFor()
+await page.waitForTimeout(500)
+await shot(page, 'reminders')
+await page.keyboard.press('Escape')
+
+// The Admin server: ask in plain words, approve in place.
+await page.goto(`${origin}/#/c/${adminChannel.id}`)
+await page.locator('.approval.open').waitFor()
+await page.locator('.inline-requests .request-card').waitFor()
+await page.waitForTimeout(500)
+await shot(page, 'admin')
+
+// Inviting a friend: an account and a pairing code for their first device.
+await page.goto(`${origin}/#/c/${general.id}`)
+await page.locator('.side-title').click()
+await page.locator('.sheet-item', { hasText: 'Server settings' }).click()
+await page.getByRole('dialog').getByRole('button', { name: 'Members', exact: true }).click()
+const settings = page.getByRole('dialog')
+await settings.getByRole('button', { name: 'Invite a person' }).click()
+await settings.getByRole('textbox', { name: 'Username' }).fill('jordan')
+await settings.getByRole('textbox', { name: 'Display name' }).fill('Jordan')
+await settings.getByRole('button', { name: 'Create invite' }).click()
+await settings.getByText('Jordan enters it').waitFor()
+await page.waitForTimeout(500)
+await shot(page, 'invite')
+await page.keyboard.press('Escape')
+
+// The desktop app (its window on Windows: the app's own title bar and controls).
+const app = await device({ width: 1440, height: 900 }, 2, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36')
+// A stand-in for the app's bridge, so the page draws the app's window chrome. As a string:
+// tsx's helpers don't exist in the page.
+// Its event channel says hello at once, so the page shows itself connected.
+await app.context().addInitScript({
+  content: "let cb = null; window.__TAURI_INTERNALS__ = { metadata: {}, transformCallback: (f) => ((cb = f), 1), invoke: async (cmd) => { if (cmd === 'events_subscribe') setTimeout(() => cb && cb({ index: 0, message: { t: 'HELLO', d: {} } }), 0); return cmd === 'window_maximized' ? false : null } }",
+})
+await app.context().addCookies(await page.context().cookies())
+await app.goto(`${origin}/#/c/${t1.id}`)
+await app.getByText('Pushed, and added').waitFor()
+await app.waitForTimeout(500)
+await shot(app, 'desktop-app')
+
 const phone = await device({ width: 390, height: 844 }, 3)
 await phone.goto(origin)
-await phone.getByPlaceholder('Pairing code').fill(await hub.store.createPairing('iPhone'))
+await phone.getByLabel('Pairing code').fill(await hub.store.createPairing('iPhone'))
 await phone.getByText('Pair this device').click()
-await phone.getByRole('heading', { name: /Needs you/ }).waitFor()
+await phone.locator('.sidebar').waitFor({ state: 'attached' })
 await phone.goto(`${origin}/#/c/${t3.id}`)
 await phone.getByText('startup is now').waitFor()
 await phone.waitForTimeout(500)
@@ -206,6 +308,7 @@ await shot(phone, 'phone-channels')
 await browser.close()
 await desk.bot.destroy()
 await lap.bot.destroy()
+await adminBot.bot.destroy()
 await hub.stop()
 fs.rmSync(root, { recursive: true, force: true })
 console.log(`Screenshots in ${out}`)

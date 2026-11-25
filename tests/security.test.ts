@@ -134,7 +134,8 @@ test('M3: the gateway refuses huge frames and floods of connections that never i
   await new Promise((resolve) => big.once('open', resolve))
   const closed = new Promise<number>((resolve) => big.once('close', (code) => resolve(code)))
   big.send('x'.repeat((1 << 20) + 1))
-  expect(await closed).toBe(1009)
+  // Windows resets the socket before the close frame arrives: closed either way.
+  expect(process.platform === 'win32' ? [1009, 1006] : [1009]).toContain(await closed)
 
   // Never refused: past 32 waiting connections the oldest are dropped, so the newest always get in.
   const sockets: WebSocket[] = []
@@ -301,7 +302,7 @@ test('R6: an old CA constrained to a whole public zone is detected and replaced 
   const fs = await import('node:fs')
   fs.mkdirSync(files.dir, { recursive: true })
   // As older hubs made it: the last two labels of hub.tailnet.ts.net.
-  await promisify(execFile)('openssl', ['req', '-x509', '-new', '-nodes', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-keyout', files.caKey, '-out', files.caCert, '-days', '30', '-subj', '/CN=old', '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'nameConstraints=critical,permitted;DNS:ts.net'])
+  await promisify(execFile)((await import('../src/platform.ts')).tool('openssl'), ['req', '-x509', '-new', '-nodes', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-keyout', files.caKey, '-out', files.caCert, '-days', '30', '-subj', '/CN=old', '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'nameConstraints=critical,permitted;DNS:ts.net'])
   expect(await broadConstraints(files.caCert, ['hub.tailnet.ts.net'])).toEqual(['ts.net'])
   expect((await ensureCa(files, { names: ['hub.tailnet.ts.net'], ips: [] })).reissued).toBe(false)
   const replaced = await ensureCa(files, { names: ['hub.tailnet.ts.net'], ips: [], reissueBroad: true })
@@ -318,4 +319,7 @@ test('Host allowlist accepts the public URL without its default port', async () 
   expect(hub.allowedHost('hub.example.ts.net')).toBe(true)
   expect(hub.allowedHost('hub.example.ts.net:443')).toBe(true)
   expect(hub.allowedHost('hub.example.ts.net:8443')).toBe(false)
+  // Never started, but its databases are open (Windows could not delete them).
+  hub.store.close()
+  await hub.twin.prisma.$disconnect()
 })

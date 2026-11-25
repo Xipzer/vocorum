@@ -33,3 +33,6 @@ export const machineLabel = (name: string) => name.charAt(0).toUpperCase() + nam
 
 // How a person is shown: their display name, else their username.
 export const displayName = (u: { username: string; global_name?: string | null } | undefined) => (u ? (u.global_name ?? u.username) : 'Someone')
+
+// Scrolls glide unless the system asks for reduced motion.
+export const motion = (): ScrollBehavior => (window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth')

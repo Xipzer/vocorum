@@ -67,6 +67,23 @@ class Store {
   private readTimer: number | undefined
   private accessTimer: number | undefined
   private listeners = new Set<() => void>()
+  private eventListeners = new Set<(t: string, d: any) => void>()
+
+  // Every hub event after the store applied it; 'RESYNC' after a reconnect.
+  onEvent = (listener: (t: string, d: any) => void) => {
+    this.eventListeners.add(listener)
+    return () => this.eventListeners.delete(listener)
+  }
+
+  private emit(t: string, d: any) {
+    for (const listener of this.eventListeners) {
+      try {
+        listener(t, d)
+      } catch (error) {
+        console.error('[events]', error)
+      }
+    }
+  }
 
   subscribe = (listener: () => void) => {
     this.listeners.add(listener)
@@ -78,8 +95,19 @@ class Store {
     for (const listener of this.listeners) listener()
   }
 
+  // Changes that land while a state load is on its way: its snapshot may predate them
+  // (a DM opened, a role switched during a resync), so they are applied again on top.
+  private loading = 0
+  private late: Array<[string, any]> = []
+
   async loadState() {
-    const state = await api.state()
+    if (this.loading++ === 0) this.late = []
+    let state: Awaited<ReturnType<typeof api.state>>
+    try {
+      state = await api.state()
+    } finally {
+      this.loading--
+    }
     // Direct messages live with the channels, under the "@me" server, as Discord routes them.
     if (state.private_channels) state.channels = [...state.channels, ...state.private_channels.map((c) => ({ ...c, guild_id: DM_GUILD }))]
     // Read state lives on the hub so every device agrees; localStorage is the offline copy.
@@ -94,6 +122,7 @@ class Store {
     }
     localStorage.setItem('seen', JSON.stringify(seen))
     this.set({ state, seen, favourites: state.favourites ?? [], mentions: state.mentions ?? {}, links: state.links ?? {}, output: state.output ?? {} })
+    if (this.loading === 0) for (const [t, d] of this.late.splice(0)) this.apply(t, d)
     void this.loadOverview()
     void api.schedules().then(
       ({ schedules }) =>
@@ -280,6 +309,7 @@ class Store {
 
   // Applies one gateway dispatch from the event socket.
   apply(t: string, d: any) {
+    if (this.loading && REPLAYED.has(t)) this.late.push([t, d])
     switch (t) {
       case 'ROUTINES_UPDATE': {
         const m = d as MachineRoutines
@@ -475,6 +505,7 @@ class Store {
         break
       }
     }
+    this.emit(t, d)
   }
 
   // After a reconnect: refetch state and every loaded channel.
@@ -559,11 +590,15 @@ class Store {
 
   async resync() {
     forgetMissingImages()
+    this.emit('RESYNC', null)
     await this.loadState()
     if (this.data.services) void this.loadServices().catch(() => {})
     await Promise.all(Object.keys(this.data.messages).map((id) => this.loadMessages(id, { refresh: true }).catch(() => {})))
   }
 }
+
+// Events that only set something in the state, so applying one twice changes nothing.
+const REPLAYED = new Set(['THREAD_CREATE', 'THREAD_UPDATE', 'THREAD_DELETE', 'CHANNEL_CREATE', 'CHANNEL_UPDATE', 'CHANNEL_DELETE', 'CHANNEL_PERMISSIONS_UPDATE', 'GUILD_UPDATE', 'GUILD_ROLE_CREATE', 'GUILD_ROLE_UPDATE', 'GUILD_ROLE_DELETE', 'GUILD_MEMBER_ADD', 'GUILD_MEMBER_UPDATE', 'GUILD_MEMBER_REMOVE', 'MACHINE_ICONS_UPDATE', 'USER_UPDATE', 'OUTPUT_VIEW', 'SESSION_LINKS', 'NOTIFICATION_SETTINGS_UPDATE', 'PRESENCE_UPDATE'])
 
 const sortReminders = (list: Reminder[]) => [...list].sort((a, b) => a.at - b.at)
 // A scheduled message still to post, or one that failed and should be seen.

@@ -58,7 +58,10 @@ export class ClientApi {
     // App updates (Tauri's updater format; 204 when up to date) and their files.
     if (method === 'GET' && (params = match('/client/app/update/:target/:arch/:current', pathname))) {
       const host = typeof req.headers.host === 'string' ? req.headers.host : ''
-      const origin = this.hub.privateListener?.owns(req) ? `https://${host}` : (this.hub.options.config.publicUrl ?? `http://${host}`)
+      // Only one of the hub's own names: the download URL never follows a Host header elsewhere.
+      const listener = this.hub.privateListener
+      const own = listener && [...listener.config.names, listener.config.address].includes(host.replace(/:\d+$/, '').toLowerCase())
+      const origin = listener?.owns(req) ? (own ? `https://${host}` : `https://${listener.config.names[0] ?? listener.config.address}:${listener.port}`) : (this.hub.options.config.publicUrl ?? `http://${host}`)
       const bundle = new URL(req.url ?? '/', 'http://x').searchParams.get('bundle')
       const update = this.hub.apps.update(params['target']!, params['arch']!, decodeURIComponent(params['current']!), origin, bundle)
       return update ? send(200, update) : send(204, undefined)
@@ -185,6 +188,12 @@ export class ClientApi {
     if (method === 'POST' && pathname === '/client/interactions') return send(200, await this.interaction(v, await readJson(req)))
     if (method === 'POST' && pathname === '/client/commands') return send(200, await this.command(v, await readJson(req)))
     if (method === 'POST' && pathname === '/client/autocomplete') return send(200, await this.autocomplete(v, await readJson(req)))
+    for (const extension of this.hub.extensions) {
+      if (!pathname.startsWith(`/client/x/${extension.id}/`)) continue
+      const value = await extension.handleClient?.(req, pathname, v)
+      if (value === null) return send(204, undefined)
+      if (value !== undefined) return send(200, value)
+    }
     throw new HttpError(404, 'Not found')
   }
 
@@ -245,7 +254,7 @@ export class ClientApi {
         return sendJson(res, 200, await auth.loginOptions(origin))
       case '/client/auth/login/verify': {
         const { device, cookie } = await auth.login(origin, body)
-        return sendJson(res, 200, { device: { id: device.id, name: device.name } }, { 'set-cookie': cookie })
+        return sendJson(res, 200, { device: { id: device.id, name: device.name } }, { 'set-cookie': cookie! })
       }
       case '/client/auth/logout':
         await auth.logout(req)

@@ -77,12 +77,15 @@ export async function scan(rest: DiscordRest, guildIds: string[] | 'all') {
     guilds.push({ id, name: guild.name, owner_id: guild.owner_id ?? null, categories: channels.filter((c) => c.type === 4).length, channels: channels.filter((c) => c.type !== 4).length, threads: threads.length, thread_messages: threadMessages, unreadable })
   }
   const messages = guilds.reduce((sum, g) => sum + g.thread_messages, 0)
+  const containers = guilds.reduce((sum, g) => sum + g.channels + g.threads, 0)
   return {
     bot: { id: me.id, name: me.global_name ?? me.username },
     message_content_intent: contentIntent,
     guilds,
-    // Reads are 100 messages a request at roughly 5 a second; deletes about 10 a second at best.
-    estimate: { import_minutes: Math.max(1, Math.ceil(messages / 100 / 5 / 60)), purge_hours: Math.ceil((messages / 10 / 3600) * 10) / 10 },
+    // Reads are 100 messages a request (and at least one per channel or thread) at roughly 5 a
+    // second; Discord does not count channel messages, so those come on top. Purge: threads
+    // nobody else wrote in go whole (--threads), about 2 requests each; the rest 10 deletes a second.
+    estimate: { import_minutes: Math.max(1, Math.ceil((messages / 100 + containers) / 5 / 60)), purge_hours: Math.ceil((guilds.reduce((sum, g) => sum + g.threads, 0) * 2 / 10 / 3600) * 10) / 10 },
   }
 }
 
@@ -107,6 +110,7 @@ export async function importDiscord(rest: DiscordRest, config: HubConfig, paths:
   if (app && !((app.flags ?? 0) & MESSAGE_CONTENT)) log('Warning: this bot has no Message Content intent, so Discord sends empty text for other people\'s messages. Turn it on in the Discord developer portal (Bot, Privileged Gateway Intents) and run again.')
 
   const ids = options.guilds === 'all' ? ((await rest.maybe<Guild[]>('/users/@me/guilds?limit=200')) ?? []).map((g) => g.id) : options.guilds
+  if (!ids.length) throw new Error('The bot is in no Discord server it can list. Pass the server id instead of all (vocorum discord scan shows them).')
   try {
     for (const guildId of ids) {
       const guild = await rest.get<Guild>(`/guilds/${guildId}`)
@@ -122,7 +126,8 @@ export async function importDiscord(rest: DiscordRest, config: HubConfig, paths:
       if (only && !channels.some((c) => only.has(c.id))) throw new Error(`None of ${[...only].join(', ')} is a text channel the bot can see in ${guild.name}`)
       await hub.call('POST', '/admin/mirror/channels', channels.map((c) => ({ ...c, guild_id: guildId })))
       const threads = await listThreads(rest, guildId, channels)
-      await hub.call('POST', '/admin/mirror/channels', threads.map((t) => ({ ...t, guild_id: guildId })))
+      // A server with thousands of agent sessions: in slices the hub takes in one request.
+      for (let i = 0; i < threads.length; i += 100) await hub.call('POST', '/admin/mirror/channels', threads.slice(i, i + 100).map((t) => ({ ...t, guild_id: guildId })))
       const done = new Set(progress[guildId] ?? [])
       const stats: ImportReport['guilds'][string] = { name: guild.name, channels: channels.filter((c) => c.type !== 4).length, threads: threads.length, complete: 0, messages_created: 0, files_copied: 0, files_missing: 0, files_failed: 0, gaps: {}, unreadable: [] }
       report.guilds[guildId] = stats

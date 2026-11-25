@@ -10,6 +10,7 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { botEnv, readSecret, type HubConfig, type HubPaths } from './config.ts'
+import { installAgentService, WINDOWS } from './platform.ts'
 
 const run = promisify(execFile)
 
@@ -43,9 +44,10 @@ export type KimakiOptions = { machine: string; guilds: string[]; kimaki?: string
 
 export async function kimakiSetup(config: HubConfig, paths: HubPaths, options: KimakiOptions) {
   if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(options.machine)) throw new Error('Machine names are lower case letters, digits and dashes')
-  const kimaki = options.kimaki ?? (await run('sh', ['-c', 'command -v kimaki']).then((r) => r.stdout.trim(), () => ''))
+  const kimaki = options.kimaki ?? (await (WINDOWS ? run('where.exe', ['kimaki']) : run('sh', ['-c', 'command -v kimaki'])).then((r) => r.stdout.trim().split(/\r?\n/)[0]!.trim(), () => ''))
   if (!kimaki) throw new Error('No kimaki command found. Install Kimaki first, or pass --kimaki <path to kimaki>')
-  const command = resolveKimaki(kimaki)
+  // A Kimaki given as its cli.js runs on this node.
+  const command = /\.m?js$/.test(kimaki) ? `${process.execPath} ${kimaki}` : resolveKimaki(kimaki)
   const dataDir = path.join(paths.root, 'kimaki-data')
   const envFile = path.join(paths.root, `${options.machine}.env`)
   if (fs.existsSync(envFile)) throw new Error(`${envFile} exists: this machine already has a hub bot. Revoke it first (vocorum bots revoke ${options.machine}) to make a new one.`)
@@ -104,6 +106,11 @@ WantedBy=default.target
     )
     await run('systemctl', ['--user', 'daemon-reload']).catch(() => null)
     await run('systemctl', ['--user', 'enable', '--now', name]).catch(() => null)
+  } else if (options.service && (process.platform === 'darwin' || WINDOWS)) {
+    unit = await installAgentService({ name, description: `Kimaki on Vocorum (${options.machine})`, command: [...command.split(' '), ...args], envFile, env: { PATH: process.env['PATH'] ?? '', ...(ca && { NODE_EXTRA_CA_CERTS: ca }) }, cwd: os.homedir(), log }, paths.root)
   }
-  return { machine: options.machine, envFile, dataDir, lockPort, unit, command: `set -a; . ${envFile}; set +a; ${ca ? `NODE_EXTRA_CA_CERTS=${ca} ` : ''}${command} ${args.join(' ')}`, log }
+  const manual = WINDOWS
+    ? `Get-Content ${envFile} | ? { $_ -match '^[A-Z_]+=' } | % { $k, $v = $_ -split '=', 2; Set-Item "env:$k" $v }; ${ca ? `$env:NODE_EXTRA_CA_CERTS='${ca}'; ` : ''}${command} ${args.join(' ')}`
+    : `set -a; . ${envFile}; set +a; ${ca ? `NODE_EXTRA_CA_CERTS=${ca} ` : ''}${command} ${args.join(' ')}`
+  return { machine: options.machine, envFile, dataDir, lockPort, unit, command: manual, log }
 }

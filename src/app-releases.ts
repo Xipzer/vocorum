@@ -32,16 +32,27 @@ const FILE = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,200}$/
 // Semantic version order (pre-releases before their release).
 export function compareVersions(a: string, b: string) {
   const parse = (v: string) => {
-    const [core = '', pre] = v.split('-', 2)
-    return { parts: core.split('.').map(Number), pre: pre ?? null }
+    const dash = v.indexOf('-')
+    const core = dash < 0 ? v : v.slice(0, dash)
+    return { parts: core.split('.').map(Number), pre: dash < 0 ? null : v.slice(dash + 1).split('.') }
   }
   const x = parse(a)
   const y = parse(b)
   for (let i = 0; i < 3; i++) if ((x.parts[i] ?? 0) !== (y.parts[i] ?? 0)) return (x.parts[i] ?? 0) - (y.parts[i] ?? 0)
-  if (x.pre === y.pre) return 0
-  if (x.pre === null) return 1
-  if (y.pre === null) return -1
-  return x.pre < y.pre ? -1 : 1
+  if (x.pre === null || y.pre === null) return x.pre === y.pre ? 0 : x.pre === null ? 1 : -1
+  // Identifier by identifier: numbers numerically and below words (beta.9 < beta.10).
+  for (let i = 0; i < Math.max(x.pre.length, y.pre.length); i++) {
+    const p = x.pre[i]
+    const q = y.pre[i]
+    if (p === undefined || q === undefined) return p === undefined ? -1 : 1
+    if (p === q) continue
+    const pn = /^\d+$/.test(p)
+    const qn = /^\d+$/.test(q)
+    if (pn && qn) return Number(p) - Number(q)
+    if (pn !== qn) return pn ? -1 : 1
+    return p < q ? -1 : 1
+  }
+  return 0
 }
 
 function readRelease(file: string): Release {

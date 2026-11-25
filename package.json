@@ -25,6 +25,7 @@
     "@simplewebauthn/server": "^13.2.2",
     "discord-api-types": "0.38.49",
     "discord-digital-twin": "workspace:*",
+    "sharp": "0.35.5",
     "spiceflow": "1.26.0-rsc.3",
     "tsx": "^4.20.5",
     "ws": "^8.18.0"
@@ -51,7 +52,7 @@
   "author": "Xipz",
   "packageManager": "pnpm@9.15.9",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.16"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

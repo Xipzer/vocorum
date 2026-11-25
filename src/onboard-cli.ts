@@ -203,7 +203,7 @@ function help(key: string) {
   console.log(HELP[key] ?? Object.values(HELP).map((h) => h.split('\n')[0]).join('\n'))
 }
 
-const BOOLEAN = new Set(['help', 'app', 'no-service', 'remove', 'json', 'yes', 'dry-run', 'no-service', 'detach', 'no-files', 'threads', 'kimaki-keep', 'kimaki'])
+const BOOLEAN = new Set(['help', 'app', 'no-service', 'remove', 'json', 'yes', 'dry-run', 'no-service', 'detach', 'no-files', 'threads', 'kimaki-keep'])
 
 const str = (v: string | true | undefined) => (typeof v === 'string' ? v : undefined)
 
@@ -251,7 +251,7 @@ const CONFIG_KEYS: Record<string, (value: string) => unknown> = {
 async function discordRest(flags: Record<string, string | true>) {
   const { discordToken } = await import('./discord/local.ts')
   const { DiscordRest } = await import('./discord/rest.ts')
-  return new DiscordRest(await discordToken({ tokenFile: str(flags['token-file']), kimaki: flags['kimaki'] === true ? true : str(flags['kimaki']) }))
+  return new DiscordRest(await discordToken({ tokenFile: str(flags['token-file']), kimaki: flags['kimaki'] === true ? true : str(flags['kimaki']), stateDir: paths.root }))
 }
 
 export async function onboardCommand(argv: string[]): Promise<boolean> {
@@ -466,14 +466,16 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
     const { serviceManager, backgroundPid, stopBackground, startBackground } = await import('./setup.ts')
     const unit = serviceName(paths)
     const manager = await serviceManager()
-    const installed = manager === 'systemd' ? fs.existsSync(path.join(os.homedir(), `.config/systemd/user/${unit}.service`)) : manager === 'launchd' ? fs.existsSync(path.join(os.homedir(), `Library/LaunchAgents/dev.${unit}.plist`)) : false
+    const { launchdFile, launchdLabel, restartTask, taskState } = await import('./platform.ts')
+    const installed = manager === 'systemd' ? fs.existsSync(path.join(os.homedir(), `.config/systemd/user/${unit}.service`)) : manager === 'launchd' ? fs.existsSync(launchdFile(unit)) : manager === 'task' ? (await taskState(unit)) !== null : false
     // No service: the hub runs as a background process (setup started it, or the @reboot line).
     if (!installed || backgroundPid(paths)) {
       await stopBackground(paths)
       if (typeof (await hubLatency(config, paths)) === 'number') throw new Error('A hub is answering that vocorum did not start (no service, no hub.pid). Stop it where it runs, then: vocorum restart')
       await startBackground(paths, repo)
-    } else {
-      const [cmd, args] = manager === 'launchd' ? ['launchctl', ['kickstart', '-k', `gui/${process.getuid?.()}/dev.${unit}`]] : ['systemctl', ['--user', 'restart', unit]]
+    } else if (manager === 'task') await restartTask(unit, config.port)
+    else {
+      const [cmd, args] = manager === 'launchd' ? ['launchctl', ['kickstart', '-k', `gui/${process.getuid?.()}/${launchdLabel(unit)}`]] : ['systemctl', ['--user', 'restart', unit]]
       await new Promise<void>((resolve, reject) => execFile(cmd as string, args as string[], (error) => (error ? reject(new Error(`${cmd} failed: ${error.message}. Is the service installed? vocorum setup`)) : resolve())))
     }
     const started = Date.now()
@@ -482,7 +484,7 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
       await new Promise((r) => setTimeout(r, 300))
       latency = await hubLatency(config, paths)
     }
-    if (typeof latency !== 'number') throw new Error(`The hub did not come back within 30 s. ${installed ? `journalctl --user -u ${unit} -n 50` : `tail -50 ${path.join(paths.root, 'hub.log')}`}`)
+    if (typeof latency !== 'number') throw new Error(`The hub did not come back within 30 s. ${installed && manager === 'systemd' ? `journalctl --user -u ${unit} -n 50` : `See the end of ${path.join(paths.root, 'hub.log')}`}`)
     await emit({ restarted: unit, seconds: (Date.now() - started) / 1000 }, () => console.log(`Restarted ${unit}; answering after ${((Date.now() - started) / 1000).toFixed(1)} s.`))
     return true
   }
@@ -632,7 +634,7 @@ async function discordCommand(sub: string | undefined, rest: string[], flags: Re
         if (g.owner_id) console.log(`  owner: ${g.owner_id}. If that is you: vocorum config set ownerDiscordIds ${g.owner_id}`)
         if (g.unreadable.length) console.log(`  the bot cannot read ${g.unreadable.length}: ${g.unreadable.slice(0, 10).join(', ')}${g.unreadable.length > 10 ? ', …' : ''}`)
       }
-      console.log(`\nImport takes about ${result.estimate.import_minutes} minute${result.estimate.import_minutes === 1 ? '' : 's'} plus channel history; deleting it from Discord later about ${result.estimate.purge_hours < 1 ? `${Math.max(1, Math.round(result.estimate.purge_hours * 60))} minutes` : `${result.estimate.purge_hours} hours`}.`)
+      console.log(`\nImport takes about ${result.estimate.import_minutes} minute${result.estimate.import_minutes === 1 ? '' : 's'} plus channel history; deleting its threads from Discord later (purge --threads) about ${result.estimate.purge_hours < 1 ? `${Math.max(1, Math.round(result.estimate.purge_hours * 60))} minutes` : `${result.estimate.purge_hours} hours`}, plus about 2 minutes per 1000 channel messages.`)
       console.log('Next: vocorum discord import <guild id> (or all) --detach')
     })
     return
@@ -706,6 +708,7 @@ async function discordCommand(sub: string | undefined, rest: string[], flags: Re
     const next = `vocorum discord purge --execute ${plan.id}${token} --detach`
     await emit({ ...summary, next }, () => {
       console.log(`Plan ${plan.id} for ${summary.guild}: delete ${summary.messages} messages in ${summary.channels} channels and threads (${summary.with_secrets} with secrets first), and ${summary.threads_to_delete} threads. About ${summary.estimate_minutes} minute${summary.estimate_minutes === 1 ? "" : "s"}.`)
+      if (summary.with_threads_option) console.log(`With --threads, ${summary.with_threads_option.threads} threads nobody else wrote in (${summary.with_threads_option.messages} of these messages) go whole, one request each: about ${summary.with_threads_option.estimate_minutes} minutes. The threads then disappear from Discord too.`)
       const s = summary.not_touched
       console.log(`Not touched: ${s.other_authors} by other people, ${s.recent} too recent, ${s.kept} in kept threads, ${s.not_copied} whose files the hub does not have yet, ${s.not_from_discord} written in the hub.`)
       if (s.not_copied) console.log('Copy those files first: vocorum discord import <guild id>, then plan again.')
@@ -819,7 +822,8 @@ async function requestCommand(command: string, sub: string | undefined, rest: st
       if (!method || !route) throw new Error('usage: request raw <METHOD> <route> [json body]')
       input = { method, route, body: body ? JSON.parse(body) : {}, summary: str(flags['summary']) ?? `${method} ${route}` }
     } else throw new Error('usage: request invite|remove|role|channel|raw ... (see vocorum help)')
-    const origin = str(flags['origin']) ?? (process.env['OPENCODE_SESSION_ID'] ? `agent session ${process.env['OPENCODE_SESSION_ID']}` : 'cli')
+    // Never taken from a flag: the card says where a request came from, and an agent must not choose it.
+    const origin = process.env['OPENCODE_SESSION_ID'] ? `agent session ${process.env['OPENCODE_SESSION_ID']}` : 'cli'
     const created = await admin.call<{ id: string; summary: string }>('POST', '/admin/requests', { ...input, reason: str(flags['reason']) ?? '', origin }, { tries: 1 })
     const link = requestLink(config, created.id)
     await emit({ ...created, link }, () => console.log(`Request ${created.id}: ${created.summary}\nIt waits for the owner, who approves it with a passkey (24 hours).\nApprove: ${link}`))

@@ -23,7 +23,8 @@ await build({
       name: 'external-packages',
       setup(b) {
         // Bundle the workspace twin (TypeScript source); every other package stays external.
-        b.onResolve({ filter: /^[^./]/ }, (args) => (args.path.startsWith('discord-digital-twin') ? undefined : { path: args.path, external: true }))
+        // Bare package names only: a Windows path (C:\\...) starts with a letter too.
+        b.onResolve({ filter: /^[^./]/ }, (args) => (args.path.startsWith('discord-digital-twin') || path.isAbsolute(args.path) ? undefined : { path: args.path, external: true }))
       },
     },
   ],

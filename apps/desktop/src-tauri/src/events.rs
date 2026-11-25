@@ -49,6 +49,12 @@ impl Events {
 
   // Where the page is and whether it is in view; the hub uses it for presence and to hold alerts.
   pub async fn set_focus(&self, focus: Value) {
+    #[cfg(windows)]
+    if focus.get("visible").and_then(Value::as_bool) == Some(true) {
+      if let Some(channel) = focus.get("channel_id").and_then(Value::as_str) {
+        toast::clear(channel);
+      }
+    }
     let mut inner = self.0.lock().await;
     inner.focus = Some(focus);
     send_focus(&inner);
@@ -188,16 +194,69 @@ fn notify(app: &AppHandle, d: Value) {
   use tauri_plugin_notification::NotificationExt;
   let text = |key: &str| d.get(key).and_then(Value::as_str).unwrap_or_default().chars().take(400).collect::<String>();
   let title = text("title");
-  let _ = app
-    .notification()
-    .builder()
-    .title(if title.is_empty() { "Vocorum".to_string() } else { title })
-    .body(text("body"))
-    .show();
+  let title = if title.is_empty() { "Vocorum".to_string() } else { title };
+  #[cfg(windows)]
+  let shown = toast::show(&app.config().identifier, &title, &text("body"), &text("channel_id")).is_some();
+  #[cfg(not(windows))]
+  let shown = false;
+  if !shown {
+    let _ = app.notification().builder().title(title).body(text("body")).show();
+  }
   if let Some(state) = app.try_state::<crate::State>() {
     let target = d.get("channel_id").and_then(Value::as_str).map(str::to_string);
     if let Ok(mut last) = state.last_alert.lock() {
       *last = target.map(|c| (c, d.get("message_id").and_then(Value::as_str).map(str::to_string), std::time::Instant::now()));
+    }
+  }
+}
+
+// Windows toasts carry the channel as their tag: a new alert from a channel replaces
+// the one before it in Action Center, and opening the channel clears it, as Discord
+// does. Only the installed app has the app id Windows needs; the plugin covers the rest.
+#[cfg(windows)]
+mod toast {
+  use windows::core::HSTRING;
+  use windows::Data::Xml::Dom::XmlDocument;
+  use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
+
+  const GROUP: &str = "vocorum";
+
+  // The identifier from tauri.conf.json, which the installer registers as the app id.
+  const APP_ID: &str = "dev.xipz.vocorum";
+
+  fn app_id() -> Option<HSTRING> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?.to_string_lossy().to_string();
+    let dev = dir.ends_with("target\\debug") || dir.ends_with("target\\release");
+    (!dev).then(|| HSTRING::from(APP_ID))
+  }
+
+  fn escape(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+  }
+
+  pub fn show(identifier: &str, title: &str, body: &str, channel: &str) -> Option<()> {
+    let id = app_id().filter(|id| *id == HSTRING::from(identifier))?;
+    let xml = XmlDocument::new().ok()?;
+    xml.LoadXml(&HSTRING::from(format!(
+      "<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual></toast>",
+      escape(title),
+      escape(body)
+    )))
+    .ok()?;
+    let toast = ToastNotification::CreateToastNotification(&xml).ok()?;
+    toast.SetGroup(&HSTRING::from(GROUP)).ok()?;
+    if !channel.is_empty() {
+      toast.SetTag(&HSTRING::from(channel.chars().take(64).collect::<String>())).ok()?;
+    }
+    ToastNotificationManager::CreateToastNotifierWithId(&id).ok()?.Show(&toast).ok()
+  }
+
+  pub fn clear(channel: &str) {
+    if let Some(id) = app_id() {
+      if let Ok(history) = ToastNotificationManager::History() {
+        let _ = history.RemoveGroupedTagWithId(&HSTRING::from(channel), &HSTRING::from(GROUP), &id);
+      }
     }
   }
 }

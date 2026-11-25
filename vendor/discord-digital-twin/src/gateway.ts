@@ -555,8 +555,9 @@ export class DiscordGateway {
           .filter((voiceState) => voiceState.guild_id === guild.id)
           .map(({ guild_id: _guildId, ...voiceState }) => voiceState),
         members: guild.members,
-        channels: guild.channels as GuildCreateChannels,
-        threads: [] as GuildCreateThreads,
+        // Like Discord: channels without threads, and only the active (unarchived) threads.
+        channels: guild.channels.filter((c) => !THREAD_CHANNEL_TYPES.has(c.type)) as GuildCreateChannels,
+        threads: guild.channels.filter((c) => THREAD_CHANNEL_TYPES.has(c.type) && !(c as { thread_metadata?: { archived?: boolean } }).thread_metadata?.archived) as GuildCreateThreads,
         presences: emptyPresences,
         stage_instances: emptyStageInstances,
         guild_scheduled_events: emptyScheduledEvents,
@@ -571,6 +572,8 @@ export class DiscordGateway {
 }
 
 // The channel a guildless event is about: channel_id, or the id of a DM channel itself.
+const THREAD_CHANNEL_TYPES = new Set([10, 11, 12])
+
 function directChannelOf(data: unknown): string | null {
   if (!data || typeof data !== 'object') return null
   const record = data as { channel_id?: unknown; id?: unknown; type?: unknown }

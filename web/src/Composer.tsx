@@ -931,6 +931,7 @@ export function Composer({
               rows={1}
               value={text}
               placeholder={placeholder}
+              aria-label={placeholder}
               onChange={(e) => {
                 setText(e.target.value)
                 setCaret({ start: e.target.selectionStart, end: e.target.selectionEnd })

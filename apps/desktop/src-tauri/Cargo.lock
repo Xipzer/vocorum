@@ -5316,7 +5316,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vocorum-app"
-version = "0.2.1"
+version = "0.2.3"
 dependencies = [
  "apple-native-keyring-store",
  "base64 0.23.1",
@@ -5347,6 +5347,7 @@ dependencies = [
  "tokio-tungstenite",
  "url",
  "webkit2gtk",
+ "webview2-com",
  "windows",
  "windows-native-keyring-store",
  "zbus-secret-service-keyring-store",

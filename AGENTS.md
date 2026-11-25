@@ -331,7 +331,10 @@ vocorum discord report --json
 - It only deletes what the hub already holds, with its files. There is no
   override. Never delete Discord messages any other way.
 - It deletes messages with secrets first.
-- Expect a few hundred deletions a minute. Large servers take a day or more.
+- Expect a few hundred deletions a minute. With `--threads`, agent threads
+  nobody else wrote in go in one request each: 400,000 messages take about an
+  hour and a quarter instead of about 11 hours. The import of that size takes
+  about half an hour.
 - Give the person `~/.vocorum/purge/PURGE-REPORT.md`. It lists failures, secrets
   to change, what Discord still keeps, and the last steps they do by hand.
 - Tell them to change every secret ever posted on Discord, and to reset their

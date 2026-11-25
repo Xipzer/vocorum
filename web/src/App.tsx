@@ -9,15 +9,17 @@ import { api, connectEvents, type Channel, type Guild, type HubState, type LinkK
 import { Avatar, DmAvatar, machineIcon } from './Avatar.tsx'
 import { Chat } from './Chat.tsx'
 import { Overview } from './Overview.tsx'
+import { extensions } from './extensions.tsx'
 import { SettingsHost } from './Settings.tsx'
 import { can, P } from './perms.ts'
 import { Empty, Inbox, InboxPanel, ScheduledPanel, LinksPanel, MembersPanel, PinsPanel, SearchPanel, ServicesPanel, ThreadsPanel } from './Panels.tsx'
 import { below, Sheet, sessionActions, usePress, type SheetAt, type SheetSpec } from './Sheet.tsx'
 import type { MarkdownContext } from './markdown.tsx'
 import { ModalDialog, type OpenModal } from './Modal.tsx'
-import { DM_GUILD, dmName, dmUser, isDm, snowflakeGt, store, useStore } from './store.ts'
+import { DM_GUILD, dmName, dmUser, isDm, snowflakeGt, store, THREAD_TYPES, useStore } from './store.ts'
 import { bellSheet, useFocusReporting, useNotificationClicks } from './notify.ts'
 import { native, shareOrigin } from './native.ts'
+import { setPlace } from './TitleBar.tsx'
 import { NativeLogin } from './NativeLogin.tsx'
 import { loginError } from './login.ts'
 import { Tooltips } from './Tooltip.tsx'
@@ -29,7 +31,7 @@ import { initColumns, keys, startResize, toggleColumn, useColumnKeys, useColumns
 
 initColumns()
 import { Icon, type IconName } from './icons.tsx'
-import { plain, machineLabel, displayName } from './text.ts'
+import { plain, machineLabel, displayName, motion } from './text.ts'
 
 const LIVE_THREADS = 5
 
@@ -126,14 +128,14 @@ function Login({ onDone }: { onDone: () => void }) {
 }
 
 function useRoute(): [string | null, (id: string) => void] {
-  const read = () => (location.hash === '#/overview' ? 'overview' : location.hash === '#/inbox' ? 'inbox' : (/^#\/c\/(\d+)/.exec(location.hash)?.[1] ?? null))
+  const read = () => (location.hash === '#/overview' ? 'overview' : location.hash === '#/inbox' ? 'inbox' : /^#\/x\/[\w-]+$/.test(location.hash) ? `x:${location.hash.slice(4)}` : (/^#\/c\/(\d+)/.exec(location.hash)?.[1] ?? null))
   const [id, setId] = useState(read)
   useEffect(() => {
     const onHash = () => setId(read())
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
-  return [id, (next) => (location.hash = next === 'overview' || next === 'inbox' ? `#/${next}` : `#/c/${next}`)]
+  return [id, (next) => (location.hash = next === 'overview' || next === 'inbox' ? `#/${next}` : next.startsWith('x:') ? `#/x/${next.slice(2)}` : `#/c/${next}`)]
 }
 
 // The thread tree: one continuous trunk from under the project to the last elbow.
@@ -259,7 +261,8 @@ function InboxButton() {
   const waiting = useStore((d) => Object.values(d.sessions).filter((s) => s.state === 'waiting' || s.state === 'failed').length)
   const requests = useStore((d) => d.requests.filter((r) => r.status === 'pending' && r.expires_at > Date.now()).length)
   const due = useStore((d) => (d.reminders ?? []).filter((r) => r.due).length)
-  const count = mentions + waiting + requests + due
+  const more = extensions.reduce((sum, e) => sum + (e.useInboxCount?.() ?? 0), 0)
+  const count = mentions + waiting + requests + due + more
   return (
     <button className={`icon-button inbox-button${count ? ' with-count' : ''}`} onClick={() => sessionActions.inbox?.()} aria-label={count ? `Inbox: ${count}` : 'Inbox'} title="Inbox">
       <Icon name="bell" />
@@ -655,7 +658,7 @@ function ListPills({ list, edge }: { list: React.RefObject<HTMLDivElement | null
   return (
     <div ref={dockRef} className={`list-pill-dock ${edge}`}>
       {kind && (
-        <button ref={pillRef} className={`list-pill ${kind}`} onClick={() => target.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })}>
+        <button ref={pillRef} className={`list-pill ${kind}`} onClick={() => target.current?.scrollIntoView({ block: 'center', behavior: motion() })}>
           {kind === 'mentions' ? 'New mentions' : 'New unreads'}
         </button>
       )}
@@ -779,6 +782,7 @@ function Sidebar({ state, current, open, onOpen, ctx, guild, onGuild, onThreads 
             {waiting > 0 && <span className="meta need num">{waiting} need you</span>}
           </button>
         )}
+        {!q && extensions.map((e) => e.SidebarRow && <e.SidebarRow key={e.id} active={current === `x:${e.id}`} onOpen={() => onOpen(`x:${e.id}`)} />)}
         {!q && (
           <button className={`channel overview-row${current === 'inbox' ? ' active' : ''}`} onClick={() => onOpen('inbox')}>
             <Icon name="at" size={18} />
@@ -1074,6 +1078,44 @@ function Main() {
       } else if (mod && e.key === '/') {
         e.preventDefault()
         setSwitcher((s) => (s === 'shortcuts' ? null : 'shortcuts'))
+      } else if (mod && e.altKey && !e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+        // Ctrl+Alt+arrows: the previous or next server on the rail.
+        const items = [...document.querySelectorAll<HTMLElement>('.rail .rail-item')]
+        const at = items.findIndex((r) => r.classList.contains('active'))
+        const next = items[(at + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]
+        if (next) {
+          e.preventDefault()
+          next.click()
+        }
+      } else if (mod && !e.shiftKey && !e.altKey && (e.key === '[' || e.key === ']')) {
+        e.preventDefault()
+        if (e.key === '[') history.back()
+        else history.forward()
+      } else if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'i' && !typing(e)) {
+        e.preventDefault()
+        setPanel((p) => (p?.kind === 'inbox' ? null : { kind: 'inbox' }))
+      } else if (mod && !e.shiftKey && !e.altKey && (e.key.toLowerCase() === 'p' || (e.key.toLowerCase() === 'u' && !typing(e)))) {
+        // Ctrl+P pins, Ctrl+U members (in the message box Ctrl+U stays underline).
+        const id = routeNow()
+        if (!id) return
+        e.preventDefault()
+        const kind = e.key.toLowerCase() === 'p' ? 'pins' : 'members'
+        setPanel((p) => (p?.kind === kind && 'channelId' in p && p.channelId === id ? null : { kind, channelId: id }))
+      } else if (mod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'u') {
+        const attach = document.querySelector<HTMLElement>('.chat .composer .attach')
+        if (attach) {
+          e.preventDefault()
+          attach.click()
+        }
+      } else if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'e') {
+        const emoji = document.querySelector<HTMLElement>('.chat .composer .emoji-button')
+        if (emoji) {
+          e.preventDefault()
+          emoji.click()
+        }
+      } else if (!mod && !e.altKey && e.key.length === 1 && e.key !== ' ' && !typing(e) && !(e.target as HTMLElement).closest?.('.message') && !document.querySelector('.overlay, .sheet')) {
+        // Typing anywhere goes to the message box, as in Discord.
+        document.querySelector<HTMLTextAreaElement>('.chat .composer textarea')?.focus()
       } else if (e.altKey && !mod && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
         const rows = [...document.querySelectorAll<HTMLElement>('.sidebar [data-nav]')].filter((r) => !e.shiftKey || r.classList.contains('unread') || r.dataset['nav'] === routeNow())
         const at = rows.findIndex((r) => r.dataset['nav'] === routeNow())
@@ -1179,6 +1221,7 @@ function Main() {
     )
   const overview = current === 'overview'
   const inbox = current === 'inbox'
+  const page = current?.startsWith('x:') ? extensions.find((e) => e.id === current.slice(2) && e.Page) : undefined
   const jump = (channelId: string, messageId: string) => {
     setJumpTo({ channelId, messageId, nonce: Date.now() })
     setCurrent(channelId)
@@ -1186,7 +1229,7 @@ function Main() {
     // On a phone the panel covers the thread: close it so the jump is visible.
     if (window.matchMedia('(max-width: 767px)').matches) setPanel(null)
   }
-  const channel = overview || inbox ? undefined : (current && (state.channels.find((c) => c.id === current) ?? state.threads.find((c) => c.id === current))) || state.channels.find((c) => c.type === 0 && (c.guild_id ?? state.guild.id) === guildPick) || state.channels.find((c) => c.type === 0)
+  const channel = overview || inbox || page ? undefined : (current && (state.channels.find((c) => c.id === current) ?? state.threads.find((c) => c.id === current))) || state.channels.find((c) => c.type === 0 && (c.guild_id ?? state.guild.id) === guildPick) || state.channels.find((c) => c.type === 0)
   // The server shown in the sidebar: the open channel's, else the one picked last.
   const guildIds = [...store.guilds().map((g) => g.id), ...(state.private_channels ? [DM_GUILD] : [])]
   const activeGuild = guildIds.includes(guildPick) ? guildPick : channel?.guild_id && guildIds.includes(channel.guild_id) ? channel.guild_id : state.guild.id
@@ -1205,13 +1248,27 @@ function Main() {
     setDrawer(false)
   }
 
+  // Where you are, for the desktop app's title bar and the browser tab (Discord's "#general | Server").
+  const placeName = overview ? 'Overview' : inbox ? 'Mentions' : page ? (page.title ?? page.id) : activeGuild === DM_GUILD ? 'Direct messages' : (store.guilds().find((g) => g.id === activeGuild)?.name ?? state.guild.name)
+  const here = overview || inbox || page || !channel ? null : isDm(channel) ? `@${dmName(channel, state.me.id)}` : THREAD_TYPES.has(channel.type) ? plain(channel.name ?? '') : `#${channel.name ?? ''}`
+  useEffect(() => {
+    setPlace(placeName)
+    document.title = here && activeGuild !== DM_GUILD ? `${here} | ${placeName}` : here ?? placeName
+  }, [placeName, here, activeGuild])
+
   return (
     <div className="app">
+      {/* Discord's first Tab stop: straight to the conversation. */}
+      <button className="skip-link" onClick={() => (document.querySelector<HTMLElement>('.composer textarea') ?? document.querySelector<HTMLElement>('.messages'))?.focus()}>
+        Skip to the conversation
+      </button>
       <Tooltips />
       <WhenHost />
-      <Sidebar state={state} current={overview ? 'overview' : inbox ? 'inbox' : (channel?.id ?? null)} open={drawer} onOpen={open} ctx={ctx} guild={activeGuild} onGuild={pickGuild} onThreads={(channelId) => setPanel({ kind: 'threads', channelId })} />
+      <Sidebar state={state} current={overview ? 'overview' : inbox ? 'inbox' : page ? current : (channel?.id ?? null)} open={drawer} onOpen={open} ctx={ctx} guild={activeGuild} onGuild={pickGuild} onThreads={(channelId) => setPanel({ kind: 'threads', channelId })} />
       {overview ? (
         <Overview onMenu={showChannels} onOpen={open} onSearch={() => setPanel({ kind: 'search' })} />
+      ) : page?.Page ? (
+        <page.Page key={`x${page.id}`} onMenu={showChannels} onOpen={open} />
       ) : inbox ? (
         <Inbox guildId={activeGuild} onMenu={showChannels} onJump={jump} onSearch={() => setPanel({ kind: 'search' })} />
       ) : channel && !(channel.type === 4) ? (

@@ -13,6 +13,7 @@ import { createSecureContext } from 'node:tls'
 import { EventEmitter } from 'node:events'
 import type { Duplex } from 'node:stream'
 import { execFile } from 'node:child_process'
+import { tool } from './platform.ts'
 import { promisify } from 'node:util'
 import { caFiles, certDer, ensureCa, ensureServerCert, fingerprint, hasLegacy, type CaFiles } from './ca.ts'
 import type { PrivateListenerConfig } from './config.ts'
@@ -480,7 +481,7 @@ export class PrivateListener {
     const login =
       cached && Date.now() - cached.at < 60_000
         ? cached.login
-        : await promisify(execFile)('tailscale', ['whois', '--json', ip], { timeout: 5000 })
+        : await promisify(execFile)(tool('tailscale'), ['whois', '--json', ip], { timeout: 5000, windowsHide: true })
             .then(({ stdout }) => (JSON.parse(stdout) as { UserProfile?: { LoginName?: string } }).UserProfile?.LoginName ?? null)
             .catch(() => null)
     this.whoisCache.set(ip, { login, at: Date.now() })

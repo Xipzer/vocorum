@@ -77,7 +77,8 @@ function certOf(pemOrDer: ArrayBuffer | Buffer) {
   return Buffer.from(new crypto.X509Certificate(Buffer.from(pemOrDer as ArrayBuffer)).raw)
 }
 
-test('a move to a new address keeps the app name on the new CA, so new pairings work', async () => {
+// macOS has only 127.0.0.1 on its loopback, so there is no second address to move to.
+test.skipIf(process.platform === 'darwin')('a move to a new address keeps the app name on the new CA, so new pairings work', async () => {
   const files = hub.privateListener!.files
   await hub.stop()
   fs.rmSync(files.legacy.dir + '.retired', { recursive: true, force: true })

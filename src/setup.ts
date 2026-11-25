@@ -14,6 +14,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { HUB_NODE_FLAGS, initHub, loadConfig, type HubPaths, type PrivateListenerConfig } from './config.ts'
 import { doctor, hubLatency, printLine, type Check } from './doctor.ts'
+import { installTask, launchdFile, launchdLabel, NODE_MIN, nodeSupported, restartTask, tool, WINDOWS } from './platform.ts'
 
 const run = promisify(execFile)
 
@@ -26,8 +27,10 @@ export function serviceName(paths: HubPaths) {
 }
 
 // Is there a service manager this user can install into? Containers and WSL often have none.
-export async function serviceManager(): Promise<'systemd' | 'launchd' | null> {
+// Windows: a Task Scheduler task (a real Windows service needs an administrator).
+export async function serviceManager(): Promise<'systemd' | 'launchd' | 'task' | null> {
   if (process.platform === 'darwin') return 'launchd'
+  if (WINDOWS) return 'task'
   if (process.platform !== 'linux') return null
   return (await out('systemctl', ['--user', 'show-environment'])) === null ? null : 'systemd'
 }
@@ -37,7 +40,7 @@ export async function serviceManager(): Promise<'systemd' | 'launchd' | null> {
 export async function startBackground(paths: HubPaths, repo: string): Promise<number> {
   const { spawn } = await import('node:child_process')
   const log = fs.openSync(path.join(paths.root, 'hub.log'), 'a', 0o600)
-  const child = spawn(process.execPath, [...HUB_NODE_FLAGS, path.join(repo, 'dist/hub.mjs'), 'start'], { cwd: repo, detached: true, stdio: ['ignore', log, log], env: { ...process.env, VOCORUM_DIR: paths.root } })
+  const child = spawn(process.execPath, [...HUB_NODE_FLAGS, path.join(repo, 'dist/hub.mjs'), 'start'], { cwd: repo, detached: true, windowsHide: true, stdio: ['ignore', log, log], env: { ...process.env, VOCORUM_DIR: paths.root } })
   child.unref()
   fs.closeSync(log)
   fs.writeFileSync(path.join(paths.root, 'hub.pid'), String(child.pid), { mode: 0o600 })
@@ -59,11 +62,12 @@ export function backgroundPid(paths: HubPaths): number | null {
 export async function stopBackground(paths: HubPaths) {
   const pid = backgroundPid(paths)
   if (!pid) return
-  process.kill(pid, 'SIGTERM')
+  process.kill(pid, WINDOWS ? undefined : 'SIGTERM')
   for (let i = 0; i < 50 && backgroundPid(paths); i++) await new Promise((r) => setTimeout(r, 200))
 }
 
 export function rebootLine(paths: HubPaths, repo: string) {
+  if (WINDOWS) return 'vocorum setup (installs a Task Scheduler task that starts it at logon)'
   return `crontab -e, then add: @reboot VOCORUM_DIR=${paths.root} ${process.execPath} ${path.join(repo, 'bin/vocorum.js')} restart`
 }
 
@@ -102,7 +106,7 @@ const TAILNET = ['100.64.0.0/10', 'fd7a:115c:a1e0::/48']
 
 async function out(cmd: string, args: string[]) {
   try {
-    return (await run(cmd, args, { timeout: 8000 })).stdout
+    return (await run(cmd, args, { timeout: 8000, windowsHide: true })).stdout
   } catch {
     return null
   }
@@ -111,9 +115,9 @@ async function out(cmd: string, args: string[]) {
 export type Network = { kind: 'tailscale' | 'wireguard' | 'loopback' | 'your address'; address: string | null; names: string[]; allow: string[]; login: string | null }
 
 export async function detectNetwork(): Promise<Network> {
-  const ip = (await out('tailscale', ['ip', '-4']))?.trim().split('\n')[0]
+  const ip = (await out(tool('tailscale'), ['ip', '-4']))?.trim().split('\n')[0]
   if (ip) {
-    const status = JSON.parse((await out('tailscale', ['status', '--json'])) ?? '{}') as { Self?: { DNSName?: string; UserID?: number }; User?: Record<string, { LoginName?: string }>; MagicDNSSuffix?: string; CurrentTailnet?: { MagicDNSEnabled?: boolean } }
+    const status = JSON.parse((await out(tool('tailscale'), ['status', '--json'])) ?? '{}') as { Self?: { DNSName?: string; UserID?: number }; User?: Record<string, { LoginName?: string }>; MagicDNSSuffix?: string; CurrentTailnet?: { MagicDNSEnabled?: boolean } }
     const dnsName = status.Self?.DNSName?.replace(/\.$/, '')
     const magic = status.CurrentTailnet?.MagicDNSEnabled !== false && dnsName ? [dnsName] : []
     const login = status.Self?.UserID !== undefined ? (status.User?.[String(status.Self.UserID)]?.LoginName ?? null) : null
@@ -177,10 +181,9 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
   }
 
   // 1. preflight
-  const major = Number(process.versions.node.split('.')[0])
-  if (major < 22) throw new Error(`Vocorum needs Node.js 22 or newer (this is ${process.versions.node}).`)
+  if (!nodeSupported()) throw new Error(`Vocorum needs Node.js ${NODE_MIN} or newer (this is ${process.versions.node}).`)
   if (!fs.existsSync(path.join(options.repo, 'dist/hub.mjs')) || !fs.existsSync(path.join(options.repo, 'web/dist/index.html'))) throw new Error(`Not built yet. Run: cd ${options.repo} && pnpm install && pnpm build`)
-  if (!(await out('openssl', ['version']))) throw new Error('openssl is missing. Install it first (the hub makes its own certificates with it).')
+  if (!(await out(tool('openssl'), ['version']))) throw new Error(`openssl is missing. Install it first (the hub makes its own certificates with it)${WINDOWS ? ': Git for Windows includes it (https://git-scm.com/download/win)' : process.platform === 'darwin' ? '' : ': sudo apt install openssl'}.`)
 
   // 2. network and names
   const detected = await detectNetwork()
@@ -215,7 +218,7 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
     listener ? `app address ${publicUrl}` : '',
     better ? `kept your current names (${kept!.names.join(', ')}). ${better} would need no DNS step on devices, but switching means reinstalling the certificate and new passkeys on every device: vocorum setup --name ${better},${kept!.names.join(',')}` : '',
     network.login ? `extra check: devices must be on the Tailscale account ${network.login}` : '',
-    options.service && (await serviceManager()) ? `service: ${process.platform === 'darwin' ? `launchd agent dev.${serviceName(paths)}` : `systemd user unit ${serviceName(paths)}.service`}` : `no service${options.service ? ' manager here' : ''}: the hub runs in the background and does not start after a reboot by itself`,
+    options.service && (await serviceManager()) ? `service: ${process.platform === 'darwin' ? `launchd agent dev.${serviceName(paths)}` : WINDOWS ? `Task Scheduler task Vocorum\\${serviceName(paths)}, at logon` : `systemd user unit ${serviceName(paths)}.service`}` : `no service${options.service ? ' manager here' : ''}: the hub runs in the background and does not start after a reboot by itself`,
   ].filter(Boolean)
   if (!options.json) {
     console.log('Vocorum setup will:')
@@ -258,8 +261,12 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
   const manager = options.service ? await serviceManager() : null
   if (options.service && !manager) log({ step: 'service', status: 'skipped', detail: 'no service manager here (no systemd user session); the hub runs in the background instead and does not start after a reboot by itself', fix: rebootLine(paths, options.repo) })
   if (options.service && manager) {
-    if (process.platform === 'darwin') {
-      const file = path.join(os.homedir(), `Library/LaunchAgents/dev.${serviceName(paths)}.plist`)
+    if (WINDOWS) {
+      const { changed, file } = await installTask(paths, options.repo, serviceName(paths))
+      if (changed || listenerChanged || (await hubLatency(config, paths)) === null) await restartTask(serviceName(paths), config.port)
+      log({ step: 'service', status: changed ? 'done' : 'already', detail: `Task Scheduler task Vocorum\\${serviceName(paths)} (${file}), starts at logon` })
+    } else if (process.platform === 'darwin') {
+      const file = launchdFile(serviceName(paths))
       const body = launchdPlist(paths, options.repo)
       const same = fs.existsSync(file) && fs.readFileSync(file, 'utf8') === body
       if (!same) {
@@ -267,7 +274,7 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
         fs.writeFileSync(file, body)
         await out('launchctl', ['bootout', `gui/${process.getuid?.()}`, file])
         await out('launchctl', ['bootstrap', `gui/${process.getuid?.()}`, file])
-      } else if (listenerChanged) await out('launchctl', ['kickstart', '-k', `gui/${process.getuid?.()}/dev.${serviceName(paths)}`])
+      } else if (listenerChanged) await out('launchctl', ['kickstart', '-k', `gui/${process.getuid?.()}/${launchdLabel(serviceName(paths))}`])
       log({ step: 'service', status: same ? 'already' : 'done', detail: file })
     } else {
       const file = path.join(os.homedir(), `.config/systemd/user/${serviceName(paths)}.service`)
@@ -293,7 +300,7 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
       if (latency === 'other') throw new Error(`Port ${config.port} is held by something else. Give this hub its own port: vocorum init --port <free port>`)
       if (latency === null) await new Promise((r) => setTimeout(r, 1000))
     }
-    log({ step: 'start', status: latency === null ? 'failed' : 'done', detail: latency === null ? 'the hub did not answer within 30 s' : `answering in ${latency} ms`, ...(latency === null && { fix: `journalctl --user -u ${serviceName(paths)} -n 50` }) })
+    log({ step: 'start', status: latency === null ? 'failed' : 'done', detail: latency === null ? 'the hub did not answer within 30 s' : `answering in ${latency} ms`, ...(latency === null && { fix: manager === 'systemd' ? `journalctl --user -u ${serviceName(paths)} -n 50` : `the end of ${path.join(paths.root, 'hub.log')}` }) })
   } else {
     let latency = await hubLatency(config, paths)
     if (latency === 'other') throw new Error(`Port ${config.port} is held by something else. Give this hub its own port: vocorum init --port <free port>`)
@@ -314,9 +321,17 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
   }
 
   // 7. a `vocorum` command on PATH, so people and their agents can just type it
-  const onPath = (await out('sh', ['-c', 'command -v vocorum']))?.trim()
+  const onPath = WINDOWS ? (await out('where.exe', ['vocorum']))?.trim().split('\n')[0]?.trim() : (await out('sh', ['-c', 'command -v vocorum']))?.trim()
   if (onPath) log({ step: 'command', status: 'already', detail: onPath })
-  else {
+  else if (WINDOWS) {
+    // WindowsApps is on every user's PATH; a .cmd there needs no administrator.
+    const dir = path.join(process.env['LOCALAPPDATA'] ?? path.join(os.homedir(), 'AppData', 'Local'), 'Microsoft', 'WindowsApps')
+    const shim = path.join(dir, 'vocorum.cmd')
+    if (fs.existsSync(dir)) {
+      fs.writeFileSync(shim, `@"${process.execPath}" "${path.join(options.repo, 'bin', 'vocorum.js')}" %*\r\n`)
+      log({ step: 'command', status: 'done', detail: shim })
+    } else log({ step: 'command', status: 'skipped', detail: `run it as: node ${path.join(options.repo, 'bin', 'vocorum.js')}` })
+  } else {
     const dir = path.join(os.homedir(), '.local/bin')
     fs.mkdirSync(dir, { recursive: true })
     const link = path.join(dir, 'vocorum')

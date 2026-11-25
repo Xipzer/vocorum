@@ -186,15 +186,65 @@ fn build_main(app: &AppHandle) -> tauri::Result<()> {
     .inner_size(1180.0, 780.0)
     .min_inner_size(380.0, 520.0)
     .background_color(tauri::window::Color(6, 6, 8, 255))
+    .zoom_hotkeys_enabled(true)
     .disable_drag_drop_handler();
+  // The page draws Discord's 32px title bar (TitleBar.tsx): macOS keeps its traffic
+  // lights over it, Windows gets the page's own controls. Linux keeps its frame.
+  #[cfg(target_os = "macos")]
+  let builder = builder
+    .title_bar_style(tauri::TitleBarStyle::Overlay)
+    .hidden_title(true)
+    .traffic_light_position(tauri::LogicalPosition::new(12.0, 16.0));
+  #[cfg(windows)]
+  let builder = builder.decorations(false).shadow(true);
+  #[cfg(target_os = "linux")]
+  let builder = builder.theme(Some(tauri::Theme::Dark));
   let window = builder.build()?;
   #[cfg(target_os = "linux")]
   linux_media(&window);
+  #[cfg(windows)]
+  {
+    let target = window.clone();
+    window.on_window_event(move |event| {
+      // Minimising does not always blur the window first.
+      match event {
+        tauri::WindowEvent::Focused(focused) => background_memory(&target, !focused),
+        tauri::WindowEvent::Resized(_) if target.is_minimized().unwrap_or(false) => background_memory(&target, true),
+        _ => {}
+      }
+    });
+  }
   let state = app.state::<State>();
   let events = state.events.clone();
   tauri::async_runtime::spawn(async move { events.set_hidden(false).await });
   let _ = window;
   Ok(())
+}
+
+// A window left in the background for half a minute asks WebView2 to give memory
+// back (its "low" memory target); coming to the front restores the normal target.
+#[cfg(windows)]
+fn background_memory(window: &tauri::WebviewWindow, background: bool) {
+  use std::sync::atomic::{AtomicU64, Ordering};
+  static TURN: AtomicU64 = AtomicU64::new(0);
+  let turn = TURN.fetch_add(1, Ordering::SeqCst) + 1;
+  let window = window.clone();
+  tauri::async_runtime::spawn(async move {
+    if background {
+      tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+      if TURN.load(Ordering::SeqCst) != turn {
+        return;
+      }
+    }
+    let _ = window.with_webview(move |webview| unsafe {
+      use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL};
+      use windows::core::Interface;
+      let level = if background { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW } else { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL };
+      if let Ok(core) = webview.controller().CoreWebView2().and_then(|c| c.cast::<ICoreWebView2_19>()) {
+        let _ = core.SetMemoryUsageTargetLevel(level);
+      }
+    });
+  });
 }
 
 // WebKitGTK keeps getUserMedia and MediaRecorder behind settings that wry leaves off.
@@ -280,6 +330,36 @@ async fn events_unsubscribe(state: tauri::State<'_, State>) -> Result<(), String
   Ok(())
 }
 
+// The page's title bar buttons (Windows) and dragging (both).
+#[tauri::command]
+fn window_control(window: tauri::WebviewWindow, action: String) -> Result<(), String> {
+  match action.as_str() {
+    "minimize" => window.minimize(),
+    "toggle_maximize" => {
+      if window.is_maximized().unwrap_or(false) {
+        window.unmaximize()
+      } else {
+        window.maximize()
+      }
+    }
+    "close" => window.close(),
+    "drag" => window.start_dragging(),
+    _ => return Err("unknown window action".into()),
+  }
+  .map_err(|e| e.to_string())
+}
+
+// The window's own title follows the page's ("#channel | Server") for the taskbar and Alt+Tab.
+#[tauri::command]
+fn window_title(window: tauri::WebviewWindow, title: String) -> Result<(), String> {
+  window.set_title(&title.chars().take(200).collect::<String>()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn window_maximized(window: tauri::WebviewWindow) -> bool {
+  window.is_maximized().unwrap_or(false)
+}
+
 #[tauri::command]
 async fn set_focus(state: tauri::State<'_, State>, focus: Value) -> Result<(), String> {
   state.events.set_focus(focus).await;
@@ -304,17 +384,17 @@ fn tray_menu(app: &AppHandle, update: Option<&str>) -> tauri::Result<tauri::menu
   use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
   use tauri_plugin_autostart::ManagerExt;
   let open = MenuItem::with_id(app, "open", "Open Vocorum", true, None::<&str>)?;
-  let login = CheckMenuItem::with_id(app, "autostart", "Start when I log in", true, app.autolaunch().is_enabled().unwrap_or(false), None::<&str>)?;
+  let login = CheckMenuItem::with_id(app, "autostart", "Open at login", true, app.autolaunch().is_enabled().unwrap_or(false), None::<&str>)?;
   let quit = MenuItem::with_id(app, "quit", "Quit Vocorum", true, None::<&str>)?;
   let separator = PredefinedMenuItem::separator(app)?;
   let menu = Menu::with_items(app, &[&open, &login, &separator, &quit])?;
   if let Some(version) = update {
-    menu.insert(&MenuItem::with_id(app, "update", format!("Update and restart ({version})"), true, None::<&str>)?, 2)?;
+    menu.insert(&MenuItem::with_id(app, "update", format!("Restart to update ({version})"), true, None::<&str>)?, 2)?;
   }
   Ok(menu)
 }
 
-// Shows or hides "Update and restart" in the tray menu.
+// Shows or hides "Restart to update" in the tray menu.
 pub fn set_update_item(app: &AppHandle, version: Option<&str>) {
   #[cfg(desktop)]
   if let (Some(tray), Ok(menu)) = (app.tray_by_id("tray"), tray_menu(app, version)) {
@@ -390,7 +470,7 @@ pub fn run() {
     .plugin(tauri_plugin_notification::init())
     .plugin(tauri_plugin_opener::init())
     .register_asynchronous_uri_scheme_protocol(SCHEME, |ctx, request, responder| protocol::handle(ctx.app_handle(), request, responder))
-    .invoke_handler(tauri::generate_handler![pair, sign_in, approve_request, forget_hub, events_subscribe, events_unsubscribe, set_focus, set_alerts])
+    .invoke_handler(tauri::generate_handler![pair, sign_in, approve_request, forget_hub, events_subscribe, events_unsubscribe, set_focus, set_alerts, window_control, window_maximized, window_title])
     .setup(|app| {
       let dir = app.path().app_config_dir()?;
       std::fs::create_dir_all(&dir)?;

@@ -1,5 +1,7 @@
 // Message search and the mentions inbox. An FTS5 index in hub.db, filled from
 // the twin's messages on start and kept current from the dispatch stream.
+// The index keeps no copy of the text (the twin has it): snippets for a page
+// of results are cut from the twin's messages.
 // Query syntax follows Discord: free text, "exact phrases", from:, in:,
 // has:file|image|link|pin, mentions:me, before:, after:, during: (YYYY-MM-DD).
 
@@ -7,9 +9,11 @@ import { getMessageVisibleText } from 'discord-digital-twin/src'
 import type { InStatement } from './sqlite.ts'
 import type { Hub } from './hub.ts'
 
+// Keyed by the message id as an integer (a snowflake fits): the same key as the
+// FTS rowid, and no second copy of the id in its own index.
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS message_index (
-    message_id TEXT PRIMARY KEY,
+    id INTEGER PRIMARY KEY,
     channel_id TEXT NOT NULL,
     author_id TEXT NOT NULL,
     bot INTEGER NOT NULL,
@@ -17,13 +21,10 @@ const SCHEMA = [
     has_file INTEGER NOT NULL,
     has_image INTEGER NOT NULL,
     has_link INTEGER NOT NULL,
-    mentions_owner INTEGER NOT NULL, -- unused since index version 2 (see message_mentions)
     pinned INTEGER NOT NULL
   )`,
   'CREATE INDEX IF NOT EXISTS message_index_channel ON message_index (channel_id, ts)',
-  'CREATE INDEX IF NOT EXISTS message_index_mentions ON message_index (mentions_owner, ts)',
-  `CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(body, message_id UNINDEXED, tokenize = 'unicode61 remove_diacritics 2')`,
-  `CREATE TABLE IF NOT EXISTS search_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+  `CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(body, content='', contentless_delete=1, tokenize = 'unicode61 remove_diacritics 2')`,
   // Who each message mentions (people, not the author), for every user's inbox.
   `CREATE TABLE IF NOT EXISTS message_mentions (message_id TEXT NOT NULL, user_id TEXT NOT NULL, ts INTEGER NOT NULL, channel_id TEXT NOT NULL, PRIMARY KEY (message_id, user_id))`,
   'CREATE INDEX IF NOT EXISTS message_mentions_user ON message_mentions (user_id, ts)',
@@ -31,7 +32,9 @@ const SCHEMA = [
 
 // Bumped when what the index stores changes: the index is rebuilt once.
 // 3: FTS rows keyed by the message id as rowid (deletes were full scans).
-const INDEX_VERSION = '3'
+// 4: no copy of the text in the index, integer keys (half the size).
+const INDEX_VERSION = '4'
+const META = `CREATE TABLE IF NOT EXISTS search_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`
 const TOTAL_CAP = 5000
 
 type Row = {
@@ -97,6 +100,47 @@ export function ftsExpression(query: SearchQuery): string | null {
   return parts.length ? parts.join(' AND ') : null
 }
 
+// What a message is searched by: its visible text, embed titles and descriptions, file names.
+function bodyOf(row: Pick<Row, 'content' | 'components' | 'embeds' | 'attachments'>) {
+  const components = JSON.parse(row.components) as unknown[]
+  const embeds = JSON.parse(row.embeds) as Array<{ title?: string; description?: string }>
+  const attachments = JSON.parse(row.attachments) as Array<{ filename?: string; content_type?: string }>
+  const visible = getMessageVisibleText({ content: row.content, components })
+  const body = [visible, ...embeds.flatMap((e) => [e.title ?? '', e.description ?? '']), ...attachments.map((a) => a.filename ?? '')].join('\n').trim()
+  return { components, attachments, visible, body }
+}
+
+// About 16 words around the first hit, hits marked **like this**, … where text was cut.
+// Words match as prefixes and without accents or case, as the index does.
+export function snippet(body: string, query: SearchQuery, words = 16): string | null {
+  const fold = (s: string) => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
+  const tokens = [...body.matchAll(/[\p{L}\p{N}_]+/gu)].map((m) => ({ start: m.index!, end: m.index! + m[0].length, text: fold(m[0]) }))
+  if (!tokens.length) return null
+  const split = (s: string) => [...fold(s).matchAll(/[\p{L}\p{N}_]+/gu)].map((m) => m[0])
+  const prefixes = query.text.flatMap(split)
+  const phrases = query.phrases.map(split).filter((p) => p.length)
+  const hits: Array<[number, number]> = []
+  for (let i = 0; i < tokens.length; i++) {
+    const phrase = phrases.find((p) => p.every((w, k) => tokens[i + k]?.text === w))
+    if (phrase) {
+      hits.push([i, i + phrase.length - 1])
+      i += phrase.length - 1
+    } else if (prefixes.some((w) => tokens[i]!.text.startsWith(w))) hits.push([i, i])
+  }
+  const first = hits[0]?.[0] ?? 0
+  const from = Math.max(0, Math.min(first - Math.floor(words / 4), tokens.length - words))
+  const to = Math.min(tokens.length - 1, from + words - 1)
+  let out = from > 0 ? '…' : ''
+  let at = tokens[from]!.start
+  for (const [a, b] of hits) {
+    if (b < from || a > to) continue
+    out += body.slice(at, tokens[a]!.start) + '**' + body.slice(tokens[a]!.start, tokens[b]!.end) + '**'
+    at = tokens[b]!.end
+  }
+  out += body.slice(at, tokens[to]!.end) + (to < tokens.length - 1 ? '…' : '')
+  return out
+}
+
 export class SearchIndex {
   private queue: Promise<void> = Promise.resolve()
   private backfilling: Promise<void> = Promise.resolve()
@@ -110,13 +154,17 @@ export class SearchIndex {
   }
 
   async start() {
-    for (const statement of SCHEMA) await this.db.execute(statement)
+    await this.db.execute(META)
     const version = (await this.db.execute("SELECT value FROM search_meta WHERE key = 'version'")).rows[0]
     if (String(version?.['value'] ?? '') !== INDEX_VERSION) {
-      for (const table of ['message_index', 'message_fts', 'message_mentions']) await this.db.execute(`DELETE FROM ${table}`)
+      // A new layout: the old tables go, and the space they held goes back to the disk
+      // while the file is small (no index yet), before the rebuild below.
+      for (const table of ['message_index', 'message_fts', 'message_mentions']) await this.db.execute(`DROP TABLE IF EXISTS ${table}`)
+      await this.db.execute('VACUUM')
       await this.db.execute("DELETE FROM search_meta WHERE key = 'cursor'")
       await this.db.execute({ sql: "INSERT INTO search_meta (key, value) VALUES ('version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", args: [INDEX_VERSION] })
     }
+    for (const statement of SCHEMA) await this.db.execute(statement)
     // In the background: a rebuild of a large index must not hold up the hub's start.
     this.backfilling = this.backfill().catch((error) => console.error('[search]', error))
     this.unobserve = this.hub.twin.observeDispatches((event, data) => {
@@ -151,11 +199,16 @@ export class SearchIndex {
     const cursorRow = (await this.db.execute("SELECT value FROM search_meta WHERE key = 'cursor'")).rows[0]
     let cursor = cursorRow ? String(cursorRow['value']) : ''
     for (;;) {
-      const rows = await this.hub.twin.prisma.message.findMany({ where: cursor ? { id: { gt: cursor } } : {}, orderBy: { id: 'asc' }, take: 500 })
-      if (rows.length === 0) break
+      // Ids first: an import already indexed what it wrote, so only the rest is loaded and written.
+      const ids = (await this.hub.twin.prisma.message.findMany({ where: cursor ? { id: { gt: cursor } } : {}, orderBy: { id: 'asc' }, take: 500, select: { id: true } })).map((r) => r.id)
+      if (ids.length === 0) break
       if (this.stopped) return
-      await this.writeMany(rows)
-      cursor = rows.at(-1)!.id
+      const indexed = new Set((await this.db.execute({ sql: 'SELECT CAST(id AS TEXT) AS id FROM message_index WHERE id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))', args: [JSON.stringify(ids)] })).rows.map((r) => String(r['id'])))
+      const missing = ids.filter((id) => !indexed.has(id))
+      if (missing.length) await this.writeMany(await this.hub.twin.prisma.message.findMany({ where: { id: { in: missing } } }))
+      cursor = ids.at(-1)!
+      // A rebuild of a large index runs beside people using the hub, not instead of them.
+      await new Promise((resolve) => setImmediate(resolve))
       await this.db.execute({ sql: "INSERT INTO search_meta (key, value) VALUES ('cursor', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", args: [cursor] })
     }
   }
@@ -168,7 +221,7 @@ export class SearchIndex {
   private async remove(messageId: string) {
     await this.db.batch(
       [
-        { sql: 'DELETE FROM message_index WHERE message_id = ?', args: [messageId] },
+        { sql: 'DELETE FROM message_index WHERE id = CAST(? AS INTEGER)', args: [messageId] },
         { sql: 'DELETE FROM message_fts WHERE rowid = CAST(? AS INTEGER)', args: [messageId] },
         { sql: 'DELETE FROM message_mentions WHERE message_id = ?', args: [messageId] },
       ],
@@ -189,18 +242,14 @@ export class SearchIndex {
   }
 
   private statements(row: Row, bot: boolean): InStatement[] {
-    const components = JSON.parse(row.components) as unknown[]
-    const embeds = JSON.parse(row.embeds) as Array<{ title?: string; description?: string }>
-    const attachments = JSON.parse(row.attachments) as Array<{ filename?: string; content_type?: string }>
-    const visible = getMessageVisibleText({ content: row.content, components })
-    const body = [visible, ...embeds.flatMap((e) => [e.title ?? '', e.description ?? '']), ...attachments.map((a) => a.filename ?? '')].join('\n').trim()
+    const { components, attachments, visible, body } = bodyOf(row)
     const mentioned = [...new Set([...`${row.content}\n${visible}`.matchAll(/<@!?(\d{5,20})>/g)].map((m) => m[1]!))].filter((id) => id !== row.authorId)
     const media = JSON.stringify(components)
     return [
       {
-        sql: `INSERT INTO message_index (message_id, channel_id, author_id, bot, ts, has_file, has_image, has_link, mentions_owner, pinned)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT(message_id) DO UPDATE SET has_file = excluded.has_file, has_image = excluded.has_image, has_link = excluded.has_link,
+        sql: `INSERT INTO message_index (id, channel_id, author_id, bot, ts, has_file, has_image, has_link, pinned)
+              VALUES (CAST(? AS INTEGER), ?, ?, ?, ?, ?, ?, ?, ?)
+              ON CONFLICT(id) DO UPDATE SET has_file = excluded.has_file, has_image = excluded.has_image, has_link = excluded.has_link,
                 pinned = excluded.pinned`,
         args: [
           row.id,
@@ -211,14 +260,13 @@ export class SearchIndex {
           attachments.length > 0 || media.includes('"type":13') ? 1 : 0,
           attachments.some((a) => a.content_type?.startsWith('image/')) || media.includes('"type":12') ? 1 : 0,
           /https?:\/\//.test(body) ? 1 : 0,
-          0,
           row.pinned ? 1 : 0,
         ],
       },
       { sql: 'DELETE FROM message_mentions WHERE message_id = ?', args: [row.id] },
       ...mentioned.map((userId) => ({ sql: 'INSERT INTO message_mentions (message_id, user_id, ts, channel_id) VALUES (?, ?, ?, ?)', args: [row.id, userId, row.timestamp.getTime(), row.channelId] })),
       { sql: 'DELETE FROM message_fts WHERE rowid = CAST(? AS INTEGER)', args: [row.id] },
-      ...(body ? [{ sql: 'INSERT INTO message_fts (rowid, body, message_id) VALUES (CAST(? AS INTEGER), ?, ?)', args: [row.id, body, row.id] }] : []),
+      ...(body ? [{ sql: 'INSERT INTO message_fts (rowid, body) VALUES (CAST(? AS INTEGER), ?)', args: [row.id, body] }] : []),
     ]
   }
 
@@ -257,7 +305,7 @@ export class SearchIndex {
       if (column) where.push(`i.${column} = 1`)
     }
     if (query.mentionsMe) {
-      where.push('i.message_id IN (SELECT message_id FROM message_mentions WHERE user_id = ?)')
+      where.push('i.id IN (SELECT CAST(message_id AS INTEGER) FROM message_mentions WHERE user_id = ?)')
       args.push(userId)
     }
     if (query.before !== null) {
@@ -275,17 +323,19 @@ export class SearchIndex {
     // (ids are Discord snowflakes, so time order) and stops at the page, and
     // each match is checked against the filters by primary key. Counts stop
     // at TOTAL_CAP: a common word must not make every search scan everything.
-    const from = fts ? 'message_fts f JOIN message_index i ON i.message_id = f.message_id' : 'message_index i'
+    const from = fts ? 'message_fts f JOIN message_index i ON i.id = f.rowid' : 'message_index i'
     const match = fts ? 'f.message_fts MATCH ? AND ' : ''
     const matchArgs = fts ? [fts] : []
     const total = Number((await this.db.execute({ sql: `SELECT count(*) n FROM (SELECT 1 FROM ${from} WHERE ${match}${clause} LIMIT ${TOTAL_CAP})`, args: [...matchArgs, ...args] })).rows[0]!['n'])
     const rows = await this.db.execute({
       sql: fts
-        ? `SELECT i.message_id, snippet(message_fts, 0, '**', '**', '…', 16) AS snippet FROM ${from} WHERE ${match}${clause} ORDER BY f.rowid ${direction} LIMIT ? OFFSET ?`
-        : `SELECT i.message_id, NULL AS snippet FROM ${from} WHERE ${clause} ORDER BY i.ts ${direction}, i.message_id ${direction} LIMIT ? OFFSET ?`,
+        ? `SELECT CAST(i.id AS TEXT) AS message_id FROM ${from} WHERE ${match}${clause} ORDER BY f.rowid ${direction} LIMIT ? OFFSET ?`
+        : `SELECT CAST(i.id AS TEXT) AS message_id FROM ${from} WHERE ${clause} ORDER BY i.ts ${direction}, i.id ${direction} LIMIT ? OFFSET ?`,
       args: [...matchArgs, ...args, Math.min(limit, 50), offset],
     })
-    return { total, ...(total >= TOTAL_CAP && { total_capped: true }), results: rows.rows.map((r) => ({ messageId: String(r['message_id']), snippet: r['snippet'] == null ? null : String(r['snippet']) })) }
+    const ids = rows.rows.map((r) => String(r['message_id']))
+    const texts = new Map(fts && ids.length ? (await this.hub.twin.prisma.message.findMany({ where: { id: { in: ids } } })).map((m) => [m.id, bodyOf(m).body]) : [])
+    return { total, ...(total >= TOTAL_CAP && { total_capped: true }), results: ids.map((id) => ({ messageId: id, snippet: fts && texts.has(id) ? snippet(texts.get(id)!, query) : null })) }
   }
 
   // Mentions of a user in channels they can view, newest first: every unread

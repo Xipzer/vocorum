@@ -42,6 +42,7 @@ export type Plan = {
   authors: string[]
   // Who wrote the messages left as "other people", so a webhook or another bot can be added with --authors.
   others?: Array<{ id: string; name: string; bot: boolean; messages: number }>
+  whole_threads?: { threads: number; messages: number }
 }
 
 // Message types Discord lets their author (or a moderator) delete: replies, slash command
@@ -97,17 +98,18 @@ export async function makePlan(rest: DiscordRest, config: HubConfig, paths: HubP
     if (only && !channels.length) throw new Error(`The hub has none of ${[...only].join(', ')} in this server. Import them first.`)
     const isThread = new Map(channels.map((c) => [String(c['id']), THREAD_TYPES.has(Number(c['type']))]))
     const copies = new Set((await hubDb.execute('SELECT id FROM attachments')).rows.map((r) => String(r['id'])))
-    const fromDiscord = new Set((await hubDb.execute("SELECT message_id FROM message_origins WHERE origin = 'discord'")).rows.map((r) => String(r['message_id'])))
+    const fromDiscord = new Set((await hubDb.execute("SELECT CAST(message_id AS TEXT) AS message_id FROM message_origins WHERE origin = 'discord'")).rows.map((r) => String(r['message_id'])))
     const cutoff = Date.now() - options.olderThanDays * DAY
     const skipped = { not_copied: 0, other_authors: 0, recent: 0, kept: 0, not_from_discord: 0 }
     const messages: Plan['messages'] = []
     const otherAuthors = new Map<string, number>()
-    const threadState = new Map<string, { last: number; others: boolean; planned: number; total: number }>()
+    // unsafe: the thread holds something deleting it would lose (a file the hub lacks).
+    const threadState = new Map<string, { last: number; others: boolean; unsafe: boolean; planned: number; total: number }>()
     for (const c of channels) {
       const channelId = String(c['id'])
       const rows = (await twin.execute({ sql: 'SELECT id, authorId, type, content, embeds, components, attachments FROM Message WHERE channelId = ?', args: [channelId] })).rows
       const last = rows.reduce((max, r) => Math.max(max, snowflakeTime(String(r['id']))), 0)
-      const state = { last, others: false, planned: 0, total: rows.length }
+      const state = { last, others: false, unsafe: false, planned: 0, total: rows.length }
       if (isThread.get(channelId)) threadState.set(channelId, state)
       const kept = keep.has(channelId) || (c['parentId'] && keep.has(String(c['parentId'])))
       for (const r of rows) {
@@ -139,6 +141,7 @@ export async function makePlan(rest: DiscordRest, config: HubConfig, paths: HubP
         // Safe only when the hub holds a copy of every file, or Discord had already lost it.
         const files = JSON.parse(String(r['attachments'] ?? '[]')) as Array<{ id?: string; url?: string; missing?: boolean }>
         if (files.some((f) => !f.missing && (CDN.test(f.url ?? '') || !copies.has(String(f.id))))) {
+          state.unsafe = true
           skipped.not_copied++
           continue
         }
@@ -150,13 +153,16 @@ export async function makePlan(rest: DiscordRest, config: HubConfig, paths: HubP
       }
     }
     messages.sort((a, b) => a[2] - b[2] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
-    const threads = options.threads ? [...threadState].filter(([id, s]) => !s.others && !keep.has(id) && s.last <= cutoff && s.planned > 0).map(([id]) => id) : []
+    const eligible = [...threadState].filter(([id, s]) => !s.others && !s.unsafe && !keep.has(id) && s.last <= cutoff && s.planned > 0)
+    const threads = options.threads ? eligible.map(([id]) => id) : []
     const others = []
     for (const [id, count] of [...otherAuthors].sort((a, b) => b[1] - a[1]).slice(0, 10)) {
       const user = (await twin.execute({ sql: 'SELECT username, bot FROM User WHERE id = ?', args: [id] })).rows[0]
       others.push({ id, name: String(user?.['username'] ?? id), bot: Boolean(Number(user?.['bot'] ?? 0)), messages: count })
     }
-    const body = { guild: { id: String(guild['id']), name: String(guild['name']) }, options, messages, threads, skipped, authors: [...authors], others }
+    // Without --threads: what deleting those threads whole would save (one request each instead of one per message).
+    const wholeThreads = options.threads ? undefined : { threads: eligible.length, messages: eligible.reduce((sum, [, s]) => sum + s.planned, 0) }
+    const body = { guild: { id: String(guild['id']), name: String(guild['name']) }, options, messages, threads, skipped, authors: [...authors], others, ...(wholeThreads?.threads && { whole_threads: wholeThreads }) }
     const plan: Plan = { id: hashPlan(body), created: new Date().toISOString(), ...body }
     writeJson(path.join(jobDir(paths, 'purge'), `plan-${plan.id}.json`), plan)
     return plan
@@ -169,8 +175,11 @@ export async function makePlan(rest: DiscordRest, config: HubConfig, paths: HubP
 export function summarise(plan: Plan) {
   const byPriority = [0, 1, 2].map((p) => plan.messages.filter((m) => m[2] === p).length)
   const channels = new Set(plan.messages.map((m) => m[0])).size
-  // Single deletes run at about 5 a second per channel and several channels at once; budget 10 a second.
-  const minutes = Math.ceil(plan.messages.length / 10 / 60)
+  // A thread nobody else wrote in goes in one request, with its messages. Single deletes run
+  // at about 5 a second per channel and several channels at once; budget 10 a second.
+  const whole = new Set(plan.threads)
+  const singles = plan.messages.filter((m) => !whole.has(m[0])).length
+  const minutes = Math.ceil((singles + whole.size * 2) / 10 / 60)
   return {
     plan: plan.id,
     guild: plan.guild.name,
@@ -180,6 +189,8 @@ export function summarise(plan: Plan) {
     other: byPriority[2],
     channels,
     threads_to_delete: plan.threads.length,
+    in_whole_threads: plan.messages.length - singles,
+    ...(plan.whole_threads && { with_threads_option: { ...plan.whole_threads, estimate_minutes: Math.ceil((plan.messages.length - plan.whole_threads.messages + plan.whole_threads.threads * 2) / 10 / 60) } }),
     estimate_minutes: minutes,
     not_touched: plan.skipped,
     other_authors: plan.others ?? [],
@@ -244,6 +255,25 @@ export async function executePlan(rest: DiscordRest, paths: HubPaths, plan: Plan
     return result
   }
 
+  // A thread is deleted whole only when everything Discord still has in it is on the hub:
+  // the messages the plan read, system messages, and Discord echoes of hub messages.
+  const twin = openTwin(paths)
+  const hubDb = openHubDb(paths)
+  const known = async (channel: string) => {
+    const ids = (await twin.execute({ sql: 'SELECT id FROM Message WHERE channelId = ?', args: [channel] })).rows.map((r) => String(r['id']))
+    const echoes = (await hubDb.execute({ sql: 'SELECT CAST(message_id AS TEXT) AS message_id FROM message_origins WHERE echo_of IN (SELECT CAST(value AS INTEGER) FROM json_each(?))', args: [JSON.stringify(ids)] })).rows.map((r) => String(r['message_id']))
+    return new Set([...ids, ...echoes])
+  }
+  const whole = new Set(plan.threads.filter((t) => !done.has(`thread:${t}`)))
+  const deleteThread = async (thread: string, planned: string[]) => {
+    const result = await rest.call('DELETE', `/channels/${thread}`, undefined, reason)
+    if (result.status !== 200 && result.status !== 204 && result.code !== 10003) return result
+    mark([...planned.filter((id) => !done.has(id)), `thread:${thread}`])
+    progress.threads_deleted++
+    act({ op: 'thread_deleted', channel: thread, messages: planned.length })
+    return null
+  }
+
   const byChannel = new Map<string, string[]>()
   for (const [channel, id] of plan.messages) if (!done.has(id)) byChannel.set(channel, [...(byChannel.get(channel) ?? []), id])
   const queue = [...byChannel]
@@ -262,6 +292,21 @@ export async function executePlan(rest: DiscordRest, paths: HubPaths, plan: Plan
       // Listing what is still there costs one request per 100 messages; deleting what is
       // already gone costs one each. Earlier runs and people deleting by hand make this common.
       const present = await stillOnDiscord(rest, channel)
+      if (whole.has(channel) && present) {
+        const have = await known(channel)
+        const newer = [...present].filter((id) => !have.has(id))
+        if (newer.length === 0) {
+          const count = planned.filter((id) => !done.has(id)).length
+          if ((await deleteThread(channel, planned)) === null) {
+            progress.deleted += count
+            continue
+          }
+          // Refused (often a missing Manage Threads permission): message by message, then once more at the end.
+        } else {
+          act({ op: 'thread_kept', channel, reason: 'messages on Discord that the hub does not have', count: newer.length })
+          whole.delete(channel)
+        }
+      }
       const gone = present === undefined ? [] : present === null ? planned : planned.filter((id) => !present.has(id))
       if (gone.length) {
         mark(gone)
@@ -300,17 +345,19 @@ export async function executePlan(rest: DiscordRest, paths: HubPaths, plan: Plan
     await Promise.all(Array.from({ length: workers }, worker))
     const planned = new Map<string, string[]>()
     for (const [channel, id] of plan.messages) planned.set(channel, [...(planned.get(channel) ?? []), id])
-    for (const thread of plan.threads) {
+    // Threads whose whole delete was refused the first time, now emptied message by message.
+    for (const thread of whole) {
       if (done.has(`thread:${thread}`)) continue
       if (!(planned.get(thread) ?? []).every((id) => done.has(id))) continue
-      const result = await rest.call('DELETE', `/channels/${thread}`, undefined, reason)
-      if (result.status === 200 || result.status === 204 || result.code === 10003) {
-        mark([`thread:${thread}`])
-        progress.threads_deleted++
-        act({ op: 'thread_deleted', channel: thread })
-      } else fail(thread, thread, result.status, result.code)
+      const present = await stillOnDiscord(rest, thread)
+      const have = present ? await known(thread) : new Set<string>()
+      if (present && [...present].some((id) => !have.has(id))) continue
+      const refused = await deleteThread(thread, [])
+      if (refused) fail(thread, thread, refused.status, refused.code)
     }
   } finally {
+    twin.close()
+    hubDb.close()
     clearInterval(timer)
     progress.finished = new Date().toISOString()
     save()

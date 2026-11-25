@@ -133,9 +133,9 @@ to the owner as a warning and do nothing.
 | Ask | Commands |
 |---|---|
 | Is everything OK? | \`vocorum doctor --json\` (explain each warning and its fix) |
-| Pair my new phone or laptop | \`vocorum pair <device name> --json\`: give \`links.setup\` first (it works before the device trusts the hub), then the code |
+| Pair my new phone or laptop | You cannot: a pairing code is a key to the hub. Ask the owner to run \`vocorum pair <device name>\` on the hub machine and open the setup link it prints on the new device |
 | Which devices / remove a device | \`vocorum devices list --json\`, \`vocorum devices revoke <name>\` |
-| Invite a friend | \`vocorum request invite <username> --guild Friends --reason '<why>'\` (Friends keeps them away from the machines; if it does not exist, ask the owner to run \`vocorum invite <name>\` once). After approval: \`vocorum welcome <username> --json\`, then give the owner its message to send and its owner steps |
+| Invite a friend | \`vocorum request invite <username> --guild Friends --reason '<why>'\` (Friends keeps them away from the machines; if it does not exist, ask the owner to run \`vocorum invite <name>\` once). After approval, ask the owner to run \`vocorum welcome <username>\` on the hub machine: it prints the message to send and their Tailscale steps |
 | What can someone see | \`vocorum access <username> --json\` |
 | Remove someone | \`vocorum request remove <username> --guild <server> --reason '<why>'\` |
 | Give or take a role | \`vocorum request role <username> <role> [--remove]\` |
@@ -294,6 +294,11 @@ WantedBy=default.target
     }
     await run('systemctl', ['--user', 'enable', '--now', unitName]).catch(() => null)
     steps.push({ step: 'agent', detail: `systemd user unit ${unitName}.service (log: ${p.log})` })
+  } else if (manager === 'launchd' || manager === 'task') {
+    const { installAgentService } = await import('./platform.ts')
+    const ca = config.privateListener ? path.join(paths.ca, 'ca.crt') : null
+    const detail = await installAgentService({ name: unitName, description: 'Vocorum admin agent (Kimaki)', command: [...command.split(' '), '--data-dir', p.dataDir], envFile: p.envFile, env: { PATH: process.env['PATH'] ?? '', ...(ca && { NODE_EXTRA_CA_CERTS: ca }) }, cwd: p.workspace, log: p.log }, paths.root)
+    steps.push({ step: 'agent', detail: `${detail} (log: ${p.log})` })
   } else {
     if (!adminPid(paths)) {
       const log = fs.openSync(p.log, 'a', 0o600)
@@ -388,9 +393,10 @@ export async function adminStatus(config: HubConfig, paths: HubPaths): Promise<C
   add('admin-limits', workspaceIntact(paths) ? 'ok' : 'fail', workspaceIntact(paths) ? 'the agent\'s limits are as setup wrote them' : `${path.join(p.workspace, 'opencode.jsonc')} is not what this version writes (edited, or Vocorum was updated)`, workspaceIntact(paths) ? undefined : 'vocorum admin setup (writes it back)')
   const { serviceName } = await import('./setup.ts')
   const unitName = `kimaki-${serviceName(paths)}-admin`.replace('kimaki-vocorum-admin', 'kimaki-admin')
-  const active = await run('systemctl', ['--user', 'is-active', unitName], { timeout: 5000 }).then((r) => r.stdout.trim() === 'active', () => false)
+  const { agentServiceState } = await import('./platform.ts')
+  const active = process.platform === 'linux' ? await run('systemctl', ['--user', 'is-active', unitName], { timeout: 5000 }).then((r) => r.stdout.trim() === 'active', () => false) : (await agentServiceState(unitName)) === 'running'
   const pid = adminPid(paths)
-  add('admin-agent', active || pid ? 'ok' : 'warn', active ? `${unitName}.service is running` : pid ? `running in the background (pid ${pid})` : 'the admin agent is not running', active || pid ? undefined : 'vocorum admin setup (starts it)')
+  add('admin-agent', active || pid ? 'ok' : 'warn', active ? `${unitName} is running` : pid ? `running in the background (pid ${pid})` : 'the admin agent is not running', active || pid ? undefined : 'vocorum admin setup (starts it)')
   return checks
 }
 

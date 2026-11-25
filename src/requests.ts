@@ -320,7 +320,7 @@ export class Requests {
         await this.hub.auth.verifyAppApproval(v.device.id, challenge.challenge, row.id, body)
         return { result: await this.apply(row) }
       }
-      const { device } = await this.hub.auth.login(origin!, body)
+      const { device } = await this.hub.auth.login(origin!, body, { stepUp: true })
       if (device.id !== v.device.id) throw new HttpError(403, 'Use the passkey of this device')
       return { result: await this.apply(row) }
     }

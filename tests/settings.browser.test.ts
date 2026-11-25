@@ -49,6 +49,13 @@ beforeAll(async () => {
   browser = await chromium.launch({ executablePath })
   context = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, viewport: { width: 1280, height: 800 }, serviceWorkers: 'block' })
   page = await context.newPage()
+  // Reloads of the state land late, as on a busy machine: changes made meanwhile must stay.
+  let loads = 0
+  await page.route('**/client/state', async (r) => {
+    const res = await r.fetch()
+    if (++loads > 1) await new Promise((ok) => setTimeout(ok, 800))
+    await r.fulfill({ response: res })
+  })
   page.setDefaultTimeout(8_000)
   const cdp = await context.newCDPSession(page)
   await cdp.send('WebAuthn.enable')

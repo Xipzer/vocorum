@@ -7,14 +7,14 @@ import { SoftAuthenticator } from './authenticator.ts'
 
 export const LOGIN = 'owner@example.com'
 
-export async function startTestHub({ tailscaleLogin = LOGIN, push }: { tailscaleLogin?: string | null; push?: HubOptions['push'] } = {}) {
+export async function startTestHub({ tailscaleLogin = LOGIN, push, extensions }: { tailscaleLogin?: string | null; push?: HubOptions['push']; extensions?: HubOptions['extensions'] } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vocorum-test-'))
   const paths = hubPaths(root)
   const config = initHub(paths, { tailscaleLogin })
   const webDir = path.join(root, 'web')
   fs.mkdirSync(webDir)
   fs.writeFileSync(path.join(webDir, 'index.html'), '<!doctype html><title>hub</title>')
-  const hub = new Hub({ paths, config, port: 0, webDir, push })
+  const hub = new Hub({ paths, config, port: 0, webDir, push, extensions })
   await hub.start()
   return {
     hub,
@@ -24,7 +24,8 @@ export async function startTestHub({ tailscaleLogin = LOGIN, push }: { tailscale
     async cleanup() {
       // this.hub: a test may have restarted it.
       await this.hub.stop()
-      fs.rmSync(root, { recursive: true, force: true })
+      // Windows keeps a just-closed database locked for a moment.
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: process.platform === 'win32' ? 10 : 0 })
     },
   }
 }

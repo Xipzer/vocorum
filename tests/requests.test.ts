@@ -89,3 +89,11 @@ test('an approved change can be undone, through a new request', async () => {
   await admin('POST', `/admin/requests/${denied.json.id}/deny`, {})
   expect((await admin('POST', `/admin/requests/${denied.json.id}/undo`, {})).status).toBe(409)
 })
+
+test('approving with a passkey makes no new session', async () => {
+  const count = async () => Number((await t.hub.store.db.execute('SELECT count(*) AS n FROM sessions')).rows[0]!['n'])
+  const before = await count()
+  const created = await admin('POST', '/admin/requests', { method: 'POST', route: `/client/guilds/${t.config.guildId}/roles`, body: { name: 'step-up-check' } })
+  expect((await approve(owner, created.json.id)).status).toBe(200)
+  expect(await count()).toBe(before)
+})

@@ -127,13 +127,50 @@ test('purge plans only what the hub holds, and never a message whose files it la
   expect(report).not.toMatch(/[\u2013\u2014]/)
 })
 
+test('purge deletes a thread whole in one request, unless Discord has something there the hub lacks', async () => {
+  const thread = async (name: string, count: number) => {
+    const id = (await rest.call<{ id: string }>('POST', `/channels/${channelId}/threads`, { name, type: 11 })).data!.id
+    for (let i = 0; i < count; i++) await rest.call('POST', `/channels/${id}/messages`, { content: `${name} ${i}` })
+    return id
+  }
+  const quiet = await thread('Session quiet', 40)
+  const busy = await thread('Session busy', 5)
+  const withFile = await thread('Session file', 3)
+  await importDiscord(rest, config(), hub.paths, { guilds: [guildId], log: () => {} })
+  // One message in a thread has a file the hub never copied: that thread is not planned whole.
+  const fileMessage = (await hub.hub.twin.prisma.message.findFirst({ where: { channelId: withFile } }))!
+  await hub.hub.twin.prisma.message.update({ where: { id: fileMessage.id }, data: { attachments: JSON.stringify([{ id: '2', filename: 'b.png', url: 'http://127.0.0.1:9/b.png' }]) } })
+  const plan = await makePlan(rest, config(), hub.paths, { guild: guildId, olderThanDays: 0, authors: ['bot'], keep: [], threads: true, kimakiKeep: false, channels: [channelId] })
+  expect(plan.threads).toEqual(expect.arrayContaining([quiet, busy]))
+  expect(plan.threads).not.toContain(withFile)
+  expect(summarise(plan).in_whole_threads).toBeGreaterThanOrEqual(45)
+  // Said on Discord after the import: the busy thread is emptied message by message and stays.
+  const late = (await rest.call<{ id: string }>('POST', `/channels/${busy}/messages`, { content: 'after the import' })).data!.id
+  const deletes: string[] = []
+  const counting = new DiscordRest((rest as unknown as { token: string }).token, `${discord.hub.localUrl}/api/v10`)
+  const call = counting.call.bind(counting)
+  counting.call = (async (method: string, route: string, ...rest: unknown[]) => {
+    if (method === 'DELETE') deletes.push(route)
+    return call(method, route, ...(rest as []))
+  }) as typeof counting.call
+  const progress = await executePlan(counting, hub.paths, plan, { log: () => {} })
+  expect(progress.failed).toBe(0)
+  expect(await discord.hub.twin.prisma.channel.findUnique({ where: { id: quiet } })).toBeNull()
+  expect(deletes.filter((r) => r.startsWith(`/channels/${quiet}/`))).toEqual([])
+  expect(await discord.hub.twin.prisma.channel.findUnique({ where: { id: busy } })).not.toBeNull()
+  expect((await discord.hub.twin.prisma.message.findMany({ where: { channelId: busy }, select: { id: true } })).map((m) => m.id)).toEqual([late])
+  expect(await discord.hub.twin.prisma.message.findUnique({ where: { id: fileMessage.id } })).not.toBeNull()
+  expect(await hub.hub.twin.prisma.message.count({ where: { channelId: quiet } })).toBe(40)
+})
+
 test('doctor checks the running hub and gives a fix for every problem', async () => {
   initHub(hub.paths, { port: hub.hub.port })
   const checks = await doctor(hub.paths)
   const byId = Object.fromEntries(checks.map((c) => [c.id, c]))
   expect(byId['config']!.status).toBe('ok')
   expect(byId['hub']!.status).not.toBe('fail')
-  expect(byId['permissions']!.status).toBe('ok')
+  // Windows has no file modes to check.
+  expect(byId['permissions']!.status).toBe(process.platform === 'win32' ? 'skip' : 'ok')
   for (const c of checks) if (c.status === 'fail' || c.status === 'warn') expect(c.fix, c.id).toBeTruthy()
 })
 
@@ -159,7 +196,7 @@ const QR_HASH = '8e54500fef1bfc51'
 test('kimaki setup: its own bot, data folder and lock port, token only in a 0600 file', async () => {
   const { kimakiSetup } = await import('../src/kimaki-setup.ts')
   const result = await kimakiSetup(config(), hub.paths, { machine: 'desktop', guilds: [], kimaki: '/usr/bin/true', service: false, extraArgs: [] })
-  expect(fs.statSync(result.envFile).mode & 0o777).toBe(0o600)
+  if (process.platform !== 'win32') expect(fs.statSync(result.envFile).mode & 0o777).toBe(0o600)
   const env = fs.readFileSync(result.envFile, 'utf8')
   expect(env).toMatch(/^KIMAKI_BOT_TOKEN=/m)
   expect(env).toMatch(new RegExp(`^KIMAKI_LOCK_PORT=${result.lockPort}$`, 'm'))
@@ -189,4 +226,26 @@ test('import finds archived threads and --channels keeps to the channels given',
   await importDiscord(rest, config(), hub.paths, { guilds: [guildId], channels: [channelId], log: () => {} })
   expect(await hub.hub.twin.prisma.message.findUnique({ where: { id: said } })).not.toBeNull()
   expect(await hub.hub.twin.prisma.message.findUnique({ where: { id: outside } })).toBeNull()
+})
+
+test('thousands of threads are upserted in one write, a thread without guild_id finding its parent in the same request', async () => {
+  const { readSecret } = await import('../src/config.ts')
+  const token = readSecret(hub.paths.adminToken)
+  await hub.hub.mirror.guild(null, '940000000000000001', 'Big server')
+  const parent = { id: '940000000000000002', guild_id: '940000000000000001', type: 0, name: 'sessions' }
+  const threads = Array.from({ length: 300 }, (_, i) => ({ id: String(940000000000001000n + BigInt(i)), parent_id: parent.id, type: 11, name: `Session ${i}`, thread_metadata: { archived: i % 2 === 0 } }))
+  const res = await fetch(`http://127.0.0.1:${hub.hub.port}/admin/mirror/channels`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify([parent, ...threads]) })
+  expect(res.status).toBe(200)
+  expect(await hub.hub.twin.prisma.channel.count({ where: { parentId: parent.id, guildId: '940000000000000001' } })).toBe(300)
+  expect(await hub.hub.twin.prisma.channel.count({ where: { parentId: parent.id, archived: true } })).toBe(150)
+})
+
+test('a Discord token file inside the hub folder is refused, so the hub keys are never sent as one', async () => {
+  const { discordToken } = await import('../src/discord/local.ts')
+  await expect(discordToken({ tokenFile: hub.paths.adminToken, stateDir: hub.paths.root })).rejects.toThrow(/inside the hub's folder/)
+  await expect(discordToken({ tokenFile: path.join(hub.paths.root, '..', path.basename(hub.paths.root), 'admin-token'), stateDir: hub.paths.root })).rejects.toThrow(/inside/)
+  const outside = path.join(path.dirname(hub.paths.root), `discord-token-${crypto.randomUUID()}`)
+  fs.writeFileSync(outside, 'abc.def.ghi', { mode: 0o600 })
+  expect(await discordToken({ tokenFile: outside, stateDir: hub.paths.root })).toBe('abc.def.ghi')
+  fs.rmSync(outside)
 })

@@ -147,6 +147,10 @@ export class Mirror {
   // --- channels
 
   async channel(machine: string | null, channel: DiscordChannel) {
+    return this.hub.twin.mirrorChannel(await this.checkedChannel(machine, channel))
+  }
+
+  private async checkedChannel(machine: string | null, channel: DiscordChannel) {
     if (!/^\d{1,20}$/.test(channel.id)) throw new HttpError(400, 'Bad channel id')
     let guildId = channel.guild_id
     if (!guildId && channel.parent_id) guildId = (await this.prisma.channel.findUnique({ where: { id: channel.parent_id } }))?.guildId ?? undefined
@@ -154,7 +158,7 @@ export class Mirror {
     const existing = await this.prisma.channel.findUnique({ where: { id: channel.id } })
     if (existing && existing.guildId !== guildId) throw new HttpError(409, 'That id belongs to another guild')
     const meta = channel.thread_metadata
-    return this.hub.twin.mirrorChannel({
+    return {
       id: channel.id,
       guildId: guildId!,
       type: channel.type,
@@ -166,7 +170,7 @@ export class Mirror {
       archived: meta?.archived ?? false,
       locked: meta?.locked ?? false,
       autoArchiveDuration: meta?.auto_archive_duration ?? 1440,
-    })
+    }
   }
 
   async deleteChannel(machine: string | null, id: string) {
@@ -259,7 +263,7 @@ export class Mirror {
   }
 
   async deleteMessage(machine: string | null, id: string) {
-    const link = (await this.hub.store.db.execute({ sql: 'SELECT echo_of FROM message_origins WHERE message_id = ?', args: [id] })).rows[0]
+    const link = (await this.hub.store.db.execute({ sql: 'SELECT CAST(echo_of AS TEXT) AS echo_of FROM message_origins WHERE message_id = ?', args: [id] })).rows[0]
     if (link?.['echo_of']) {
       await this.hub.store.db.execute({ sql: 'DELETE FROM message_origins WHERE message_id = ?', args: [id] })
       return { unlinked: id }
@@ -337,7 +341,7 @@ export class Mirror {
     const out = new Map<string, { origin: 'discord' } | { discord_echo: string }>()
     if (ids.length === 0) return out
     const json = JSON.stringify(ids)
-    const rows = await this.hub.store.db.execute({ sql: 'SELECT message_id, origin, echo_of FROM message_origins WHERE message_id IN (SELECT value FROM json_each(?)) OR echo_of IN (SELECT value FROM json_each(?))', args: [json, json] })
+    const rows = await this.hub.store.db.execute({ sql: 'SELECT CAST(message_id AS TEXT) AS message_id, origin, CAST(echo_of AS TEXT) AS echo_of FROM message_origins WHERE message_id IN (SELECT CAST(value AS INTEGER) FROM json_each(?)) OR echo_of IN (SELECT CAST(value AS INTEGER) FROM json_each(?))', args: [json, json] })
     for (const row of rows.rows) {
       if (row['origin'] === 'discord') out.set(String(row['message_id']), { origin: 'discord' })
       else if (row['echo_of']) out.set(String(row['echo_of']), { discord_echo: String(row['message_id']) })
@@ -355,7 +359,13 @@ export class Mirror {
     }
     if (pathname === '/admin/mirror/channels') {
       const channels = await readJson<DiscordChannel[]>(req)
-      for (const channel of channels) await this.channel(null, channel)
+      // Parents first, so a thread finds its channel's guild; then one write for the rest.
+      const checked: Array<Awaited<ReturnType<Mirror['checkedChannel']>>> = []
+      for (const channel of channels) {
+        if (!channel.guild_id && channel.parent_id && checked.some((c) => c.id === channel.parent_id)) await this.hub.twin.mirrorChannels(checked.splice(0))
+        checked.push(await this.checkedChannel(null, channel))
+      }
+      await this.hub.twin.mirrorChannels(checked)
       return { channels: channels.length }
     }
     if (pathname === '/admin/mirror/messages') return this.bulk(await readJson<DiscordMessage[]>(req))
@@ -400,7 +410,11 @@ export class Mirror {
     if (pathname === '/admin/mirror/finish') {
       const body = await readJson(req)
       const threads = Array.isArray(body['threads']) ? (body['threads'] as string[]) : []
-      for (const id of threads) await this.hub.sessions.recompute(id, { quiet: true })
+      // Thousands of sessions after a big import: let people's requests in between.
+      for (const [i, id] of threads.entries()) {
+        await this.hub.sessions.recompute(id, { quiet: true })
+        if (i % 20 === 19) await new Promise((resolve) => setImmediate(resolve))
+      }
       // Imported history is old news: read for the owner, so it shows no unread or mention
       // badges. A whole guild, or only the channels given (history added later).
       const only = Array.isArray(body['channels']) ? (body['channels'] as unknown[]).filter((id): id is string => typeof id === 'string') : null

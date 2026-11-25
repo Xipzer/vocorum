@@ -12,6 +12,7 @@ import { promisify } from 'node:util'
 import { createClient } from '@libsql/client'
 import { openSqlite } from './sqlite.ts'
 import { loadConfig, readSecret, type HubConfig, type HubPaths } from './config.ts'
+import { launchdLabel, launchdState, listeningSockets, NODE_MIN, nodeSupported, taskName, taskState, tool, WINDOWS } from './platform.ts'
 
 const run = promisify(execFile)
 
@@ -79,9 +80,8 @@ export async function doctor(paths: HubPaths, { repo = path.resolve(import.meta.
   const checks: Check[] = []
   const add = (id: string, status: Check['status'], detail: string, fix?: string) => checks.push({ id, status, detail, ...(fix && { fix }) })
 
-  const major = Number(process.versions.node.split('.')[0])
-  add('node', major >= 22 ? 'ok' : 'fail', `Node ${process.versions.node}`, major >= 22 ? undefined : 'Install Node.js 22 or newer')
-  add('openssl', (await quiet('openssl', ['version'])) ? 'ok' : 'warn', 'openssl makes the hub\'s own certificates', 'Install openssl (needed for the private listener)')
+  add('node', nodeSupported() ? 'ok' : 'fail', `Node ${process.versions.node}`, nodeSupported() ? undefined : `Install Node.js ${NODE_MIN} or newer (the current LTS is fine)`)
+  add('openssl', (await quiet(tool('openssl'), ['version'])) ? 'ok' : 'warn', 'openssl makes the hub\'s own certificates', 'Install openssl (needed for the private listener)')
   add('ffmpeg', (await quiet('ffmpeg', ['-version'])) ? 'ok' : 'warn', 'ffmpeg converts voice notes', 'Optional: install ffmpeg so voice notes from phones play everywhere')
   const built = fs.existsSync(path.join(repo, 'dist/hub.mjs')) && fs.existsSync(path.join(repo, 'web/dist/index.html'))
   add('build', built ? 'ok' : 'fail', built ? 'hub and app are built' : 'dist/hub.mjs or web/dist is missing', `cd ${repo} && pnpm install && pnpm build`)
@@ -93,10 +93,12 @@ export async function doctor(paths: HubPaths, { repo = path.resolve(import.meta.
   }
   add('config', 'ok', `${paths.root}, port ${config.port}`)
   const loose: string[] = []
-  if ((fs.statSync(paths.root).mode & 0o077) !== 0) loose.push(paths.root)
+  // Windows has no file modes; a folder in the user's profile is theirs alone by default.
+  if (WINDOWS) add('permissions', 'skip', 'Windows: protected by your user profile, not file modes')
+  else if ((fs.statSync(paths.root).mode & 0o077) !== 0) loose.push(paths.root)
   // The databases inherit the folder's protection; the secrets are 0600 on their own as well.
-  for (const file of [paths.config, paths.adminToken, paths.signingKey]) if (fs.existsSync(file) && (fs.statSync(file).mode & 0o077) !== 0) loose.push(file)
-  add('permissions', loose.length ? 'fail' : 'ok', loose.length ? `readable by other users: ${loose.join(', ')}` : 'state folder 0700, secrets 0600', loose.length ? `chmod 700 ${paths.root} && chmod 600 ${loose.filter((f) => f !== paths.root).join(' ')}` : undefined)
+  if (!WINDOWS) for (const file of [paths.config, paths.adminToken, paths.signingKey]) if (fs.existsSync(file) && (fs.statSync(file).mode & 0o077) !== 0) loose.push(file)
+  if (!WINDOWS) add('permissions', loose.length ? 'fail' : 'ok', loose.length ? `readable by other users: ${loose.join(', ')}` : 'state folder 0700, secrets 0600', loose.length ? `chmod 700 ${paths.root} && chmod 600 ${loose.filter((f) => f !== paths.root).join(' ')}` : undefined)
 
   const { serviceName, serviceManager, backgroundPid, rebootLine } = await import('./setup.ts')
   const unit = serviceName(paths)
@@ -108,9 +110,15 @@ export async function doctor(paths: HubPaths, { repo = path.resolve(import.meta.
     // is-active exits non-zero when the unit is not active, so read its output either way.
     const state = await run('systemctl', ['--user', 'is-active', unit], { timeout: 5000 }).then((r) => r.stdout.trim(), (e: { stdout?: string }) => (e.stdout ?? '').trim() || 'not installed')
     add('service', state === 'active' ? 'ok' : 'warn', `${unit}.service is ${state}`, state === 'active' ? undefined : `vocorum setup (installs and starts it), or systemctl --user start ${unit}`)
+  } else if (process.platform === 'darwin') {
+    const state = await launchdState(unit)
+    add('service', state === 'running' ? 'ok' : 'warn', state ? `launchd agent ${launchdLabel(unit)} is ${state}` : `no launchd agent ${launchdLabel(unit)}`, state === 'running' ? undefined : 'vocorum setup (installs and starts it), or vocorum restart')
+  } else if (WINDOWS) {
+    const state = await taskState(unit)
+    add('service', state === 'Running' ? 'ok' : 'warn', state ? `Task Scheduler task ${taskName(unit)} is ${state.toLowerCase()}` : `no Task Scheduler task ${taskName(unit)}`, state === 'Running' ? undefined : 'vocorum setup (installs and starts it), or vocorum restart')
   }
   const latency = await hubLatency(config, paths)
-  if (latency === null) add('hub', 'fail', 'the hub does not answer on loopback', manager === 'systemd' ? `vocorum restart; then journalctl --user -u ${unit} -n 50` : `vocorum restart; then tail -50 ${path.join(paths.root, 'hub.log')}`)
+  if (latency === null) add('hub', 'fail', 'the hub does not answer on loopback', manager === 'systemd' ? `vocorum restart; then journalctl --user -u ${unit} -n 50` : `vocorum restart; then ${WINDOWS ? 'read the end of' : 'tail -50'} ${path.join(paths.root, 'hub.log')}`)
   else if (latency === 'other') add('hub', 'fail', `port ${config.port} is held by something else (another hub?)`, `vocorum config get port; give this hub its own port with: vocorum init --port <free port>`)
   else add('hub', latency > 300 ? 'warn' : 'ok', `answers in ${latency} ms`, latency > 300 ? 'Something is keeping it busy (often an import). vocorum discord status' : undefined)
   if (typeof latency === 'number') {
@@ -126,10 +134,8 @@ export async function doctor(paths: HubPaths, { repo = path.resolve(import.meta.
   else {
     const caFile = path.join(paths.ca, 'ca.crt')
     const certFile = path.join(paths.ca, 'server.crt')
-    const ss = await quiet('ss', ['-ltnH'])
-    if (ss !== null) {
-      // Columns: state, recv-q, send-q, local address:port, peer.
-      const locals = ss.split('\n').map((l) => l.trim().split(/\s+/)[3] ?? '')
+    const locals = await listeningSockets()
+    if (locals !== null) {
       const lines = locals.filter((local) => [listener.port, listener.httpPort].some((p) => p && local.endsWith(`:${p}`)))
       const wild = lines.filter((local) => /^(0\.0\.0\.0|\*|\[::\]):/.test(local))
       const ours = lines.filter((local) => local.replace(/^\[|\]?:\d+$/g, '') === listener.address)
@@ -224,7 +230,7 @@ export async function doctor(paths: HubPaths, { repo = path.resolve(import.meta.
     add('discord-import', !finished || gaps || failed ? 'warn' : 'ok', !finished ? 'running or stopped early' : gaps || failed ? [gaps && plural(gaps, 'channel') + ' with missing messages', failed && plural(failed, 'file') + ' not copied yet'].filter(Boolean).join(', ') + goneNote : `complete (${guilds.length} servers)${goneNote}`, gaps || failed || !finished ? 'vocorum discord import <guild id> (resumes where it stopped)' : undefined)
   }
 
-  const funnel = await quiet('tailscale', ['funnel', 'status'])
+  const funnel = await quiet(tool('tailscale'), ['funnel', 'status'])
   if (funnel !== null && /https?:\/\//.test(funnel) && !/No serve config/i.test(funnel)) add('tailscale-funnel', 'warn', 'Tailscale Serve or Funnel is publishing something from this machine', 'tailscale funnel status; tailscale serve reset (only if nothing else needs it)')
   if (config.adminGuildId) {
     const { adminStatus } = await import('./admin.ts')

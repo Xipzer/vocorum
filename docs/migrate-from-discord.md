@@ -120,6 +120,14 @@ node bin/vocorum.js discord report
 When you stop using Discord, also reset your bot tokens in the Discord developer
 portal. The report lists the last steps you can only do by hand.
 
+## Big servers
+
+A server with 400,000 messages imports in about half an hour, mostly waiting on
+Discord, and the hub stays usable while it runs. To clean up, add `--threads`
+to the purge: an agent thread nobody else wrote in is deleted in one request,
+so 400,000 messages take about an hour and a quarter instead of about 11 hours.
+A thread is only deleted whole when everything in it is already on the hub.
+
 ## What does not come over
 
 - Files Discord no longer has.

@@ -250,7 +250,7 @@ export class HubAuth {
   }
 
   // POST /client/auth/login/verify {challengeId, response}
-  async login(origin: string, body: { challengeId?: unknown; response?: unknown }) {
+  async login(origin: string, body: { challengeId?: unknown; response?: unknown }, { stepUp = false }: { stepUp?: boolean } = {}) {
     const challenge = this.takeChallenge(body.challengeId, 'login', origin)
     const response = body.response as AuthenticationResponseJSON
     const credential = typeof response?.id === 'string' ? await this.store.getCredential(response.id) : null
@@ -268,6 +268,8 @@ export class HubAuth {
     })
     if (!verification.verified) throw new HttpError(403, 'Passkey rejected')
     await this.store.updateCredentialCounter(credential.id, verification.authenticationInfo.newCounter)
+    // A step-up (confirming one change) proves the passkey and makes no new session.
+    if (stepUp) return { device, cookie: null }
     const session = await this.store.createSession(device.id, SESSION_TTL_MS)
     return { device, cookie: this.sessionCookie(session.token) }
   }

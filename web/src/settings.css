@@ -1053,3 +1053,9 @@ select.settings-input {
   margin-bottom: 12px;
   border-radius: 8px;
 }
+
+/* White on red keeps 4.5:1 (see --danger-fill). */
+.settings-layer .button.danger-fill,
+.settings-tri .settings-tri-deny.on {
+  background: var(--danger-fill);
+}

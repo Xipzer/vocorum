@@ -13,7 +13,7 @@ import { Markdown, type MarkdownContext } from './markdown.tsx'
 import { dmName, dmUser, isDm, KEEP_AT_BOTTOM, snowflakeGt, store, THREAD_TYPES, useStore } from './store.ts'
 import { workspaceWaiting } from './Workspace.tsx'
 import { Icon, type IconName } from './icons.tsx'
-import { clock, displayName, plain, wallHue, machineLabel } from './text.ts'
+import { clock, displayName, plain, wallHue, machineLabel, motion } from './text.ts'
 import { shareOrigin } from './native.ts'
 import { remindSheet, remindTime } from './remind.ts'
 import { parsePermission, PermissionCard } from './Permission.tsx'
@@ -322,6 +322,25 @@ function MessageItem({
       groups: [[{ label: 'Delete', icon: 'trash', red: true, run: () => void api.remove(channelId, message.id).catch((e: Error) => onError(e.message)) }]],
     })
   const press = usePress(openMenu)
+  // A focused message takes Discord's keys: arrows move, R reply, E edit, P pin,
+  // + react, Delete delete, Esc back to the message box.
+  const onKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget || e.metaKey || e.ctrlKey || e.altKey) return
+    const el = e.currentTarget
+    const go = (to: Element | undefined) => to instanceof HTMLElement && (to.focus(), to.scrollIntoView({ block: 'nearest' }))
+    const all = () => [...(el.closest('.messages')?.querySelectorAll('.message[tabindex]') ?? [])]
+    const key = e.key.length === 1 ? e.key.toLowerCase() : e.key
+    if (key === 'ArrowUp' || key === 'ArrowDown') go(all()[all().indexOf(el) + (key === 'ArrowUp' ? -1 : 1)])
+    else if (key === 'r') onReply(message)
+    else if (key === 'e' && mine && message.content) setEditing(message.content)
+    else if (key === 'p' && pinOk) void api.pin(channelId, message.id, !message.pinned).catch((err: Error) => onError(err.message))
+    else if (key === '+' || key === '=') setPicker(el.getBoundingClientRect())
+    else if ((key === 'Delete' || key === 'Backspace') && (mine || canManage)) confirmDelete(below(el))
+    else if (key === 'Escape') el.closest('.chat')?.querySelector<HTMLElement>('.composer textarea')?.focus()
+    else return
+    e.preventDefault()
+    e.stopPropagation()
+  }
   // Alt+click marks unread from here, as in Discord.
   const markOnAlt = (e: React.MouseEvent) => {
     if (!e.altKey || (e.target as HTMLElement).closest('a, button')) return
@@ -369,7 +388,7 @@ function MessageItem({
     )
   }
   return (
-    <div id={`m-${message.id}`} className={`message${compact ? ' compact' : ''}${mine ? ' you' : ''}${needs ? ' needs' : ''}${failed ? ' failed' : ''}`} {...press} {...warm} tabIndex={-1} onClick={markOnAlt}>
+    <div id={`m-${message.id}`} className={`message${compact ? ' compact' : ''}${mine ? ' you' : ''}${needs ? ' needs' : ''}${failed ? ' failed' : ''}`} {...press} {...warm} tabIndex={-1} onKeyDown={onKey} onClick={markOnAlt}>
       {replyId &&
         (reference ? (
           <div className="reply-preview" onClick={() => onJump(reference.id)}>
@@ -852,7 +871,7 @@ export function Chat({
     if (!el) return
     pinned.current = true
     setAway(false)
-    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    el.scrollTo({ top: el.scrollHeight, behavior: motion() })
   }
 
   // Late images, expanding steps and the keyboard change heights: keep a reader at the bottom.
@@ -905,7 +924,7 @@ export function Chat({
     const el = document.getElementById(`m-${id}`)
     if (!el) return setToast('That message is no longer here')
     pinned.current = false
-    el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    el.scrollIntoView({ block: 'center', behavior: motion() })
     el.classList.add('highlight')
     window.setTimeout(() => el.classList.remove('highlight'), 1800)
   }
@@ -1097,6 +1116,18 @@ export function Chat({
       <div
         className={`messages${output ? ' feed' : ''}`}
         ref={scroller}
+        tabIndex={0}
+        aria-label="Messages"
+        onKeyDown={(e) => {
+          // Arrows on the list itself pick the newest message on screen; from there they move.
+          if (e.target !== e.currentTarget || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') || e.altKey || e.metaKey || e.ctrlKey) return
+          const box = e.currentTarget.getBoundingClientRect()
+          const shown = [...e.currentTarget.querySelectorAll<HTMLElement>('.message[tabindex]')].filter((m) => m.getBoundingClientRect().bottom <= box.bottom + 1)
+          const pick = shown.at(-1)
+          if (!pick) return
+          e.preventDefault()
+          pick.focus()
+        }}
         onScroll={(e) => {
           const el = e.currentTarget
           pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80

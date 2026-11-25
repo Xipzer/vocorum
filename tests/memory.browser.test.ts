@@ -68,10 +68,17 @@ afterAll(async () => {
 })
 
 test.skipIf(!ready)('a message toolbar exists only under the pointer or focus', async () => {
+  // The pointer stays where an earlier test left it, which can be over a message.
+  await page.mouse.move(5, 5)
   await page.goto(`${origin}/#/c/${demo.kimaki.id}`)
   const last = page.locator('.messages .message', { hasText: 'history line 259' })
   await last.waitFor()
-  expect(await page.locator('.message-actions').count()).toBe(0)
+  // Under load the first paint can land under the pointer before it moves: wait
+  // until nothing is hovered or focused in the list, then expect no toolbar.
+  await page.mouse.move(5, 5)
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  await expect.poll(() => page.evaluate(() => document.querySelectorAll('.messages :hover, .messages :focus').length)).toBe(0)
+  await expect.poll(() => page.locator('.message-actions').count()).toBe(0)
   await last.hover()
   await last.locator('.message-actions').getByLabel('Reply').waitFor()
   expect(await page.locator('.message-actions').count()).toBe(1)

@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Channel } from './api.ts'
 import { Icon, type IconName } from './icons.tsx'
 import { snowflakeGt, store, THREAD_TYPES, useStore } from './store.ts'
+import { native } from './native.ts'
 import { plain } from './text.ts'
 
 type Item = { id: string; kind: 'channel' | 'thread' | 'server' | 'person'; label: string; hint: string; icon: IconName; unread: boolean; mentions: number; open: () => void; rank: number }
@@ -146,6 +147,15 @@ const SHORTCUTS: Array<[string, string]> = [
   [`${mod} K`, 'Quick switcher'],
   ['Alt ↑ / ↓', 'Previous or next channel or thread'],
   ['Alt Shift ↑ / ↓', 'Previous or next unread'],
+  [`${mod} Alt ↑ / ↓`, 'Previous or next server'],
+  [`${mod} [ / ]`, 'Back or forward'],
+  [`${mod} I`, 'Inbox'],
+  [`${mod} P`, 'Pinned messages'],
+  [`${mod} U`, 'Member list'],
+  [`${mod} Shift U`, 'Upload a file'],
+  [`${mod} E`, 'Emoji'],
+  ['↑ / ↓ in the message list', 'Pick a message, then R reply, E edit, P pin, + react, Delete delete'],
+  ...(native ? [[`${mod} + / −`, 'Zoom in or out'] as [string, string]] : []),
   ['Esc', 'Mark the open channel read'],
   ['Shift Esc', 'Mark the server read'],
   ['↑ in an empty message box', 'Edit your last message'],

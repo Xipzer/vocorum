@@ -45,7 +45,7 @@ async fn check(app: &AppHandle, hub: &Arc<Hub>) -> Result<Option<Update>, String
 }
 
 // Checks shortly after start and then every six hours; a found update waits for
-// the person to choose "Update and restart" in the tray.
+// the person to choose "Restart to update" in the tray.
 pub fn start(app: AppHandle) {
   if PUBKEY.is_none_or(str::is_empty) {
     return;
@@ -83,7 +83,8 @@ fn offer(app: &AppHandle, update: Update) {
   if fresh {
     crate::set_update_item(app, Some(&version));
     use tauri_plugin_notification::NotificationExt;
-    let _ = app.notification().builder().title("Vocorum update ready").body(format!("Version {version} is ready. Choose Update and restart in the tray menu.")).show();
+    let place = if cfg!(target_os = "macos") { "menu bar" } else { "tray" };
+    let _ = app.notification().builder().title("Update ready").body(format!("Restart Vocorum from the {place} menu to get version {version}.")).show();
   }
 }
 
@@ -91,13 +92,19 @@ pub fn install(app: &AppHandle) {
   let Some(update) = app.state::<State>().update.lock().ok().and_then(|mut p| p.take()) else { return };
   let app = app.clone();
   crate::set_update_item(&app, None);
+  // A .deb installs as root, so the system asks for a password: say why first.
+  #[cfg(target_os = "linux")]
+  if matches!(tauri::utils::platform::bundle_type(), Some(tauri::utils::config::BundleType::Deb)) {
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app.notification().builder().body(format!("Vocorum needs your password to install version {}.", update.version)).show();
+  }
   tauri::async_runtime::spawn(async move {
     match update.download_and_install(|_, _| {}, || {}).await {
       Ok(()) => app.restart(),
       Err(error) => {
         eprintln!("[vocorum] update failed: {error}");
         use tauri_plugin_notification::NotificationExt;
-        let _ = app.notification().builder().title("Vocorum couldn't update").body("The update didn't install. Vocorum will try again later.").show();
+        let _ = app.notification().builder().title("Update didn't install").body("Vocorum will try again later.").show();
       }
     }
   });

@@ -508,7 +508,7 @@ test.skipIf(!ready)('errors: a failed turn with Retry reads red, with a red band
   const failed = page.locator('.message.failed.needs', { hasText: 'model.default failed' })
   await failed.waitFor()
   const bg = await failed.locator('.action-row .button').first().evaluate((el: any) => getComputedStyle(el).backgroundColor)
-  expect(bg).toBe('rgb(255, 77, 94)')
+  expect(bg).toBe('rgb(210, 47, 63)')
   await page.screenshot({ path: path.join(shots, 'error-band.png') })
 })
 
@@ -1604,3 +1604,66 @@ test.skipIf(!ready)('a friend (no manage rights): Devices opens, panels close, c
   await expect(dialog.getByRole('button', { name: 'Permissions', exact: true }).count()).resolves.toBe(0)
   await ctx.close()
 }, 90_000)
+
+test.skipIf(!ready)('a channel or DM made while the app reloads its state is kept when the older snapshot lands', async () => {
+  const p = await page.context().newPage()
+  // Hold the reload that follows the event socket's hello, so its snapshot predates both.
+  let calls = 0
+  let snapshot = false
+  let release = () => {}
+  const held = new Promise<void>((ok) => (release = ok))
+  await p.route('**/client/state', async (r) => {
+    const n = ++calls
+    const res = await r.fetch()
+    if (n === 2) {
+      snapshot = true
+      await held
+    }
+    await r.fulfill({ response: res })
+  })
+  await p.goto(`${origin}/#/c/${demo.kimaki.id}`)
+  await p.getByPlaceholder('Message #kimaki').waitFor()
+  await expect.poll(() => snapshot).toBe(true)
+  const dm = await p.evaluate(() => fetch('/client/dms', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ machine: 'workstation' }) }).then((r) => r.json()))
+  await p.evaluate((g) => fetch(`/client/guilds/${g}/channels`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'late-arrival' }) }), t.config.guildId)
+  await p.locator('.sidebar .channel', { hasText: 'late-arrival' }).waitFor()
+  release()
+  await expect.poll(() => calls).toBeGreaterThanOrEqual(2)
+  await p.waitForTimeout(300)
+  await p.locator('.sidebar .channel', { hasText: 'late-arrival' }).waitFor({ timeout: 2000 })
+  await p.goto(`${origin}/#/c/${dm.id}`)
+  await p.locator('.output-bar', { hasText: 'work in its project channels' }).waitFor({ timeout: 5000 })
+  await p.close()
+}, 60_000)
+
+test.skipIf(!ready)('accessibility: every control has a name, Tab starts with Skip to the conversation, reduced motion stops movement', async () => {
+  const unnamed = (p: Page) =>
+    p.evaluate(() => {
+      const named = (e: HTMLElement) =>
+        Boolean(e.getAttribute('aria-label')?.trim() || e.getAttribute('title')?.trim() || e.textContent?.trim() || (e as HTMLInputElement).labels?.[0]?.textContent?.trim() || (e as HTMLInputElement).placeholder || e.querySelector('img[alt]:not([alt=""])') || e.getAttribute('aria-labelledby')?.split(' ').some((id) => document.getElementById(id)?.textContent?.trim()))
+      return [...document.querySelectorAll<HTMLElement>('button, [role=button], a[href], input:not([type=hidden]), select, textarea, [role=switch], [role=tab], [role=menuitem], [role=radio]')]
+        .filter((e) => e.getBoundingClientRect().width > 0 && !named(e))
+        .map((e) => `${e.tagName} ${e.className}`)
+    })
+  const p = await page.context().newPage()
+  await p.emulateMedia({ reducedMotion: 'reduce' })
+  await p.goto(`${origin}/#/c/${demo.thread.id}`)
+  await p.locator('.message').last().waitFor()
+  await p.locator('.message').last().hover()
+  await expect(unnamed(p)).resolves.toEqual([])
+  await p.getByRole('button', { name: 'Settings', exact: true }).click()
+  await p.getByRole('button', { name: 'User settings' }).click()
+  await expect(unnamed(p)).resolves.toEqual([])
+  await p.keyboard.press('Escape')
+  await p.reload()
+  await p.locator('.message').last().waitFor()
+  await p.keyboard.press('Tab')
+  await expect(p.evaluate(() => document.activeElement?.textContent)).resolves.toBe('Skip to the conversation')
+  await p.keyboard.press('Enter')
+  await expect(p.evaluate(() => document.activeElement?.tagName)).resolves.toBe('TEXTAREA')
+  await expect(p.locator('.sidebar .channel').first().evaluate((e) => getComputedStyle(e).transitionDuration)).resolves.toMatch(/^0s/)
+  await p.setViewportSize({ width: 390, height: 844 })
+  await p.waitForTimeout(300)
+  await expect(unnamed(p)).resolves.toEqual([])
+  await p.close()
+}, 60_000)

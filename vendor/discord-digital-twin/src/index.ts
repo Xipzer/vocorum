@@ -496,6 +496,39 @@ export class DigitalDiscord {
     return api
   }
 
+  // Many channels in one transaction (an import's thousands of threads): one disk sync, not one each.
+  async mirrorChannels(channels: Array<Parameters<DigitalDiscord['mirrorChannel']>[0]>): Promise<APIChannel[]> {
+    if (!channels.length) return []
+    const existing = new Set((await this.prisma.channel.findMany({ where: { id: { in: channels.map((c) => c.id) } }, select: { id: true } })).map((c) => c.id))
+    const rows = await this.prisma.$transaction(
+      channels.map((channel) => {
+        const thread = isThreadType(channel.type)
+        const data = {
+          guildId: channel.guildId,
+          type: channel.type,
+          name: channel.name ?? null,
+          topic: channel.topic ?? null,
+          parentId: channel.parentId ?? null,
+          position: channel.position ?? 0,
+          ownerId: channel.ownerId ?? null,
+          archived: channel.archived ?? false,
+          locked: channel.locked ?? false,
+          autoArchiveDuration: channel.autoArchiveDuration ?? 1440,
+          ...(thread && { starterMessageId: channel.id }),
+          ...(channel.lastMessageId !== undefined && { lastMessageId: channel.lastMessageId }),
+        }
+        return existing.has(channel.id) ? this.prisma.channel.update({ where: { id: channel.id }, data }) : this.prisma.channel.create({ data: { id: channel.id, ...data } })
+      }),
+    )
+    return rows.map((row) => {
+      const api = channelToAPI(row)
+      const thread = isThreadType(row.type)
+      const event = thread ? (existing.has(row.id) ? GatewayDispatchEvents.ThreadUpdate : GatewayDispatchEvents.ThreadCreate) : existing.has(row.id) ? GatewayDispatchEvents.ChannelUpdate : GatewayDispatchEvents.ChannelCreate
+      this.server?.gateway.broadcast(event, api)
+      return api
+    })
+  }
+
   // Upserts a message under its own id. Returns whether it was new.
   async mirrorMessage(message: { id: string; channelId: string; authorId: string; content: string; timestamp: Date; editedTimestamp?: Date | null; type?: number; flags?: number; embeds?: unknown[]; components?: unknown[]; attachments?: unknown[]; mentions?: unknown[]; mentionEveryone?: boolean; pinned?: boolean; messageReference?: unknown | null; passthrough?: Record<string, unknown> | null }, { quiet = false, extra = {} }: { quiet?: boolean; extra?: Record<string, unknown> } = {}): Promise<boolean> {
     const existing = await this.prisma.message.findUnique({ where: { id: message.id } })

@@ -3,10 +3,11 @@
 // model; buttons are mirrored only when it is safe to answer from a summary.
 
 import { isMac } from './columns.ts'
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { api, type SessionSummary } from './api.ts'
 import { Icon } from './icons.tsx'
 import { Empty } from './Panels.tsx'
+import { extensions } from './extensions.tsx'
 import { snowflakeGt, store, useStore } from './store.ts'
 import { plain, machineLabel } from './text.ts'
 
@@ -63,6 +64,7 @@ function Row({ session, now, onOpen, names, onDismiss }: { session: SessionSumma
         <Icon name="close" size={16} />
       </button>
       {line && <div className="ov-line">{line}</div>}
+      {extensions.map((e) => e.OverviewNote && <e.OverviewNote key={e.id} session={session} />)}
       {session.state === 'waiting' &&
         (chose ? (
           <div className="ov-line num">
@@ -121,6 +123,8 @@ export function Overview({ onMenu, onOpen, onSearch }: { onMenu: () => void; onO
       .sort((a, b) => (section.state === 'waiting' ? a.since.localeCompare(b.since) : b.since.localeCompare(a.since))),
   }))
   const running = groups[2]!.items.length
+  // Items an extension holds for the person (its Inbox count): the Overview is not empty while there are any.
+  const more = extensions.reduce((sum, e) => sum + (e.useInboxCount?.() ?? 0), 0)
   const active = list.filter((s) => s.state === 'waiting' || s.state === 'busy' || s.state === 'failed').length
   return (
     <section className="chat overview">
@@ -159,19 +163,23 @@ export function Overview({ onMenu, onOpen, onSearch }: { onMenu: () => void; onO
               })}
             </div>
           )}
-          {groups.every((g) => g.items.length === 0) && <Empty icon="check" title="Nothing needs you">{running ? `${running} running.` : undefined}</Empty>}
-          {groups.map((group) =>
-            group.items.length === 0 ? null : (
-              <div key={group.state} className="ov-section">
-                <h3>
-                  {group.title} · <span className="num">{group.items.length}</span>
-                </h3>
-                {group.items.map((session) => (
-                  <Row key={session.id} session={session} now={now} onOpen={onOpen} names={names} onDismiss={() => (dismiss(session), setNow(Date.now()))} />
-                ))}
-              </div>
-            ),
-          )}
+          {groups.every((g) => g.items.length === 0) && more === 0 && <Empty icon="check" title="Nothing needs you">{running ? `${running} running.` : undefined}</Empty>}
+          {groups.map((group) => (
+            <Fragment key={group.state}>
+              {group.items.length > 0 && (
+                <div className="ov-section">
+                  <h3>
+                    {group.title} · <span className="num">{group.items.length}</span>
+                  </h3>
+                  {group.items.map((session) => (
+                    <Row key={session.id} session={session} now={now} onOpen={onOpen} names={names} onDismiss={() => (dismiss(session), setNow(Date.now()))} />
+                  ))}
+                </div>
+              )}
+              {group.state === 'waiting' && extensions.map((e) => e.OverviewSection && <e.OverviewSection key={e.id} onOpen={onOpen} />)}
+            </Fragment>
+          ))}
+          {extensions.map((e) => e.OverviewFooter && <e.OverviewFooter key={e.id} onOpen={onOpen} />)}
         </div>
       </div>
     </section>

@@ -8,9 +8,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
+import { tool } from './platform.ts'
 import { promisify } from 'node:util'
 
-const run = (args: string[]) => promisify(execFile)('openssl', args, { timeout: 30_000 })
+const run = (args: string[]) => promisify(execFile)(tool('openssl'), args, { timeout: 30_000, windowsHide: true })
 
 // Apple caps certificates from user-installed roots at 825 days; stay well under.
 const SERVER_DAYS = 397
@@ -40,9 +41,16 @@ export function hasLegacy(files: CaFiles) {
 // covers the name and its subdomains; an IP constraint here is always one address).
 export async function covers(certFile: string, names: string[], ips: string[]) {
   const permitted = await permittedNames(certFile)
-  const { stdout } = await run(['x509', '-noout', '-ext', 'nameConstraints', '-in', certFile])
+  const stdout = await nameConstraints(certFile)
   const addresses = [...stdout.matchAll(/IP:([0-9a-fA-F.:]+)\//g)].map((m) => m[1]!.toLowerCase())
   return names.every((n) => permitted.some((p) => n.toLowerCase() === p || n.toLowerCase().endsWith(`.${p}`))) && ips.every((ip) => addresses.includes(ip.toLowerCase()))
+}
+
+// The certificate's name constraints as openssl prints them. From the full text, not -ext:
+// macOS ships LibreSSL, which has no -ext.
+async function nameConstraints(certFile: string) {
+  const { stdout } = await run(['x509', '-noout', '-text', '-in', certFile])
+  return /X509v3 Name Constraints[^\n]*\n([\s\S]*?)(?=\n\s*(?:X509v3 |Signature Algorithm|Authority|Subject Key)|$)/.exec(stdout)?.[1] ?? ''
 }
 
 function ipConstraint(ip: string) {
@@ -60,7 +68,7 @@ async function withTemp<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 
 // The DNS names a CA's name constraint permits.
 export async function permittedNames(certFile: string): Promise<string[]> {
-  const { stdout } = await run(['x509', '-noout', '-ext', 'nameConstraints', '-in', certFile])
+  const stdout = await nameConstraints(certFile)
   return [...stdout.matchAll(/DNS:([^\s,]+)/g)].map((m) => m[1]!.toLowerCase())
 }
 
@@ -117,7 +125,7 @@ async function createCa(files: CaFiles, { names, ips }: { names: string[]; ips: 
   const id = crypto.randomBytes(4).toString('hex')
   await run([
     'req', '-x509', '-new', '-nodes',
-    '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256',
+    '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-pkeyopt', 'ec_param_enc:named_curve',
     '-keyout', files.caKey, '-out', files.caCert,
     '-days', '3650', '-sha256',
     '-subj', `/CN=Vocorum local CA ${id}`,
@@ -144,7 +152,7 @@ export async function ensureServerCert(files: CaFiles, { names, ips }: { names: 
     const ext = path.join(tmp, 'ext.cnf')
     const san = [...names.map((n) => `DNS:${n}`), ...ips.map((ip) => `IP:${ip}`)].join(',')
     await fs.promises.writeFile(ext, `basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\nsubjectAltName=${san}\n`)
-    await run(['req', '-new', '-nodes', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-keyout', files.key, '-out', csr, '-subj', `/CN=${names[0] ?? ips[0]}`])
+    await run(['req', '-new', '-nodes', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-pkeyopt', 'ec_param_enc:named_curve', '-keyout', files.key, '-out', csr, '-subj', `/CN=${names[0] ?? ips[0]}`])
     await run(['x509', '-req', '-in', csr, '-CA', files.caCert, '-CAkey', files.caKey, '-CAcreateserial', '-out', files.cert, '-days', String(SERVER_DAYS), '-sha256', '-extfile', ext])
   })
   await fs.promises.chmod(files.key, 0o600)

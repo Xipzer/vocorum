@@ -3,7 +3,7 @@
 
 import { afterAll, beforeAll, expect, test } from 'vitest'
 import { AttachmentBuilder, Client, GatewayIntentBits, type TextChannel } from 'discord.js'
-import { ftsExpression, parseQuery } from '../src/search.ts'
+import { ftsExpression, parseQuery, snippet } from '../src/search.ts'
 import { pairedDevice, startTestHub, waitFor, type TestDevice } from './helpers.ts'
 
 let t: Awaited<ReturnType<typeof startTestHub>>
@@ -110,4 +110,37 @@ test('the index is rebuilt from the twin after a restart', async () => {
   await t.hub.store.db.execute('DELETE FROM search_meta')
   await t.hub.search.start()
   expect((await search('migration decision')).total).toBe(1)
+})
+
+test('an index from before version 4 (a copy of the text, text ids) is replaced, and searches still work', async () => {
+  t.hub.search.stop()
+  const db = t.hub.store.db
+  for (const table of ['message_index', 'message_fts', 'message_mentions']) await db.execute(`DROP TABLE IF EXISTS ${table}`)
+  await db.execute('CREATE TABLE message_index (message_id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, author_id TEXT NOT NULL, bot INTEGER NOT NULL, ts INTEGER NOT NULL, has_file INTEGER NOT NULL, has_image INTEGER NOT NULL, has_link INTEGER NOT NULL, mentions_owner INTEGER NOT NULL, pinned INTEGER NOT NULL)')
+  await db.execute("CREATE VIRTUAL TABLE message_fts USING fts5(body, message_id UNINDEXED, tokenize = 'unicode61 remove_diacritics 2')")
+  await db.execute("INSERT INTO message_fts (rowid, body, message_id) VALUES (1, 'stale text', '1')")
+  await db.execute("UPDATE search_meta SET value = '3' WHERE key = 'version'")
+  ;(t.hub.search as unknown as { stopped: boolean }).stopped = false
+  await t.hub.search.start()
+  await t.hub.search.flush()
+  const columns = (await db.execute('PRAGMA table_info(message_index)')).rows.map((r) => String(r['name']))
+  expect(columns).toContain('id')
+  expect(columns).not.toContain('mentions_owner')
+  expect((await db.execute("SELECT sql FROM sqlite_master WHERE name = 'message_fts'")).rows[0]!['sql']).toMatch(/content=''/)
+  expect((await search('stale')).total).toBe(0)
+  const found = await search('migration decision')
+  expect(found.total).toBe(1)
+  expect(found.results[0].snippet).toMatch(/\*\*migration\*\*/)
+})
+
+test('snippets mark prefix hits and phrases, and cut long text around the first hit', () => {
+  expect(snippet('Deployed the hub and ran the tests', parseQuery('deploy test'))).toBe('**Deployed** the hub and ran the **tests**')
+  expect(snippet('it said no text here', parseQuery('"no text"'))).toBe('it said **no text** here')
+  expect(snippet('Café opened', parseQuery('cafe'))).toBe('**Café** opened')
+  const long = Array.from({ length: 60 }, (_, i) => `w${i}`).join(' ')
+  const cut = snippet(long, parseQuery('w40'))!
+  expect(cut.startsWith('…')).toBe(true)
+  expect(cut.endsWith('…')).toBe(true)
+  expect(cut).toContain('**w40**')
+  expect(cut.split(' ').length).toBe(16)
 })

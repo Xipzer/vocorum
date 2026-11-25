@@ -43,6 +43,7 @@ afterAll(async () => {
 
 test('versions order like semver', () => {
   expect(['0.10.0', '0.2.0', '0.2.0-beta.1', '1.0.0'].sort((a, b) => compareVersions(a, b))).toEqual(['0.2.0-beta.1', '0.2.0', '0.10.0', '1.0.0'])
+  expect(['1.0.0-beta.10', '1.0.0-rc-2', '1.0.0-beta.9', '1.0.0-rc-1', '1.0.0-beta', '1.0.0-1'].sort((a, b) => compareVersions(a, b))).toEqual(['1.0.0-1', '1.0.0-beta', '1.0.0-beta.9', '1.0.0-beta.10', '1.0.0-rc-1', '1.0.0-rc-2'])
 })
 
 test('publishing checks the release: signatures present, known platforms, one copy per version', () => {

@@ -12,6 +12,16 @@ const buttons = (...labels: string[]) => [{ type: 1, components: labels.map((lab
 const FOOTER = '-# *project ⋅ main ⋅ 2m 30s ⋅ 31% ⋅ model*'
 
 describe('deriveState', () => {
+  test('an alert card that mentions the owner, with nothing to answer, is a notice, not waiting', () => {
+    const card = (extra: any[] = []) => [{ type: 17, accent_color: 0xe5484d, components: [{ type: 10, content: `<@${OWNER}> The service has been unreachable since 20:56Z.` }, ...extra] }]
+    expect(deriveState([bot('', { components: card(), flags: 32768 } as Partial<LiteMessage>)], OWNER, { now: NOW }).state).not.toBe('waiting')
+    // With a live button, or a mention in the text itself, it still asks.
+    expect(deriveState([bot('', { components: card(buttons('Retry')) } as Partial<LiteMessage>)], OWNER, { now: NOW }).state).toBe('waiting')
+    expect(deriveState([bot(`<@${OWNER}> can you check?`, { components: card() } as Partial<LiteMessage>)], OWNER, { now: NOW }).state).toBe('waiting')
+    // A plain card (no accent) with a mention still asks.
+    expect(deriveState([bot('', { components: [{ type: 17, components: [{ type: 10, content: `<@${OWNER}> which one?` }] }] })], OWNER, { now: NOW }).state).toBe('waiting')
+  })
+
   test('a turn that ends with a footer is done', () => {
     expect(deriveState([owner('fix it'), bot('-# ┣ read *a.ts*'), bot(`Fixed.\n${FOOTER}`)], OWNER, { now: NOW }).state).toBe('done')
   })

@@ -168,7 +168,7 @@ export class ApiError extends Error {
   }
 }
 
-async function call<T>(path: string, init: RequestInit & { json?: unknown } = {}): Promise<T> {
+export async function call<T>(path: string, init: RequestInit & { json?: unknown } = {}): Promise<T> {
   const headers: Record<string, string> = {}
   let body = init.body
   if (init.json !== undefined) {

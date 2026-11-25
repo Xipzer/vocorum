@@ -87,12 +87,11 @@ XWIN_ACCEPT_LICENSE=1 cargo tauri build --runner cargo-xwin --target x86_64-pc-w
 - **Approvals on Linux:** there is no OS check before a key is used, so Linux
   apps approve with a passkey in a browser.
 - **Unsigned installers:** releases are not code signed by a public
-  certificate authority. On Windows, SmartScreen says "unknown publisher" on
-  the first install (choose More info, then Run anyway); updates after that
-  don't ask. On macOS, the first open is blocked: open it from System
-  Settings, Privacy and Security, Open Anyway. Check the installer against the
-  SHA-256 on your hub's setup page first. Updates are checked against the
-  publisher key either way.
+  certificate authority. Before you run one, check that its SHA-256 matches
+  the one on your hub's setup page. If Windows stops it, choose More info,
+  then Run anyway. If macOS blocks it, open System Settings > Privacy &
+  Security and choose Open Anyway. Updates after that don't ask, and every
+  update is checked against the publisher key.
 - **Linux updates:** the AppImage updates itself in place. The `.deb` updates
   too, but asks for your password, because installing a package needs root.
 

@@ -158,7 +158,8 @@ export class Notifications {
     }
   }
 
-  private async deliver(userId: string, where: NonNullable<Awaited<ReturnType<Notifications['chain']>>>, n: { kind: PushKind; title: string; body: string; message_id: string | null }) {
+  // One push to a person about a channel, if their settings allow it and no device of theirs is in front.
+  async deliver(userId: string, where: NonNullable<Awaited<ReturnType<Notifications['chain']>>>, n: { kind: PushKind; title: string; body: string; message_id: string | null }) {
     const channelId = where.chain[0]!
     if (!shouldNotify(n.kind, effectiveSetting(where.chain, await this.hub.store.notificationSettings(userId)))) return
     // A device in front shows it in the app (Discord also holds phone pushes while the desktop is active).

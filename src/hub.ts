@@ -33,6 +33,7 @@ import { DirectMessages } from './dms.ts'
 import { Schedules } from './schedules.ts'
 import { AppReleases, sendDownload } from './app-releases.ts'
 import { Routines } from './routines.ts'
+import { extensions, type HubExtension, type HubExtensionFactory } from './extensions.ts'
 
 // Constant time, whatever the lengths.
 function sameSecret(a: string, b: string) {
@@ -58,6 +59,8 @@ export type HubOptions = {
   host?: string
   // Built PWA (vite build output). Default: hub/web/dist.
   webDir?: string
+  // Built-in extensions (src/extensions.ts by default; tests pass their own).
+  extensions?: HubExtensionFactory[]
   // Web Push: VAPID contact and which endpoints may be called (tests use a local one).
   push?: { subject?: string; allowEndpoint?: (url: URL) => boolean }
 }
@@ -81,6 +84,7 @@ export class Hub {
   readonly schedules: Schedules
   readonly apps: AppReleases
   readonly routines: Routines
+  extensions: HubExtension[]
   readonly machineIcons: MachineIconStore
   readonly mirror: Mirror
   readonly api: ClientApi
@@ -164,6 +168,14 @@ export class Hub {
     this.mirror = new Mirror(this)
     this.api = new ClientApi(this, webDir)
     this.search = new SearchIndex(this)
+    this.extensions = []
+    for (const make of options.extensions ?? extensions) {
+      try {
+        this.extensions.push(make(this))
+      } catch (error) {
+        console.error('[extension] could not be made; skipped:', error)
+      }
+    }
     this.privateListener = config.privateListener
       ? new PrivateListener(config.privateListener, paths.ca, {
           attach: (server) => this.twin.attachServer(server),
@@ -267,10 +279,20 @@ export class Hub {
     this.notifications.start()
     await timed('private listener', () => this.privateListener?.start())
     await timed('schedules', () => this.schedules.start())
+    // One that fails to start is left out; the hub runs without it.
+    for (const extension of [...this.extensions]) {
+      try {
+        await timed(`extension ${extension.id}`, () => extension.start?.())
+      } catch (error) {
+        console.error(`[extension ${extension.id}] did not start; skipped:`, error)
+        this.extensions = this.extensions.filter((e) => e !== extension)
+      }
+    }
     void timed('session states', () => this.sessions.warm())
   }
 
   async stop() {
+    for (const extension of [...this.extensions].reverse()) await extension.stop?.()
     this.schedules.stop()
     await this.privateListener?.stop()
     this.search.stop()
@@ -279,6 +301,8 @@ export class Hub {
     this.sessions.stop()
     this.events.stop()
     await this.twin.stop()
+    // Closes twin.db: Windows cannot move or delete a file that is still open.
+    await this.twin.prisma.$disconnect()
     this.store.close()
   }
 

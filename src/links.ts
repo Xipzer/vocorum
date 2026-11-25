@@ -155,6 +155,8 @@ export class Links {
         }
         if (rows.length < 1000) break
         cursor = rows.at(-1)!.id
+        // Hundreds of thousands of messages: people's requests go in between the pages.
+        await new Promise((resolve) => setImmediate(resolve))
       }
     }
     this.byMessage.clear()

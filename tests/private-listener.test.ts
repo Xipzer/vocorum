@@ -8,6 +8,7 @@ import http from 'node:http'
 import https from 'node:https'
 import net from 'node:net'
 import { execFile } from 'node:child_process'
+import { tool } from '../src/platform.ts'
 import { promisify } from 'node:util'
 import { afterAll, beforeAll, expect, test } from 'vitest'
 import { initHub } from '../src/config.ts'
@@ -60,7 +61,7 @@ test('addresses: never a wildcard; CIDR matching', () => {
 })
 
 test('the CA is name constrained and the server certificate fits Apple rules', async () => {
-  const caText = (await promisify(execFile)('openssl', ['x509', '-noout', '-text', '-in', hub.privateListener!.files.caCert])).stdout
+  const caText = (await promisify(execFile)(tool('openssl'), ['x509', '-noout', '-text', '-in', hub.privateListener!.files.caCert])).stdout
   expect(caText).toMatch(/Name Constraints: critical/)
   // Exactly the hub name, not the whole zone (which could be a public suffix).
   expect(caText).toMatch(/DNS:hub\.home\.arpa/)
@@ -71,8 +72,10 @@ test('the CA is name constrained and the server certificate fits Apple rules', a
   const days = (new Date(leaf.validTo).getTime() - new Date(leaf.validFrom).getTime()) / 86_400_000
   expect(days).toBeLessThanOrEqual(398)
   expect(leaf.checkIssued(new crypto.X509Certificate(ca))).toBe(true)
-  expect(fs.statSync(hub.privateListener!.files.caKey).mode & 0o777).toBe(0o600)
-  expect(fs.statSync(hub.privateListener!.files.key).mode & 0o777).toBe(0o600)
+  if (process.platform !== 'win32') {
+    expect(fs.statSync(hub.privateListener!.files.caKey).mode & 0o777).toBe(0o600)
+    expect(fs.statSync(hub.privateListener!.files.key).mode & 0o777).toBe(0o600)
+  }
 })
 
 test('a certificate for another name fails: the TLS handshake only validates the hub names', async () => {
@@ -237,7 +240,8 @@ test('bots that come in over the private listener are sent to its TLS gateway', 
   expect(hub.gatewayUrlFor('evil.example')).toBeUndefined()
 })
 
-test('a remote machine\'s bot works entirely over the private listener (REST, TLS gateway, attachments)', async () => {
+// Older Node 22 releases have no tls.setDefaultCACertificates (bots there use NODE_EXTRA_CA_CERTS).
+test.skipIf(!('setDefaultCACertificates' in (await import('node:tls')).default))('a remote machine\'s bot works entirely over the private listener (REST, TLS gateway, attachments)', async () => {
   const { default: tls } = await import('node:tls')
   const { Client, GatewayIntentBits } = await import('discord.js')
   const before = tls.getCACertificates('default')

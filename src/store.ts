@@ -14,12 +14,15 @@ const SCHEMA = [
   )`,
   // Messages mirrored from real Discord (origin 'discord'), and Discord echoes
   // of messages typed in the hub (echo_of: the hub message they repeat).
+  // Integer ids (snowflakes fit in SQLite's 64-bit integers): the rowid is the
+  // key, so a few hundred thousand imported messages cost no separate index.
+  // Read ids back as CAST(message_id AS TEXT): a JS number cannot hold them.
   `CREATE TABLE IF NOT EXISTS message_origins (
-    message_id TEXT PRIMARY KEY,
+    message_id INTEGER PRIMARY KEY,
     origin TEXT NOT NULL,
-    echo_of TEXT
+    echo_of INTEGER
   )`,
-  'CREATE INDEX IF NOT EXISTS message_origins_echo ON message_origins (echo_of)',
+  'CREATE INDEX IF NOT EXISTS message_origins_echo_of ON message_origins (echo_of) WHERE echo_of IS NOT NULL',
   // A picture per machine (its bot's avatar, its Discord server icon); files in media/.
   `CREATE TABLE IF NOT EXISTS machine_icons (
     machine TEXT NOT NULL,
@@ -223,6 +226,18 @@ export class HubStore {
     // Bounded page cache (8 MB), as for the twin database.
     await this.db.execute('PRAGMA cache_size = -8000')
     for (const statement of SCHEMA) await this.db.execute(statement)
+    // Older hubs kept message_origins with text ids: copy it over once.
+    if ((await this.rows('PRAGMA table_info(message_origins)')).some((c) => c['name'] === 'message_id' && String(c['type']).toUpperCase() === 'TEXT')) {
+      await this.db.batch([
+        'CREATE TABLE message_origins_v2 (message_id INTEGER PRIMARY KEY, origin TEXT NOT NULL, echo_of INTEGER)',
+        'INSERT INTO message_origins_v2 (message_id, origin, echo_of) SELECT CAST(message_id AS INTEGER), origin, CAST(echo_of AS INTEGER) FROM message_origins',
+        'DROP TABLE message_origins',
+        'ALTER TABLE message_origins_v2 RENAME TO message_origins',
+        'CREATE INDEX IF NOT EXISTS message_origins_echo_of ON message_origins (echo_of) WHERE echo_of IS NOT NULL',
+      ], 'write')
+      // Give the space back once (about 25 MB on a large hub; under a second).
+      await this.db.execute('VACUUM')
+    }
     // Bot secrets are stored as SHA-256 only. Older hubs kept them in clear:
     // hash those once and blank the clear column.
     const columns = (await this.rows('PRAGMA table_info(bots)')).map((row) => String(row['name']))

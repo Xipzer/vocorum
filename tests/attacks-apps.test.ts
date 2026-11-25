@@ -107,3 +107,22 @@ test('after the wrong-code lockout, a refused account cannot tell real codes fro
     ;(hub as any).checkHuman = original
   }
 })
+
+test('an update URL through the private listener never follows a forged Host', async () => {
+  const https = await import('node:https')
+  new AppReleases(t.paths.apps).publish(releaseDir('0.8.0', { 'windows-x86_64': { update: 'up.exe' } }, { 'up.exe': 'u', 'up.exe.sig': 'sig' }))
+  const get = (host: string) => new Promise<{ status: number; body: string }>((resolve, reject) => {
+    const req = https.request({ host: '127.0.0.1', port: hub.privateListener!.port, path: '/client/app/update/windows/x86_64/0.0.1', servername: 'hub.home.arpa', rejectUnauthorized: false, headers: { host, cookie: owner.cookie!, 'tailscale-user-login': LOGIN } }, (res) => {
+      let body = ''
+      res.on('data', (d) => (body += d))
+      res.on('end', () => resolve({ status: res.statusCode!, body }))
+    })
+    req.on('error', reject)
+    req.end()
+  })
+  // The listener itself refuses other names (421 Misdirected Request).
+  expect((await get('evil.example')).status).toBe(421)
+  const own = await get(`hub.home.arpa:${hub.privateListener!.port}`)
+  expect(own.status).toBe(200)
+  expect(new URL(JSON.parse(own.body).url).host).toBe(`hub.home.arpa:${hub.privateListener!.port}`)
+})

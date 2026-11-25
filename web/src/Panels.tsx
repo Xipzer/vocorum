@@ -2,6 +2,7 @@
 // message search and a channel's pins. Plus the mentions inbox view.
 
 import { isMac } from './columns.ts'
+import { extensions } from './extensions.tsx'
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
 import { below, Sheet, type SheetSpec } from './Sheet.tsx'
 import { startAuthentication } from '@simplewebauthn/browser'
@@ -337,11 +338,12 @@ export function InboxPanel({ onClose, onJump, onOpen }: { onClose: () => void; o
   const reminders = useStore((d) => d.reminders) ?? []
   const due = reminders.filter(isDue).reverse()
   const upcoming = reminders.filter((r) => !isDue(r))
+  const more = extensions.reduce((sum, e) => sum + (e.useInboxCount?.() ?? 0), 0)
   return (
     <Panel
       title="Inbox"
       icon="bell"
-      count={due.length + pendingCount + needs.length + unreadCount}
+      count={due.length + pendingCount + needs.length + unreadCount + more}
       onClose={onClose}
       extra={
         unreadCount > 0 ? (
@@ -386,13 +388,14 @@ export function InboxPanel({ onClose, onJump, onOpen }: { onClose: () => void; o
             </span>
           </button>
         ))}
+        {extensions.map((e) => e.InboxSection && <e.InboxSection key={e.id} onOpen={onOpen} />)}
         {(list?.length ?? 0) > 0 && (
           <div className="panel-section">
             Mentions <span className="num">{list!.length}</span>
           </div>
         )}
         {list?.map((m) => <MentionRow key={m.message.id} m={m} unread={unread(m)} onJump={onJump} showServer />)}
-        {reminders.length === 0 && requests.length === 0 && needs.length === 0 && list?.length === 0 && <Empty icon="bell" title="You're all caught up">Mentions and sessions waiting on you, from every server, show here.</Empty>}
+        {reminders.length === 0 && requests.length === 0 && needs.length === 0 && more === 0 && list?.length === 0 && <Empty icon="bell" title="You're all caught up">Mentions and sessions waiting on you, from every server, show here.</Empty>}
       </div>
     </Panel>
   )

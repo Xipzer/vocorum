@@ -9,11 +9,17 @@ import { createClient, type Client } from '@libsql/client'
 import { openSqlite } from '../sqlite.ts'
 import { readSecret, type HubConfig, type HubPaths } from '../config.ts'
 
-export type TokenSource = { tokenFile?: string; kimaki?: boolean | string }
+export type TokenSource = { tokenFile?: string; kimaki?: boolean | string; stateDir?: string }
 
 // Order: --token-file, DISCORD_BOT_TOKEN, --kimaki (this machine's Kimaki bot).
 export async function discordToken(source: TokenSource): Promise<string> {
   if (source.tokenFile) {
+    // The hub's own secrets (admin token, bot env files, keys) live there: never sent anywhere as a Discord token.
+    if (source.stateDir) {
+      const real = (p: string) => (fs.existsSync(p) ? fs.realpathSync(p) : path.resolve(p))
+      const rel = path.relative(real(source.stateDir), real(source.tokenFile))
+      if (!rel.startsWith('..') && !path.isAbsolute(rel)) throw new Error(`${source.tokenFile} is inside the hub's folder, where its own secrets are. Keep the Discord token somewhere else.`)
+    }
     const mode = fs.statSync(source.tokenFile).mode & 0o077
     if (mode) console.error(`Warning: ${source.tokenFile} is readable by other users. Run: chmod 600 ${source.tokenFile}`)
     return fs.readFileSync(source.tokenFile, 'utf8').trim()
@@ -174,7 +180,7 @@ export async function detach(paths: HubPaths, name: string, argv: string[]): Pro
   const cli = path.resolve(import.meta.dirname, '../../bin/vocorum.js')
   const args = [cli, ...argv.filter((a) => a !== '--detach')]
   const unit = `vocorum-${name}-${Date.now().toString(36)}`
-  const hasSystemd = spawnSync('systemctl', ['--user', 'is-system-running'], { encoding: 'utf8' }).stdout.trim() !== ''
+  const hasSystemd = process.platform === 'linux' && (spawnSync('systemctl', ['--user', 'is-system-running'], { encoding: 'utf8' }).stdout ?? '').trim() !== ''
   if (hasSystemd) {
     const result = spawnSync('systemd-run', ['--user', `--unit=${unit}`, '--collect', `--setenv=VOCORUM_DIR=${paths.root}`, ...(process.env['VOCORUM_DISCORD_API'] ? ['--setenv=VOCORUM_DISCORD_API'] : []), '-p', `StandardOutput=append:${log}`, '-p', `StandardError=append:${log}`, node, ...args], { encoding: 'utf8', env: process.env })
     if (result.status === 0) {
@@ -183,7 +189,7 @@ export async function detach(paths: HubPaths, name: string, argv: string[]): Pro
     }
   }
   const out = fs.openSync(log, 'a', 0o600)
-  const child = spawn(node, args, { detached: true, stdio: ['ignore', out, out], env: { ...process.env, VOCORUM_DIR: paths.root } })
+  const child = spawn(node, args, { detached: true, windowsHide: true, stdio: ['ignore', out, out], env: { ...process.env, VOCORUM_DIR: paths.root } })
   child.unref()
   recordJob(paths, { name, unit: null, pid: child.pid ?? null, log, started: new Date().toISOString() })
   return `Running in the background (pid ${child.pid}). Follow it with: vocorum discord status (log: ${log})`

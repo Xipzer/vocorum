@@ -37,7 +37,7 @@
   --text: #e3e3e9;
   --text-strong: #ffffff;
   --text-muted: #a3a3ae;
-  --text-faint: #82828e;
+  --text-faint: #8e8e9a;
   --pink: #ff2e88;
   --cyan: #00d2ff;
   --accent: var(--cyan);
@@ -6957,4 +6957,165 @@ button.member {
 .rail-item.admin.active .rail-guild:not(.has-icon) {
   background: var(--warn);
   color: #000;
+}
+
+/* The desktop app's title bar (macOS and Windows; see TitleBar.tsx). One 32px strip in
+   the rail's colour above everything, where you are in the middle; window-covering
+   layers start under it so the window can always be moved and closed. */
+html[data-chrome] {
+  --chrome: 32px;
+}
+html[data-chrome] #root {
+  display: flex;
+  flex-direction: column;
+}
+html[data-chrome] #root > :not(.titlebar) {
+  flex: 1 1 0;
+  min-height: 0;
+  height: auto;
+}
+.titlebar {
+  position: relative;
+  z-index: 1000;
+  flex: none;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-0);
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.titlebar-place {
+  max-width: calc(100% - 300px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 600 13px/16px var(--font);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.titlebar.blurred .titlebar-place,
+.titlebar.blurred .titlebar-controls button:not(:hover) {
+  color: var(--text-faint);
+}
+.titlebar-controls {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+}
+.titlebar-controls button {
+  width: 46px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  color: var(--text);
+  transition: background var(--fast), color var(--fast);
+}
+.titlebar-controls button:hover {
+  background: rgb(255 255 255 / 0.08);
+}
+.titlebar-controls button:active {
+  background: rgb(255 255 255 / 0.12);
+}
+.titlebar-controls button.close:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+.titlebar-controls button.close:active {
+  background: #b0281a;
+  color: #fff;
+}
+.titlebar-controls svg {
+  width: 10px;
+  height: 10px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+}
+html[data-chrome] :is(.overlay, .sheet-layer, .lightbox, .settings-layer) {
+  top: var(--chrome);
+}
+@media (max-width: 1100px) {
+  html[data-chrome] .side-panel {
+    top: var(--chrome);
+  }
+}
+@media (max-width: 767px) {
+  html[data-chrome] .sidebar {
+    top: var(--chrome);
+  }
+}
+
+/* A message picked with the keyboard reads like a hovered one, with a ring. */
+.message:focus {
+  outline: none;
+}
+.message:focus-visible {
+  background: var(--hover);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.messages:focus-visible {
+  outline: none;
+}
+
+/* Accessibility pass. Red fills that carry white text use a deeper red, so the text keeps
+   4.5:1 (the brighter --danger stays for dots, rules and red text on dark). */
+:root {
+  --danger-fill: #d22f3f;
+}
+.rail-badge,
+.back-badge,
+.inbox-button .num,
+.list-pill.mentions,
+.message.failed.needs .action-row > .button:first-child,
+.button.danger {
+  background: var(--danger-fill);
+}
+.button.danger {
+  color: #fff;
+}
+@media (hover: hover) {
+  .button.danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--danger-fill), #000 12%);
+  }
+  .sheet-item.red:hover,
+  .menu-item.red:hover {
+    background: var(--danger-fill);
+  }
+}
+/* Hidden until Tab reaches it, then a plain button over the top left. */
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 1100;
+  padding: 8px 12px;
+  border-radius: var(--r-control);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font: 600 14px/18px var(--font);
+  transform: translateY(-200%);
+}
+.skip-link:focus-visible {
+  transform: none;
+}
+/* Reduced motion: nothing slides, pulses or spins; state stays visible as colour. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+/* Scrollbars as in Discord: thin, dark, no arrow buttons (Windows draws classic grey
+   bars with arrows otherwise). Lists that hide theirs keep scrollbar-width: none. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2e2e36 transparent;
 }

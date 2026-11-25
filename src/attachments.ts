@@ -9,7 +9,41 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type http from 'node:http'
+import { createRequire } from 'node:module'
+import { pathToFileURL } from 'node:url'
 import type { AttachmentRow, HubStore } from './store.ts'
+
+// Sized previews (?width=), like Discord's media proxy: a 4000 px photo shown at
+// 400 px need not be decoded at full size by every client. Widths round up to
+// a fixed set so the cache stays small; each is made once and kept on disk in
+// the attachment's own folder (.previews/, gone with it). The resize runs in a
+// short-lived child process, so its decoding memory never stays in the hub.
+const PREVIEW_WIDTHS = [160, 320, 640, 960, 1280, 1920]
+const PREVIEW_TYPES = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif'])
+const PREVIEW_JOBS = 2
+const RESIZE = `const [sharpUrl, input, output, width] = process.argv.slice(1)
+const sharp = (await import(sharpUrl)).default
+sharp.cache(false)
+sharp.concurrency(1)
+await sharp(input, { limitInputPixels: 100_000_000, failOn: 'error' }).rotate().resize({ width: Number(width), withoutEnlargement: true }).webp({ quality: 80 }).toFile(output)`
+
+export function previewWidth(asked: string | null): number | null {
+  const w = Number(asked)
+  if (!asked || !Number.isFinite(w) || w <= 0) return null
+  return PREVIEW_WIDTHS.find((size) => size >= w) ?? null
+}
+
+let sharpUrl: string | null | undefined
+function findSharp() {
+  if (sharpUrl === undefined) {
+    try {
+      sharpUrl = pathToFileURL(createRequire(import.meta.url).resolve('sharp')).href
+    } catch {
+      sharpUrl = null
+    }
+  }
+  return sharpUrl
+}
 
 export function safeFilename(name: string): string {
   const base = path.basename(name).replace(/[^\w.\- ]+/g, '_').replace(/^\.+/, '').slice(0, 120)
@@ -58,6 +92,50 @@ export class AttachmentStore {
     private readonly baseUrl: () => string,
   ) {}
 
+  private previews = new Map<string, Promise<string | null>>()
+  private failedPreviews = new Set<string>()
+  private previewSlots = PREVIEW_JOBS
+  private previewQueue: Array<() => void> = []
+
+  // The preview file for this width, made if needed; null: serve the original.
+  async preview(row: AttachmentRow, width: number): Promise<string | null> {
+    if (!PREVIEW_TYPES.has(row.contentType.split(';')[0]!.trim().toLowerCase())) return null
+    if (row.width !== null && row.width <= width) return null
+    const key = `${row.id}/${width}`
+    if (this.failedPreviews.has(key)) return null
+    const file = path.join(this.dir, row.id, '.previews', `${width}.webp`)
+    if (fs.existsSync(file)) return file
+    let job = this.previews.get(key)
+    if (!job) {
+      job = this.makePreview(row, width, file).finally(() => this.previews.delete(key))
+      this.previews.set(key, job)
+    }
+    return job
+  }
+
+  private async makePreview(row: AttachmentRow, width: number, file: string): Promise<string | null> {
+    const sharp = findSharp()
+    if (!sharp) return null
+    if (this.previewSlots === 0) await new Promise<void>((resolve) => this.previewQueue.push(resolve))
+    else this.previewSlots--
+    const temp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp.webp`
+    try {
+      await fs.promises.mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
+      await promisify(execFile)(process.execPath, ['--input-type=module', '-e', RESIZE, sharp, path.join(this.dir, row.id, row.filename), temp, String(width)], { timeout: 30_000 })
+      await fs.promises.chmod(temp, 0o600)
+      await fs.promises.rename(temp, file)
+      return file
+    } catch {
+      this.failedPreviews.add(`${row.id}/${width}`)
+      await fs.promises.rm(temp, { force: true })
+      return null
+    } finally {
+      const next = this.previewQueue.shift()
+      if (next) next()
+      else this.previewSlots++
+    }
+  }
+
   // ex: expiry, seconds since the epoch in hex (Discord's format).
   private sign(id: string, filename: string, ex: string) {
     return crypto.createHmac('sha256', this.signingKey).update(`${id}/${filename}/${ex}`).digest('hex').slice(0, 32)
@@ -104,7 +182,9 @@ export class AttachmentStore {
       res.writeHead(404, { 'content-type': 'text/plain' }).end('Not found')
       return
     }
-    const file = path.join(this.dir, id, row.filename)
+    const width = previewWidth(url.searchParams.get('width'))
+    const preview = width ? await this.preview(row, width) : null
+    const file = preview ?? path.join(this.dir, id, row.filename)
     const stat = await fs.promises.stat(file).catch(() => null)
     if (!stat) {
       res.writeHead(404, { 'content-type': 'text/plain' }).end('Not found')
@@ -114,7 +194,7 @@ export class AttachmentStore {
     const inline = /^(image|audio|video)\//.test(row.contentType) && !row.contentType.includes('svg')
     res.writeHead(200, {
       // Never the uploader's type for anything else: a file must not become a script or page on this origin.
-      'content-type': inline ? row.contentType : 'application/octet-stream',
+      'content-type': preview ? 'image/webp' : inline ? row.contentType : 'application/octet-stream',
       'content-length': stat.size,
       'x-content-type-options': 'nosniff',
       'content-security-policy': "default-src 'none'; sandbox",
@@ -125,7 +205,7 @@ export class AttachmentStore {
       res.end()
       return
     }
-    fs.createReadStream(file).pipe(res)
+    fs.createReadStream(file).on('error', () => res.destroy()).pipe(res)
   }
 }
 

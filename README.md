@@ -19,12 +19,23 @@ or any other company.
 - Servers, channels, threads, buttons, menus, slash commands, files and voice
   notes, like Discord.
 - One overview of every machine and every session, and which ones need you.
+- Direct messages, reminders and scheduled messages.
+- An Admin server where you ask your own agent to run the hub, and approve each
+  change.
 - An app for your phone and computer, signed in with a passkey per device.
 - One small program with its data in one folder. No Docker, no database server.
 
 <p>
   <img src="docs/images/overview.png" width="49%" alt="Overview: what needs you">
   <img src="docs/images/question.png" width="49%" alt="A bot asks a question with buttons">
+</p>
+<p>
+  <img src="docs/images/dms.png" width="49%" alt="Direct messages with people on your hub">
+  <img src="docs/images/reminders.png" width="49%" alt="Reminders and scheduled messages">
+</p>
+<p>
+  <img src="docs/images/admin.png" width="49%" alt="The Admin server: ask your admin agent, approve in place">
+  <img src="docs/images/invite.png" width="49%" alt="Invite a friend with a pairing code">
 </p>
 <p>
   <img src="docs/images/phone-thread.png" width="24%" alt="A session on a phone">
@@ -50,6 +61,8 @@ Setup prints a link and a QR code to sign in your first device.
 
 ## Desktop and iPhone apps
 
+![The Vocorum desktop app on Windows](docs/images/desktop-app.png)
+
 Small native apps for Windows, macOS and Linux, and an iPhone build, wrap the
 same UI. The UI is built into the app, the app trusts only your hub's own
 certificate, and it signs in with a device key kept in the system keychain.
@@ -58,7 +71,9 @@ your own hub and install only if they carry the publisher's signature. See
 [apps/desktop/README.md](apps/desktop/README.md).
 
 Get an app from your hub: run `vocorum pair <device> --app` and open the link
-on that device. Or build it with `apps/desktop/scripts/release.sh`.
+on that device. Or build it with `apps/desktop/scripts/release.sh`. The first
+download comes over the hub's plain setup page, so do it over Tailscale or
+WireGuard, not an open network.
 
 > The apps are not signed by Apple or Microsoft yet. Windows shows "unknown
 > publisher" on first install, and the Mac build is not notarised. The apps
@@ -77,6 +92,7 @@ system reports it, CPU averaged over two minutes idle):
 | Linux (Ubuntu 24.04): package | 3.8 MB `.deb`, 8 MB installed; AppImage about 83 MB (carries WebKitGTK) | 466 MB after its first download |
 | Linux: idle, window open | 309 to 334 MB, 2.3% CPU | 630 MB, 0.3% CPU (login screen only) |
 | Window closed, tray only | 5 to 44 MB, 0% CPU | no equivalent |
+| Windows 11: minimised | about 36 MB | |
 
 The Windows run used a small test hub. The Mac screen was locked, so neither
 app was drawing. On Linux, Discord was never logged in, and the numbers come

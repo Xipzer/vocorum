@@ -113,6 +113,15 @@ function isErrorCallout(components: any[]) {
   return red
 }
 
+// A card with an accent colour: an alert or status notice when nothing in it can be answered.
+function isNoticeCard(components: any[]) {
+  let accented = false
+  walk(components, (c) => {
+    if (c.type === 17 && typeof c.accent_color === 'number') accented = true
+  })
+  return accented
+}
+
 export function isToolOnly(m: LiteMessage) {
   if (!m.bot || m.attachments.length || m.components.length || !m.content) return false
   const lines = m.content.split('\n').filter((l) => l.trim())
@@ -143,8 +152,10 @@ export function deriveState(messages: LiteMessage[], ownerId: string, { typingUn
   // Waiting: any bot message in the current turn that still asks for the owner.
   const asking = [...turn].reverse().find((m) => {
     const body = text(m)
-    // The turn-end ping in a footer is a notification, not a question.
-    const mention = body.includes(`<@${ownerId}>`) && !FOOTER.test(m.content)
+    // The turn-end ping in a footer is a notification, not a question; so is a
+    // mention only inside an accented card (an alert) with nothing to answer.
+    const tag = `<@${ownerId}>`
+    const mention = body.includes(tag) && !FOOTER.test(m.content) && !(!(m.content ?? '').includes(tag) && isNoticeCard(m.components))
     return hasOpenComponents(m.components) || /^\**Permission/i.test(plainText(containerText(m.components))) || mention || /\*\*Question:\*\*/.test(body)
   })
   const fresh = (iso: string, ttl: number) => now - new Date(iso).getTime() < ttl
