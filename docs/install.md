@@ -5,7 +5,8 @@ This sets up the hub on one computer and signs in your first device.
 ## What you need
 
 - A computer that stays on, running Linux or macOS. This is the hub.
-- Node.js 22 or newer, pnpm (no pnpm? run `corepack enable`), and `openssl`. `ffmpeg` is optional, for voice
+- Node.js 22 or newer, pnpm (no pnpm? run
+  `corepack enable`), and `openssl`. `ffmpeg` is optional, for voice
   notes from phones.
 - A private network between the hub and your other devices, such as Tailscale or
   WireGuard. Vocorum is never meant to be reachable from the internet.
@@ -41,11 +42,13 @@ instead of `node bin/vocorum.js`. It makes an empty server called Home to start
 with.
 
 Your data and keys live in `~/.vocorum`. Set `VOCORUM_DIR` to keep them
-somewhere else. If another hub already uses the port, setup stops: pick another
-with `--port`.
+somewhere else. If another hub already runs on this computer, setup picks
+free ports and says so.
 
 On Linux, run `loginctl enable-linger "$USER"` if setup asks for it, so the hub
-keeps running after you log out.
+keeps running after you log out. Without systemd (a container, or WSL without
+it) setup runs the hub in the background instead. It then does not start again
+after a reboot: `doctor` prints the line to add for that.
 
 ## 2. Sign in on a device
 
@@ -74,6 +77,11 @@ network:
 5. Turn on notifications in the app's settings if you want them.
 
 Next time, the device signs in with its passkey.
+
+**Using the desktop or iPhone app instead?** Run
+`node bin/vocorum.js pair my-laptop --app` and open the link on that device. The
+app needs no certificate, DNS or passkey steps: the link tells it which
+certificate to trust. See [apps/desktop/README.md](../apps/desktop/README.md).
 
 The setup page shows a fingerprint. If you want to be sure the certificate is
 yours, compare it with `node bin/vocorum.js private status` on the hub.

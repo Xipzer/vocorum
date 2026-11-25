@@ -86,6 +86,31 @@ XWIN_ACCEPT_LICENSE=1 cargo tauri build --runner cargo-xwin --target x86_64-pc-w
   until the hub can send through Apple's push service.
 - **Approvals on Linux:** there is no OS check before a key is used, so Linux
   apps approve with a passkey in a browser.
+- **Unsigned installers:** releases are not code signed by a public
+  certificate authority. On Windows, SmartScreen says "unknown publisher" on
+  the first install (choose More info, then Run anyway); updates after that
+  don't ask. On macOS, the first open is blocked: open it from System
+  Settings, Privacy and Security, Open Anyway. Check the installer against the
+  SHA-256 on your hub's setup page first. Updates are checked against the
+  publisher key either way.
+- **Linux updates:** the AppImage updates itself in place. The `.deb` updates
+  too, but asks for your password, because installing a package needs root.
+
+## Releases
+
+`apps/desktop/scripts/release.sh linux|windows|macos [out-dir]` builds the
+installers and writes `SHA256SUMS`. Builds are repeatable: the Rust version is
+pinned in `src-tauri/rust-toolchain.toml`, dependencies come from the lock
+files, `SOURCE_DATE_EPOCH` comes from the commit and build paths are remapped
+out of the binary. Two clean Linux builds of the same commit give the same
+binary, byte for byte.
+
+With `VOCORUM_UPDATER_PUBKEY` set the app accepts updates signed by that key;
+with `TAURI_SIGNING_PRIVATE_KEY` as well, the build also writes the `.sig`
+files. Publish a release on your hub with `vocorum apps publish <dir>`: paired
+apps then update from the hub itself, and the hub's setup page offers the
+installers to devices holding a valid pairing code. Nothing is fetched from
+any other host.
 
 ## Per system notes
 

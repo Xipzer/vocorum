@@ -1,0 +1,4 @@
+# Release builds use this exact Rust so they can be rebuilt bit for bit.
+[toolchain]
+channel = "1.100.0"
+profile = "minimal"

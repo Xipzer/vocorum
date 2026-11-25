@@ -4,7 +4,7 @@
 // has:file|image|link|pin, mentions:me, before:, after:, during: (YYYY-MM-DD).
 
 import { getMessageVisibleText } from 'discord-digital-twin/src'
-import type { InStatement } from '@libsql/client'
+import type { InStatement } from './sqlite.ts'
 import type { Hub } from './hub.ts'
 
 const SCHEMA = [
@@ -32,6 +32,7 @@ const SCHEMA = [
 // Bumped when what the index stores changes: the index is rebuilt once.
 // 3: FTS rows keyed by the message id as rowid (deletes were full scans).
 const INDEX_VERSION = '3'
+const TOTAL_CAP = 5000
 
 type Row = {
   id: string
@@ -238,10 +239,6 @@ export class SearchIndex {
     const args: Array<string | number> = [JSON.stringify([...channels])]
     const filters = where.length
     const fts = ftsExpression(query)
-    if (fts) {
-      where.push('i.message_id IN (SELECT message_id FROM message_fts WHERE message_fts MATCH ?)')
-      args.push(fts)
-    }
     if (query.from.length) {
       const users = await this.hub.twin.prisma.user.findMany()
       const ids = users
@@ -271,15 +268,24 @@ export class SearchIndex {
       where.push('i.ts >= ?')
       args.push(query.after)
     }
-    if (where.length === filters) return { total: 0, results: [] as Array<{ messageId: string; snippet: string | null }> }
+    if (where.length === filters && !fts) return { total: 0, results: [] as Array<{ messageId: string; snippet: string | null }> }
     const clause = where.join(' AND ')
-    const total = Number((await this.db.execute({ sql: `SELECT count(*) n FROM message_index i WHERE ${clause}`, args })).rows[0]!['n'])
+    const direction = order === 'oldest' ? 'ASC' : 'DESC'
+    // With words, the full-text index drives: it yields matches in id order
+    // (ids are Discord snowflakes, so time order) and stops at the page, and
+    // each match is checked against the filters by primary key. Counts stop
+    // at TOTAL_CAP: a common word must not make every search scan everything.
+    const from = fts ? 'message_fts f JOIN message_index i ON i.message_id = f.message_id' : 'message_index i'
+    const match = fts ? 'f.message_fts MATCH ? AND ' : ''
+    const matchArgs = fts ? [fts] : []
+    const total = Number((await this.db.execute({ sql: `SELECT count(*) n FROM (SELECT 1 FROM ${from} WHERE ${match}${clause} LIMIT ${TOTAL_CAP})`, args: [...matchArgs, ...args] })).rows[0]!['n'])
     const rows = await this.db.execute({
-      sql: `SELECT i.message_id, ${fts ? "(SELECT snippet(message_fts, 0, '**', '**', '…', 16) FROM message_fts WHERE message_fts MATCH ? AND rowid = CAST(i.message_id AS INTEGER))" : 'NULL'} AS snippet
-            FROM message_index i WHERE ${clause} ORDER BY i.ts ${order === 'oldest' ? 'ASC' : 'DESC'}, i.message_id ${order === 'oldest' ? 'ASC' : 'DESC'} LIMIT ? OFFSET ?`,
-      args: [...(fts ? [fts] : []), ...args, Math.min(limit, 50), offset],
+      sql: fts
+        ? `SELECT i.message_id, snippet(message_fts, 0, '**', '**', '…', 16) AS snippet FROM ${from} WHERE ${match}${clause} ORDER BY f.rowid ${direction} LIMIT ? OFFSET ?`
+        : `SELECT i.message_id, NULL AS snippet FROM ${from} WHERE ${clause} ORDER BY i.ts ${direction}, i.message_id ${direction} LIMIT ? OFFSET ?`,
+      args: [...matchArgs, ...args, Math.min(limit, 50), offset],
     })
-    return { total, results: rows.rows.map((r) => ({ messageId: String(r['message_id']), snippet: r['snippet'] == null ? null : String(r['snippet']) })) }
+    return { total, ...(total >= TOTAL_CAP && { total_capped: true }), results: rows.rows.map((r) => ({ messageId: String(r['message_id']), snippet: r['snippet'] == null ? null : String(r['snippet']) })) }
   }
 
   // Mentions of a user in channels they can view, newest first: every unread

@@ -96,6 +96,7 @@ export async function makePlan(rest: DiscordRest, config: HubConfig, paths: HubP
     const channels = (await twin.execute({ sql: 'SELECT id, type, parentId FROM Channel WHERE guildId = ?', args: [options.guild] })).rows.filter((c) => !only || only.has(String(c['id'])) || (THREAD_TYPES.has(Number(c['type'])) && only.has(String(c['parentId']))))
     if (only && !channels.length) throw new Error(`The hub has none of ${[...only].join(', ')} in this server. Import them first.`)
     const isThread = new Map(channels.map((c) => [String(c['id']), THREAD_TYPES.has(Number(c['type']))]))
+    const copies = new Set((await hubDb.execute('SELECT id FROM attachments')).rows.map((r) => String(r['id'])))
     const fromDiscord = new Set((await hubDb.execute("SELECT message_id FROM message_origins WHERE origin = 'discord'")).rows.map((r) => String(r['message_id'])))
     const cutoff = Date.now() - options.olderThanDays * DAY
     const skipped = { not_copied: 0, other_authors: 0, recent: 0, kept: 0, not_from_discord: 0 }
@@ -135,8 +136,9 @@ export async function makePlan(rest: DiscordRest, config: HubConfig, paths: HubP
           skipped.recent++
           continue
         }
-        const files = JSON.parse(String(r['attachments'] ?? '[]')) as Array<{ url?: string; missing?: boolean }>
-        if (files.some((f) => !f.missing && CDN.test(f.url ?? ''))) {
+        // Safe only when the hub holds a copy of every file, or Discord had already lost it.
+        const files = JSON.parse(String(r['attachments'] ?? '[]')) as Array<{ id?: string; url?: string; missing?: boolean }>
+        if (files.some((f) => !f.missing && (CDN.test(f.url ?? '') || !copies.has(String(f.id))))) {
           skipped.not_copied++
           continue
         }
@@ -334,6 +336,8 @@ export function writeReport(paths: HubPaths): string {
   const runs = statusOf(paths)
   const imports = readJson<{ guilds?: Record<string, { name: string; complete: number; channels: number; threads: number; files_missing: number }>; secrets?: Array<{ kind: string; masked: string; channel: string; date: string }> }>(path.join(paths.root, 'import', 'report.json'), {})
   const codes: Record<string, string> = { '50001': 'no access to the channel', '50013': 'missing permission (often a locked thread or someone else\'s message)', '50083': 'thread archived and could not be reopened', '10003': 'channel already gone', 'http 0': 'Discord kept failing; run execute again' }
+  // Plans with --authors all also took other people's messages.
+  const everyone = runs.length > 0 && runs.every((r) => readJson<Plan | null>(path.join(jobDir(paths, 'purge'), `plan-${r.plan}.json`), null)?.options.authors.includes('all'))
   const lines = ['# Discord cleanup report', '', `Written ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC by vocorum discord report.`, '']
   lines.push('## What the hub holds', '')
   for (const g of Object.values(imports.guilds ?? {})) lines.push(`- ${g.name}: ${g.complete} of ${g.channels + g.threads} channels and threads fully imported. ${g.files_missing} files were already gone on Discord.`)
@@ -351,7 +355,7 @@ export function writeReport(paths: HubPaths): string {
     '',
     '## What Discord still keeps',
     '',
-    '- Other people\'s messages, unless they delete them or the server is deleted.',
+    ...(everyone ? [] : ['- Other people\'s messages, unless they delete them or the server is deleted.']),
     '- Your direct messages with bots: a bot cannot delete what you wrote there. Delete them by hand.',
     '- Messages newer than your last import, and anything kept by the plan options (recent or kept threads).',
     '- Discord\'s own backups and anything under legal hold. Discord says deleted data leaves its systems over time; nobody outside Discord can verify or speed that up.',
@@ -360,12 +364,13 @@ export function writeReport(paths: HubPaths): string {
     '',
     '## To finish',
     '',
-    '1. Delete the server (Server Settings, Delete Server). Bots usually cannot.',
-    '2. Remove the bot application in the Discord developer portal.',
-    '3. Delete your direct messages with bots by hand.',
-    '4. Optional: request your data package (User Settings, Data and Privacy) to check what remains, then delete the account.',
-    '',
   )
+  // A cleanup of some channels leaves the rest of the server in use: no "delete the server".
+  const partial = runs.some((r) => readJson<Plan | null>(path.join(jobDir(paths, 'purge'), `plan-${r.plan}.json`), null)?.options.channels?.length)
+  const steps = partial
+    ? ['Only some channels were cleaned, so the server and the bot stay. Delete the emptied channels on Discord if you no longer want them (Edit Channel, Delete Channel).']
+    : ['Delete the server (Server Settings, Delete Server). Bots usually cannot.', 'Remove the bot application in the Discord developer portal.', 'Delete your direct messages with bots by hand.', 'Optional: request your data package (User Settings, Data and Privacy) to check what remains, then delete the account.']
+  lines.push(...steps.map((step, i) => `${i + 1}. ${step}`), '')
   const file = path.join(jobDir(paths, 'purge'), 'PURGE-REPORT.md')
   fs.writeFileSync(file, lines.join('\n'), { mode: 0o600 })
   return file

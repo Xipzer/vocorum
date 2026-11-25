@@ -2,7 +2,7 @@
 // codes and attachments. Discord-shaped state lives in the twin's twin.db.
 
 import crypto from 'node:crypto'
-import { createClient, type Client, type InValue } from '@libsql/client'
+import { openSqlite, type InValue, type SqliteDb } from './sqlite.ts'
 import { snowflake } from './config.ts'
 
 const SCHEMA = [
@@ -211,15 +211,17 @@ export type AttachmentRow = {
 }
 
 export class HubStore {
-  readonly db: Client
+  readonly db: SqliteDb
 
   constructor(url: string) {
-    this.db = createClient({ url })
+    this.db = openSqlite(url)
   }
 
   async migrate() {
     await this.db.execute('PRAGMA journal_mode = WAL')
     await this.db.execute('PRAGMA busy_timeout = 5000')
+    // Bounded page cache (8 MB), as for the twin database.
+    await this.db.execute('PRAGMA cache_size = -8000')
     for (const statement of SCHEMA) await this.db.execute(statement)
     // Bot secrets are stored as SHA-256 only. Older hubs kept them in clear:
     // hash those once and blank the clear column.

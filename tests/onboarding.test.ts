@@ -83,9 +83,10 @@ test('import keeps Discord ids, pages past 100 messages, verifies every channel 
 })
 
 test('purge plans only what the hub holds, and never a message whose files it lacks', async () => {
-  // One imported message still points at Discord's file servers: it must stay on Discord.
+  // One imported message has a file the hub holds no copy of: it must stay on Discord,
+  // even when its link does not look like Discord's file servers.
   const kept = posted[5]!
-  await hub.hub.twin.prisma.message.update({ where: { id: kept }, data: { attachments: JSON.stringify([{ id: '1', filename: 'a.png', url: 'https://cdn.discordapp.com/attachments/1/1/a.png' }]) } })
+  await hub.hub.twin.prisma.message.update({ where: { id: kept }, data: { attachments: JSON.stringify([{ id: '1', filename: 'a.png', url: 'http://127.0.0.1:9/attachments/1/a.png' }]) } })
   const plan = await makePlan(rest, config(), hub.paths, { guild: guildId, olderThanDays: 0, authors: ['bot'], keep: [], threads: true, kimakiKeep: false })
   const ids = new Set(plan.messages.map((m) => m[1]))
   expect(ids.has(kept)).toBe(false)
@@ -177,4 +178,15 @@ test('kimaki setup never starts the hub Kimaki through the wrapper that pins the
   fs.writeFileSync(wrapper, "#!/bin/sh\nexport KIMAKI_DATA_DIR='/home/alice/.kimaki'\nnode cli.js\n")
   expect(() => resolveKimaki(wrapper)).toThrow(/KIMAKI_DATA_DIR/)
   expect(resolveKimaki('/usr/bin/true')).toBe('/usr/bin/true')
+})
+
+test('import finds archived threads and --channels keeps to the channels given', async () => {
+  const archived = (await rest.call<{ id: string }>('POST', `/channels/${channelId}/threads`, { name: 'old talk', type: 11 })).data!.id
+  const said = (await rest.call<{ id: string }>('POST', `/channels/${archived}/messages`, { content: 'from an archived thread' })).data!.id
+  await rest.call('PATCH', `/channels/${archived}`, { archived: true })
+  const other = (await rest.call<{ id: string }>('POST', `/guilds/${guildId}/channels`, { name: 'elsewhere', type: 0 })).data!.id
+  const outside = (await rest.call<{ id: string }>('POST', `/channels/${other}/messages`, { content: 'not this one' })).data!.id
+  await importDiscord(rest, config(), hub.paths, { guilds: [guildId], channels: [channelId], log: () => {} })
+  expect(await hub.hub.twin.prisma.message.findUnique({ where: { id: said } })).not.toBeNull()
+  expect(await hub.hub.twin.prisma.message.findUnique({ where: { id: outside } })).toBeNull()
 })

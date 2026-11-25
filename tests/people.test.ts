@@ -237,3 +237,22 @@ test('removing a member ends their access', async () => {
   expect((await alex.fetch(`/client/channels/${general.id}/messages`)).status).toBe(404)
   expect((await owner.fetch(`/client/guilds/${t.config.guildId}/members/${t.config.ownerUserId}`, { method: 'DELETE' })).status).toBe(403)
 })
+
+test('in a server with no machine, the agents\' bot is not a member and its machines stay hidden', async () => {
+  const friends = await t.hub.store.addGuild('Friends')
+  await t.hub.reload()
+  await t.hub.twin.addGuildMember({ guildId: friends.id, userId: alexId })
+  t.hub.access.invalidate()
+  const ownerState = await owner.json('/client/state')
+  expect(ownerState.members[friends.id].map((m: { user_id: string }) => m.user_id)).not.toContain(t.config.botUserId)
+  expect(ownerState.members[t.config.guildId].map((m: { user_id: string }) => m.user_id)).toContain(t.config.botUserId)
+  // A person who sees no machine's channels does not see the bot's machines or presence.
+  const invite = await owner.json(`/client/guilds/${friends.id}/invites`, { method: 'POST', json: { username: 'robin' } })
+  await t.hub.store.setProfile(invite.user.id, { tailscaleLogin: 'robin@example.com' })
+  await t.hub.reload()
+  const robin = new TestDevice(t.hub, { 'tailscale-user-login': 'robin@example.com' })
+  await robin.pair(invite.code)
+  const state = await robin.json('/client/state')
+  expect(state.machines).toEqual([])
+  expect(state.presence[t.config.botUserId]).toBeUndefined()
+})

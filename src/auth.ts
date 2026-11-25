@@ -266,6 +266,15 @@ export class HubAuth {
     if (token) await this.store.deleteSession(token)
   }
 
+  // Whether a pairing code is valid now, without using it. Wrong codes count
+  // toward the same per-peer limit as pairing.
+  async pairingCodeValid(code: string, peer: string) {
+    if (this.pairingLocked(peer)) throw new HttpError(429, 'Too many wrong pairing codes. Wait 10 minutes.')
+    if (await this.store.findPairing(code)) return true
+    this.noteWrongCode(peer)
+    return false
+  }
+
   private noteWrongCode(peer: string) {
     this.pairingFailures.set(peer, [...(this.pairingFailures.get(peer) ?? []), Date.now()])
   }
@@ -289,7 +298,7 @@ export class HubAuth {
     const device = await this.store.createDevice(pairing.deviceName, pairing.userId, 'app')
     const keyId = crypto.randomBytes(16).toString('base64url')
     await this.store.addAppKey(keyId, device.id, publicKey, approvalKey)
-    return { device: { id: device.id, name: device.name }, keyId }
+    return { device: { id: device.id, name: device.name, userId: device.userId }, keyId }
   }
 
   // POST /client/auth/app/challenge

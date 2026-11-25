@@ -231,19 +231,26 @@ export class Services {
     if (Date.now() - this.originsAt < 5 * 60_000) return
     this.originsAt = Date.now()
     await this.links?.whenReady()
-    const rows = await this.hub.twin.prisma.message.findMany({
-      where: { OR: [{ content: { contains: 'systemctl --user' } }, { content: { contains: 'systemd-run --user' } }, { content: { contains: 'systemd/user/' } }] },
-      select: { channelId: true, content: true },
-      orderBy: { id: 'desc' },
-      take: 20_000,
-    })
     const map = new Map<string, string[]>()
-    for (const row of rows) {
-      for (const name of unitNames(row.content)) {
-        const list = map.get(name) ?? []
-        if (!list.includes(row.channelId) && list.length < 5) list.push(row.channelId)
-        map.set(name, list)
+    // Newest first, in pages of 1000 (up to 20000): only unit names are kept, never the text.
+    let cursor: string | undefined
+    for (let seen = 0; seen < 20_000; ) {
+      const rows = await this.hub.twin.prisma.message.findMany({
+        where: { ...(cursor && { id: { lt: cursor } }), OR: [{ content: { contains: 'systemctl --user' } }, { content: { contains: 'systemd-run --user' } }, { content: { contains: 'systemd/user/' } }] },
+        select: { id: true, channelId: true, content: true },
+        orderBy: { id: 'desc' },
+        take: 1000,
+      })
+      seen += rows.length
+      cursor = rows.at(-1)?.id
+      for (const row of rows) {
+        for (const name of unitNames(row.content)) {
+          const list = map.get(name) ?? []
+          if (!list.includes(row.channelId) && list.length < 5) list.push(row.channelId)
+          map.set(name, list)
+        }
       }
+      if (rows.length < 1000) break
     }
     // Kimaki transcripts carry the full shell commands; Discord often shows only a description.
     for (const dir of kimakiDirs(this.hub.options.paths.root)) {

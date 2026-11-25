@@ -74,20 +74,24 @@ export class Requests {
   }
 
   // POST /admin/requests { method, route, body, summary, reason, origin }
-  async create(input: Record<string, unknown>) {
+  async create(input: Record<string, unknown>, { prefix = '' }: { prefix?: string } = {}) {
     const method = String(input['method'] ?? '').toUpperCase()
     const route = String(input['route'] ?? '')
     const allowed = ALLOWED.find((a) => a.method === method && match(a.route, route))
     if (!allowed) throw new HttpError(400, `Requests can only carry: ${[...new Set(ALLOWED.map((a) => a.kind))].join(', ')}`)
     const body = input['body'] && typeof input['body'] === 'object' ? (input['body'] as Record<string, unknown>) : {}
     const text = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
+    // The Admin server is the owner's and their admin agent's alone: no request adds anyone or changes it.
+    const adminGuild = this.hub.options.config.adminGuildId
+    if (adminGuild && (await this.guildOf(route)) === adminGuild) throw new HttpError(400, 'The Admin server is only for you and your admin agent. Nothing can add people to it or change it through a request.')
     const row: RequestRow = {
       id: crypto.randomBytes(6).toString('hex'),
       method,
       route,
       body: JSON.stringify(body),
       kind: allowed.kind,
-      summary: text(input['summary'], 300) || (await this.describe(method, route, body)),
+      // The card says what the change does in the hub's words; a requester's summary could misdescribe it.
+      summary: prefix + (await this.describe(method, route, body)),
       reason: text(input['reason'], 1000),
       origin: text(input['origin'], 300) || 'cli',
       created_at: Date.now(),
@@ -103,7 +107,15 @@ export class Requests {
     return this.toClient(row)
   }
 
-  // A plain sentence for the approval card when the requester gave none.
+  private async guildOf(route: string): Promise<string | null> {
+    const guild = /^\/client\/guilds\/(\d{1,20})(\/|$)/.exec(route)
+    if (guild) return guild[1]!
+    const channel = /^\/client\/channels\/(\d{1,20})(\/|$)/.exec(route)
+    if (channel) return (await this.hub.twin.prisma.channel.findUnique({ where: { id: channel[1]! }, select: { guildId: true } }))?.guildId ?? null
+    return null
+  }
+
+  // A plain sentence for the approval card.
   private async describe(method: string, route: string, body: Record<string, unknown>): Promise<string> {
     const prisma = this.hub.twin.prisma
     const guildName = async (id: string) => this.hub.guilds.find((g) => g.id === id)?.name ?? 'the server'
@@ -115,6 +127,19 @@ export class Requests {
       if (id === c?.guildId) return 'everyone'
       return (await prisma.role.findUnique({ where: { id } }))?.name ?? (await userName(id))
     }
+    const { P } = await import('./access.ts')
+    // Permission bits in words, so the card shows exactly what is granted.
+    const perms = (value: unknown) => {
+      let bits: bigint
+      try {
+        bits = BigInt(String(value ?? '0'))
+      } catch {
+        return 'unreadable permissions'
+      }
+      const names = Object.entries(P as Record<string, bigint>).filter(([, bit]) => bits & bit).map(([name]) => (name === 'ADMINISTRATOR' ? 'ADMINISTRATOR (everything)' : name.toLowerCase()))
+      return names.length ? names.join(', ') : 'nothing'
+    }
+    const roleChange = body['permissions'] !== undefined ? ` with permissions: ${perms(body['permissions'])}` : ''
     let p: Record<string, string> | null
     if ((p = match('/client/guilds/:id/invites', route))) return `Invite ${String(body['username'] ?? body['user_id'] ?? 'someone')} to ${await guildName(p['id']!)}`
     if ((p = match('/client/guilds/:id/members/:user/roles', route))) {
@@ -122,9 +147,9 @@ export class Requests {
       return `Set ${await userName(p['user']!)}'s roles in ${await guildName(p['id']!)} to ${roles.length ? roles.join(', ') : 'none'}`
     }
     if ((p = match('/client/guilds/:id/members/:user', route))) return `Remove ${await userName(p['user']!)} from ${await guildName(p['id']!)}`
-    if ((p = match('/client/guilds/:id/roles/:role', route))) return `Change the role ${await roleName(p['role']!)} in ${await guildName(p['id']!)}`
-    if ((p = match('/client/guilds/:id/roles', route))) return `Create the role ${String(body['name'] ?? '')} in ${await guildName(p['id']!)}`
-    if ((p = match('/client/channels/:id/permissions/:target', route))) return method === 'DELETE' ? `Reset ${await channelName(p['id']!)} permissions for ${await target(p['id']!, p['target']!)}` : `Change who can use ${await channelName(p['id']!)}: ${await target(p['id']!, p['target']!)}`
+    if ((p = match('/client/guilds/:id/roles/:role', route))) return `Change the role ${await roleName(p['role']!)} in ${await guildName(p['id']!)}${body['name'] !== undefined ? `, name ${String(body['name'])}` : ''}${roleChange}`
+    if ((p = match('/client/guilds/:id/roles', route))) return `Create the role ${String(body['name'] ?? '')} in ${await guildName(p['id']!)}${roleChange}`
+    if ((p = match('/client/channels/:id/permissions/:target', route))) return method === 'DELETE' ? `Reset ${await channelName(p['id']!)} permissions for ${await target(p['id']!, p['target']!)}` : `Change who can use ${await channelName(p['id']!)}: ${await target(p['id']!, p['target']!)} may ${perms(body['allow'])}${BigInt(String(body['deny'] ?? '0') || '0') ? `, may not ${perms(body['deny'])}` : ''}`
     if ((p = match('/client/guilds/:id/channels', route))) return `Create the channel #${String(body['name'] ?? '')} in ${await guildName(p['id']!)}`
     if ((p = match('/client/channels/:id/settings', route))) return `Change ${await channelName(p['id']!)}`
     if ((p = match('/client/channels/:id', route))) return `Delete ${await channelName(p['id']!)}`
@@ -209,7 +234,7 @@ export class Requests {
     if (!row) throw new HttpError(404, 'Unknown request')
     if (row.status !== 'approved' || !row.undo) throw new HttpError(409, 'That request cannot be undone this way')
     const reverse = JSON.parse(row.undo) as { method: string; route: string; body: Record<string, unknown> }
-    return this.create({ ...reverse, summary: `Undo: ${row.summary}`, reason: `Reverts request ${row.id}`, origin })
+    return this.create({ ...reverse, reason: `Reverts request ${row.id}: ${row.summary}`, origin }, { prefix: 'Undo: ' })
   }
 
   private async decide(id: string, status: RequestRow['status'], result: unknown) {

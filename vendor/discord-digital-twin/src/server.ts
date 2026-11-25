@@ -335,6 +335,7 @@ export function createServer({
   extension,
   storeAttachment,
   tokenKey,
+  directAudience,
 }: {
   prisma: PrismaClient
   botUserId: string
@@ -350,6 +351,7 @@ export function createServer({
   extension?: HttpExtension
   storeAttachment?: AttachmentStore
   tokenKey?: (token: string) => string
+  directAudience?: (channelId: string) => ReadonlySet<string> | null
 }): ServerComponents {
   const state = { port: 0 }
   const typingEvents: TypingEventRecord[] = []
@@ -1766,6 +1768,21 @@ export function createServer({
       },
     })
 
+    // Archived threads of one channel, newest first, all on one page.
+    .route({
+      method: 'GET',
+      path: '/channels/:channel_id/threads/archived/:kind',
+      async handler({ params }) {
+        if (params.kind !== 'public' && params.kind !== 'private') throw new Response(JSON.stringify({ code: 0, message: '404: Not Found' }), { status: 404, headers: { 'Content-Type': 'application/json' } })
+        const threads = await prisma.channel.findMany({
+          where: { parentId: params.channel_id, archived: true, type: params.kind === 'private' ? 12 : { in: [10, 11] } },
+          orderBy: { createdAt: 'desc' },
+        })
+        const members = threads.length ? await prisma.threadMember.findMany({ where: { channelId: { in: threads.map((t) => t.id) } } }) : []
+        return { threads: threads.map(channelToAPI), members: members.map(threadMemberToAPI), has_more: false }
+      },
+    })
+
     // --- Interactions ---
 
     .route({
@@ -2279,6 +2296,8 @@ export function createServer({
     const channel = await prisma.channel.findUnique({ where: { id: scope.channelId } })
     if (!channel) return Response.json({ message: 'Unknown Channel', code: 10003 }, { status: 404 })
     if (channel.guildId && guilds.has(channel.guildId)) return null
+    // A direct message channel: only the clients it is with.
+    if (!channel.guildId && directAudience?.(channel.id)?.has(tokenKey ? tokenKey(token) : token)) return null
     return Response.json({ error: 'REST route is outside the authorized guild scope' }, { status: 403 })
   }
 
@@ -2348,6 +2367,7 @@ export function createServer({
     gatewayUrlFor: extension?.gatewayUrl,
     resumeUrl: gatewayUrlOverride,
     tokenKey,
+    directAudience,
   })
 
   return {

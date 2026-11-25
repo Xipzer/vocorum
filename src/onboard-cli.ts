@@ -3,6 +3,7 @@
 //
 //   setup [--port N] [--address IP] [--name a,b] [--allow CIDR,...] [--no-service] [--dry-run] [--yes]
 //   doctor | restart
+//   backup [DIR] [--no-files]                 a consistent copy while the hub runs
 //   pair <device> [--ttl 30m] [--person <username>]   one link and a QR code for a new device
 //   config get [key] | config set <key> <value>
 //   discord scan [<guild id>...|all]          read only: what is there and what the bot cannot read
@@ -13,7 +14,12 @@
 //   discord report
 //   kimaki setup <machine> [--guild ID|NAME,...] [--kimaki PATH] [--lock-port N] [--peer-data-dir DIR] [--no-service] [-- kimaki args]
 //                 a Kimaki on this machine that lives on the hub, beside any Kimaki on Discord
+//   admin setup [--kimaki PATH] [--model M] [--no-service] | admin status     a private Admin server with your own admin agent
+//   channels list [--guild ID|NAME]
+//   invite <username> [--server NAME] [--name TEXT] | welcome <username> | access <username>   friends
+//   projects add <folder> [--guild ID|NAME] | projects list                    a hub Kimaki channel for a folder
 //   request invite <username> [--guild ID|NAME] [--reason TEXT]       changes the owner approves with a passkey
+//   request remove <username> [--guild ID|NAME]
 //   request role <username> <role name> [--remove] [--guild ID|NAME]
 //   request channel <channel name|id> <username|role name> [--allow view,send,...] [--deny view,...]
 //   request raw <METHOD> <route> [json body]
@@ -21,6 +27,7 @@
 //   Discord token: --token-file F (mode 0600), or DISCORD_BOT_TOKEN, or --kimaki (this machine's Kimaki bot).
 
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { hubPaths, initHub, loadConfig, type HubConfig } from './config.ts'
 
@@ -89,9 +96,59 @@ vocorum config set KEY VALUE
 Keys you can set: ownerUsername, ownerDiscordIds (your Discord user ids, comma
 separated), botUsername, guildName, publicUrl (or none), tailscaleLogin (or none).
 Restart the hub afterwards: vocorum restart`,
+  admin: `vocorum admin setup [--kimaki PATH] [--model PROVIDER/MODEL] [--no-service] [--json]
+vocorum admin status [--json]
+
+setup makes a private server called Admin with one channel, #admin, where you ask
+your own agent to run the hub in plain words: devices, people, access, privacy,
+projects, backups, moving from Discord. It is a Kimaki of its own on this machine,
+working in <state>/admin. Its tools are only vocorum commands: reading runs, every
+change shows you the exact command to accept, and anything that widens access is
+a request you approve with your passkey. Nobody else can join the Admin server and
+no other bot can read or post there. status checks all of that.`,
+  invite: `vocorum invite <username> [--server NAME] [--name "Display name"] [--json]
+
+Brings a friend onto the hub. They get their own server (Friends) unless you pass
+--server, so they never see your machines or their agent sessions. Prints a message
+to send them (what to install, a setup link with a single-use 24-hour code, the
+fingerprint to check) and your part in Tailscale: share this computer with them,
+and optionally limit shared users to Vocorum's ports. Their Tailscale account is
+learned when they pair; afterwards only that account works for them.
+See what they can see: vocorum access <username>. Remove: vocorum people remove <username>.`,
+  welcome: `vocorum welcome <username> [--json]
+
+A fresh 24-hour link and message for someone already invited (a new device, or the
+first code ran out).`,
+  access: `vocorum access <username> [--json]
+
+What one person can see and do: servers, channels, roles, whether they can give
+orders to agents, their devices and Tailscale account.`,
+  projects: `vocorum projects add <folder> [--guild ID|NAME] [--json]
+vocorum projects list [--json]
+
+add makes a channel for a folder in the hub's Kimaki (from vocorum kimaki setup):
+a message there starts an agent session in that folder.`,
+  request: `vocorum request invite <username> [--guild ID|NAME] [--reason TEXT]
+vocorum request remove <username> [--guild ID|NAME] [--reason TEXT]
+vocorum request role <username> <role name> [--remove] [--guild ID|NAME]
+vocorum request channel <channel> <username|role|everyone> [--allow view,send,...] [--deny view,...]
+vocorum request raw <METHOD> <route> [json body]
+
+Files a change for the owner, who approves it in the app's Inbox with a passkey.
+The card describes the change in the hub's words; --reason is shown beside it.
+Requests wait 24 hours. Nothing can change the Admin server this way.`,
+  backup: `vocorum backup [DIR] [--no-files] [--json]
+
+A consistent copy of the hub while it runs: both databases, the config, the
+secrets and the CA (mode 0600, folder 0700), and the stored files as hard links
+(no extra space; --no-files leaves them out). Default DIR: <state>/backups/<time>.
+Take one before an import, a purge or an update. To restore, stop the hub and
+copy the folder's contents back into the state folder.`,
   restart: `vocorum restart
 
-Restarts this hub's service (systemd or launchd) and waits until it answers.`,
+Restarts this hub's service (systemd or launchd) and waits until it answers.
+Without a service (no service manager, or --no-service) it restarts the hub's
+background process (hub.pid in the state folder).`,
   'discord scan': `vocorum discord scan [GUILD_ID ...|all] [--token-file FILE|--kimaki] [--json]
 
 Read only. Shows each Discord server's channels and threads, what the bot cannot
@@ -118,7 +175,7 @@ ${TOKEN_HELP}`,
 
 Shows how far the import and any cleanup have got.`,
   'discord purge': `vocorum discord purge GUILD_ID [--channels IDS] [--older-than 7d] [--authors me,bot] [--keep ID,...] [--threads] [--kimaki-keep] [--token-file FILE|--kimaki] [--json]
-vocorum discord purge --execute PLAN_ID [--detach]
+vocorum discord purge --execute PLAN_ID [--token-file FILE|--kimaki] [--detach] [--json]
 
 Deleting on Discord cannot be undone, so this works in two steps.
 The first form only writes a plan and prints its id and what it would delete. It
@@ -244,21 +301,187 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
     })
     return true
   }
+  if (command === 'admin') {
+    const config = requireConfig()
+    const admin = await import('./admin.ts')
+    if (sub === 'setup') {
+      const result = await admin.adminSetup(config, paths, { ...(str(flags['kimaki']) && { kimaki: str(flags['kimaki'])! }), ...(str(flags['model']) && { model: str(flags['model'])! }), service: flags['no-service'] !== true })
+      await emit(result, () => {
+        for (const s of result.steps) console.log(`✓ ${s.step.padEnd(10)} ${s.detail}`)
+        console.log(`\nOpen the Admin server in the app and write in #admin, for example: "is everything ok?" or "pair my new laptop".`)
+      })
+      return true
+    }
+    if (sub === 'status' || !sub) {
+      const checks = await admin.adminStatus(config, paths)
+      const { printChecks } = await import('./doctor.ts')
+      await emit(checks, () => printChecks(checks))
+      if (checks.some((c) => c.status === 'fail')) process.exitCode = 1
+      return true
+    }
+    throw new Error('usage: vocorum admin setup|status')
+  }
+  if (command === 'invite' || command === 'welcome') {
+    const config = requireConfig()
+    const username = sub?.toLowerCase()
+    if (!username) throw new Error(`usage: vocorum ${command} <username>${command === 'invite' ? ' [--server NAME] [--name "Display name"]' : ''}`)
+    const { HubAdmin } = await import('./discord/local.ts')
+    const { HubStore } = await import('./store.ts')
+    const { FRIENDS_SERVER, invitation } = await import('./friends.ts')
+    const admin = new HubAdmin(config, paths)
+    const store = new HubStore(`file:${paths.hubDb}`)
+    let code: string
+    let server: string
+    try {
+      await store.migrate()
+      if (command === 'invite') {
+        // A server of their own unless told otherwise: Home holds the machines and their agent sessions.
+        const wanted = str(flags['server']) ?? FRIENDS_SERVER
+        let guild = await store.findGuild(wanted)
+        if (!guild && !str(flags['server'])) {
+          guild = await store.addGuild(FRIENDS_SERVER)
+          await admin.call('POST', '/admin/reload', {})
+        }
+        if (!guild) throw new Error(`No server "${wanted}". See: vocorum guilds list`)
+        server = guild.name
+        const invited = await admin.call<{ code: string }>('POST', '/admin/people', { username, guilds: [guild.id], ...(str(flags['name']) && { global_name: str(flags['name']) }) }, { tries: 1 })
+        code = invited.code
+      } else {
+        const { openTwin } = await import('./discord/local.ts')
+        const twin = openTwin(paths)
+        const row = (await twin.execute({ sql: 'SELECT id, globalName FROM User WHERE username = ? AND bot = 0', args: [username] })).rows[0]
+        if (row?.['globalName'] && !str(flags['name'])) flags['name'] = String(row['globalName'])
+        twin.close()
+        if (!row || String(row['id']) === config.ownerUserId) throw new Error(`No friend "${username}". Invite them first: vocorum invite ${username}`)
+        code = await store.createPairing(`${username}'s device`, { userId: String(row['id']), ttlMs: 24 * 3_600_000 })
+        server = 'their servers'
+      }
+    } finally {
+      store.close()
+    }
+    const links = await pairingLinks(config, code)
+    const result = await invitation(config, paths, { username, displayName: str(flags['name']) ?? null, server, code, hours: 24, links, local: flags['local'] === true })
+    await emit(result, () => {
+      console.log(`${command === 'invite' ? `Invited ${username} to ${server}.` : `A new link for ${username}.`} Send them this:\n`)
+      console.log(result.message.split('\n').map((line) => `  ${line}`).join('\n'))
+      console.log('\nYour part:')
+      for (const step of result.owner_steps) console.log(`  - ${step}`)
+    })
+    return true
+  }
+  if (command === 'access') {
+    const config = requireConfig()
+    if (!sub) throw new Error('usage: vocorum access <username>')
+    const { HubAdmin } = await import('./discord/local.ts')
+    type Access = { username: string; owner: boolean; tailscale_login: string | null; devices: string[]; servers: Array<{ name: string; owner: boolean; roles: string[]; drives_agents: boolean; manages_people: boolean; channels: Array<{ name: string; category: string | null; send: boolean }> }> }
+    const result = await new HubAdmin(config, paths).call<Access>('GET', `/admin/people/${encodeURIComponent(sub)}/access`, undefined, { tries: 1 })
+    await emit(result, () => {
+      console.log(`${result.username}${result.owner ? ' (owner: sees everything)' : ''}. Devices: ${result.devices.join(', ') || 'none yet'}. Tailscale: ${result.tailscale_login ?? 'learned when they pair'}.`)
+      for (const g of result.servers) {
+        console.log(`\n${g.name}${g.roles.length ? ` (roles: ${g.roles.join(', ')})` : ''}`)
+        if (g.drives_agents) console.log('  ! can give orders to agents on your machines (a shell there)')
+        if (g.manages_people) console.log('  ! can manage people or roles')
+        for (const c of g.channels) console.log(`  #${c.name}${c.category ? ` in ${c.category}` : ''}${c.send ? '' : ' (read only)'}`)
+      }
+      if (!result.servers.length) console.log('No servers: they see nothing.')
+      console.log('\nNever: the Admin server, other people\'s direct messages, devices, services, requests or hub settings.')
+    })
+    return true
+  }
+  if (command === 'channels' && (sub === 'list' || !sub)) {
+    requireConfig()
+    const { openTwin } = await import('./discord/local.ts')
+    const twin = openTwin(paths)
+    try {
+      const guildArg = str(flags['guild'])
+      const rows = (await twin.execute({ sql: `SELECT c.id, c.name, c.type, c.parentId, g.name AS guild FROM Channel c JOIN Guild g ON g.id = c.guildId WHERE c.type IN (0, 2, 4, 5, 15) ${guildArg ? 'AND (g.id = ? OR g.name = ?)' : ''} ORDER BY g.name, c.position`, args: guildArg ? [guildArg, guildArg] : [] })).rows
+      const kinds: Record<number, string> = { 0: 'text', 2: 'voice', 4: 'category', 5: 'announcement', 15: 'forum' }
+      const list = rows.map((r) => ({ id: String(r['id']), name: String(r['name'] ?? ''), kind: kinds[Number(r['type'])] ?? String(r['type']), category: r['parentId'] ? String(rows.find((x) => String(x['id']) === String(r['parentId']))?.['name'] ?? '') : null, server: String(r['guild']) }))
+      await emit(list, () => {
+        for (const c of list) console.log(`${c.server}\t${c.kind === 'category' ? '' : '#'}${c.name}\t${c.kind}${c.category ? `\tin ${c.category}` : ''}\t${c.id}`)
+      })
+    } finally {
+      twin.close()
+    }
+    return true
+  }
+  if (command === 'projects') {
+    const config = requireConfig()
+    const { projects } = await import('./admin.ts')
+    const result = await projects(config, paths, sub === 'add' ? { add: rest[0] ?? '', ...(str(flags['guild']) && { guild: str(flags['guild'])! }) } : {})
+    await emit(result, () => {
+      if (sub === 'add') console.log(`Channel #${result.added?.channel ?? '?'} for ${result.added?.directory ?? rest[0]}.`)
+      else for (const p of result.list) console.log(`#${p.channel}\t${p.directory}`)
+    })
+    return true
+  }
+  if (command === 'backup') {
+    requireConfig()
+    const { openSqlite } = await import('./sqlite.ts')
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)
+    const dir = path.resolve(sub ?? path.join(paths.root, 'backups', stamp))
+    if (fs.existsSync(dir) && fs.readdirSync(dir).length) throw new Error(`${dir} is not empty. Give a new folder.`)
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+    const started = Date.now()
+    // VACUUM INTO reads one snapshot, so the copy is consistent while the hub writes.
+    for (const name of ['hub.db', 'twin.db']) {
+      const db = openSqlite(`file:${path.join(paths.root, name)}`)
+      try {
+        await db.execute({ sql: 'VACUUM INTO ?', args: [path.join(dir, name)] })
+      } finally {
+        db.close()
+      }
+      fs.chmodSync(path.join(dir, name), 0o600)
+    }
+    const skip = new Set(['hub.db', 'twin.db', 'hub.db-wal', 'hub.db-shm', 'twin.db-wal', 'twin.db-shm', 'backups', 'attachments', 'media', 'kimaki-data', 'import', 'purge'])
+    let files = 0
+    const copy = (from: string, to: string, link: boolean) => {
+      const stat = fs.statSync(from)
+      if (stat.isDirectory()) {
+        fs.mkdirSync(to, { recursive: true, mode: 0o700 })
+        for (const entry of fs.readdirSync(from)) copy(path.join(from, entry), path.join(to, entry), link)
+      } else if (stat.isFile()) {
+        if (link) {
+          try {
+            fs.linkSync(from, to)
+          } catch {
+            fs.copyFileSync(from, to)
+          }
+        } else fs.copyFileSync(from, to)
+        if (link) files++
+      }
+    }
+    for (const entry of fs.readdirSync(paths.root)) if (!skip.has(entry)) copy(path.join(paths.root, entry), path.join(dir, entry), false)
+    for (const entry of ['import', 'purge']) if (fs.existsSync(path.join(paths.root, entry))) copy(path.join(paths.root, entry), path.join(dir, entry), false)
+    if (flags['no-files'] !== true) for (const entry of ['attachments', 'media']) if (fs.existsSync(path.join(paths.root, entry))) copy(path.join(paths.root, entry), path.join(dir, entry), true)
+    await emit({ backup: dir, stored_files_linked: files, seconds: (Date.now() - started) / 1000 }, () => console.log(`Backed up to ${dir} (${files} stored files linked) in ${((Date.now() - started) / 1000).toFixed(1)} s.`))
+    return true
+  }
   if (command === 'restart') {
     const config = requireConfig()
     const { serviceName } = await import('./setup.ts')
     const { hubLatency } = await import('./doctor.ts')
     const { execFile } = await import('node:child_process')
+    const { serviceManager, backgroundPid, stopBackground, startBackground } = await import('./setup.ts')
     const unit = serviceName(paths)
-    const [cmd, args] = process.platform === 'darwin' ? ['launchctl', ['kickstart', '-k', `gui/${process.getuid?.()}/dev.${unit}`]] : ['systemctl', ['--user', 'restart', unit]]
-    await new Promise<void>((resolve, reject) => execFile(cmd as string, args as string[], (error) => (error ? reject(new Error(`${cmd} failed: ${error.message}. Is the service installed? vocorum setup`)) : resolve())))
+    const manager = await serviceManager()
+    const installed = manager === 'systemd' ? fs.existsSync(path.join(os.homedir(), `.config/systemd/user/${unit}.service`)) : manager === 'launchd' ? fs.existsSync(path.join(os.homedir(), `Library/LaunchAgents/dev.${unit}.plist`)) : false
+    // No service: the hub runs as a background process (setup started it, or the @reboot line).
+    if (!installed || backgroundPid(paths)) {
+      await stopBackground(paths)
+      if (typeof (await hubLatency(config, paths)) === 'number') throw new Error('A hub is answering that vocorum did not start (no service, no hub.pid). Stop it where it runs, then: vocorum restart')
+      await startBackground(paths, repo)
+    } else {
+      const [cmd, args] = manager === 'launchd' ? ['launchctl', ['kickstart', '-k', `gui/${process.getuid?.()}/dev.${unit}`]] : ['systemctl', ['--user', 'restart', unit]]
+      await new Promise<void>((resolve, reject) => execFile(cmd as string, args as string[], (error) => (error ? reject(new Error(`${cmd} failed: ${error.message}. Is the service installed? vocorum setup`)) : resolve())))
+    }
     const started = Date.now()
     let latency: number | null | 'other' = null
     while (Date.now() - started < 30_000 && typeof latency !== 'number') {
       await new Promise((r) => setTimeout(r, 300))
       latency = await hubLatency(config, paths)
     }
-    if (typeof latency !== 'number') throw new Error(`The hub did not come back within 30 s. journalctl --user -u ${unit} -n 50`)
+    if (typeof latency !== 'number') throw new Error(`The hub did not come back within 30 s. ${installed ? `journalctl --user -u ${unit} -n 50` : `tail -50 ${path.join(paths.root, 'hub.log')}`}`)
     await emit({ restarted: unit, seconds: (Date.now() - started) / 1000 }, () => console.log(`Restarted ${unit}; answering after ${((Date.now() - started) / 1000).toFixed(1)} s.`))
     return true
   }
@@ -298,7 +521,7 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
       store.close()
     }
     const links = await pairingLinks(config, code)
-    await emit({ device: name, code, expires_in_minutes: ttlMs / 60_000, links }, () => printPairing(links, code, ttlMs / 60_000, flags['app'] === true))
+    await emit({ device: name, code, expires_in_minutes: ttlMs / 60_000, links, app_installers: links.setup ? await appInstallers() : [] }, () => printPairing(links, code, ttlMs / 60_000, flags['app'] === true))
     return true
   }
   if (command === 'config') {
@@ -361,20 +584,35 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
   return false
 }
 
+const SYSTEMS: Record<string, string> = { darwin: 'Mac', windows: 'Windows', linux: 'Linux' }
+
+// Desktop app installers published with `vocorum apps publish`; the setup page offers them while the code is valid.
+async function appInstallers() {
+  const { AppReleases } = await import('./app-releases.ts')
+  try {
+    return new AppReleases(paths.apps).installers().map((i) => ({ platform: i.platform, version: i.version, file: i.file, size: i.size }))
+  } catch {
+    return []
+  }
+}
+
 async function printPairing(links: { setup: string | null; app: string; native: string | null }, code: string, minutes: number, forApp = false) {
   const { qrTerminal } = await import('./qr.ts')
   const lasts = `Code ${code} works once, for ${minutes} minutes.`
+  const installers = links.setup ? await appInstallers() : []
+  const offer = installers.length ? `The setup page also has the Vocorum app for ${[...new Set(installers.map((i) => SYSTEMS[i.platform.split('-')[0]!] ?? i.platform))].join(', ')} (${installers[0]!.version}), while this code is valid.` : null
   if (forApp && links.native) {
     console.log(`\nPair the Vocorum app. ${lasts}\n`)
     console.log(qrTerminal(links.native))
     console.log(`Scan it with the phone's camera, or open this on the device:\n  ${links.native}`)
+    if (offer) console.log(`\nApp not installed yet? ${offer}\n  ${links.setup}`)
     return
   }
   const first = links.setup ?? links.app
   console.log(`\nPair a device. ${lasts}\n`)
   console.log(qrTerminal(first))
   console.log(`Scan it with the device's camera, or open:\n  ${first}`)
-  if (links.setup) console.log(`That page shows what to install, then opens Vocorum with the code filled in.\n\nAlready set up?   ${links.app}`)
+  if (links.setup) console.log(`That page shows what to install, then opens Vocorum with the code filled in.${offer ? `\n${offer}` : ''}\n\nAlready set up?   ${links.app}`)
   if (links.native) console.log(`The Vocorum app?  vocorum pair <device> --app`)
 }
 
@@ -387,8 +625,10 @@ async function discordCommand(sub: string | undefined, rest: string[], flags: Re
     await emit(result, () => {
       console.log(`Bot: ${result.bot.name} (${result.bot.id})`)
       if (result.message_content_intent === false) console.log('PROBLEM: the bot has no Message Content intent, so other people\'s text arrives empty. Turn it on: Discord developer portal, your app, Bot, Privileged Gateway Intents, Message Content.')
+      if (result.message_content_intent === null) console.log('Message Content intent: could not check (Discord did not show this bot\'s settings). If other people\'s messages import empty, turn it on in the developer portal, then import again.')
       for (const g of result.guilds) {
         console.log(`\n${g.name} (${g.id}): ${g.channels} channels in ${g.categories} categories, ${g.threads} threads (${g.thread_messages} messages in threads)`)
+        if (g.owner_id) console.log(`  owner: ${g.owner_id}. If that is you: vocorum config set ownerDiscordIds ${g.owner_id}`)
         if (g.unreadable.length) console.log(`  the bot cannot read ${g.unreadable.length}: ${g.unreadable.slice(0, 10).join(', ')}${g.unreadable.length > 10 ? ', …' : ''}`)
       }
       console.log(`\nImport takes about ${result.estimate.import_minutes} minute${result.estimate.import_minutes === 1 ? '' : 's'} plus channel history; deleting it from Discord later about ${result.estimate.purge_hours < 1 ? `${Math.max(1, Math.round(result.estimate.purge_hours * 60))} minutes` : `${result.estimate.purge_hours} hours`}.`)
@@ -401,7 +641,8 @@ async function discordCommand(sub: string | undefined, rest: string[], flags: Re
     if (flags['detach'] === true) {
       if (process.env['DISCORD_BOT_TOKEN'] && !flags['token-file'] && !flags['kimaki']) throw new Error('With --detach, pass the token as --token-file (a file only you can read) or use --kimaki, so it never sits in a service definition.')
       const { detach } = await import('./discord/local.ts')
-      console.log(await detach(paths, 'import', argv))
+      const message = await detach(paths, 'import', argv)
+      await emit({ detached: true, message }, () => console.log(message))
       return
     }
     if (!(config.ownerDiscordIds ?? []).length) console.error('Note: your own Discord user id is not set, so your Discord messages will show under your Discord name, not as you. Set it first with: vocorum config set ownerDiscordIds <your Discord user id> (then restart the hub).')
@@ -440,7 +681,8 @@ async function discordCommand(sub: string | undefined, rest: string[], flags: Re
       const plan = loadPlan(paths, planId)
       if (flags['detach'] === true) {
         const { detach } = await import('./discord/local.ts')
-        console.log(await detach(paths, `purge-${planId}`, argv))
+        const message = await detach(paths, `purge-${planId}`, argv)
+        await emit({ detached: true, plan: planId, message }, () => console.log(message))
         return
       }
       const progress = await executePlan(await discordRest(flags), paths, plan, { log: json ? () => {} : console.log })
@@ -459,14 +701,16 @@ async function discordCommand(sub: string | undefined, rest: string[], flags: Re
       ...(str(flags['channels']) && { channels: str(flags['channels'])!.split(',').filter(Boolean) }),
     })
     const summary = summarise(plan)
-    await emit(summary, () => {
-      console.log(`Plan ${plan.id} for ${summary.guild}: delete ${summary.messages} messages in ${summary.channels} channels (${summary.with_secrets} with secrets first), and ${summary.threads_to_delete} threads. About ${summary.estimate_minutes} minute${summary.estimate_minutes === 1 ? "" : "s"}.`)
+    const token = typeof flags['token-file'] === 'string' ? ` --token-file ${flags['token-file']}` : flags['kimaki'] ? ' --kimaki' : ''
+    const next = `vocorum discord purge --execute ${plan.id}${token} --detach`
+    await emit({ ...summary, next }, () => {
+      console.log(`Plan ${plan.id} for ${summary.guild}: delete ${summary.messages} messages in ${summary.channels} channels and threads (${summary.with_secrets} with secrets first), and ${summary.threads_to_delete} threads. About ${summary.estimate_minutes} minute${summary.estimate_minutes === 1 ? "" : "s"}.`)
       const s = summary.not_touched
       console.log(`Not touched: ${s.other_authors} by other people, ${s.recent} too recent, ${s.kept} in kept threads, ${s.not_copied} whose files the hub does not have yet, ${s.not_from_discord} written in the hub.`)
       if (s.not_copied) console.log('Copy those files first: vocorum discord import <guild id>, then plan again.')
       const bots = summary.other_authors.filter((a) => a.bot)
       if (bots.length) console.log(`Left as other people's, but bots or webhooks: ${bots.map((a) => `${a.name} (${a.id}, ${a.messages})`).join(', ')}. To include them: --authors me,bot,${bots.map((a) => a.id).join(',')}`)
-      console.log(`Deleting on Discord cannot be undone. When the person has read this, run: vocorum discord purge --execute ${plan.id} --detach`)
+      console.log(`Deleting on Discord cannot be undone. When the person has read this, run: ${next}`)
     })
     return
   }
@@ -483,6 +727,12 @@ const PERMISSION_NAMES: Record<string, string> = {
   view: 'VIEW_CHANNEL', send: 'SEND_MESSAGES', history: 'READ_MESSAGE_HISTORY', threads: 'SEND_MESSAGES_IN_THREADS', files: 'ATTACH_FILES', react: 'ADD_REACTIONS', commands: 'USE_APPLICATION_COMMANDS', manage: 'MANAGE_CHANNELS', 'manage-messages': 'MANAGE_MESSAGES', 'manage-threads': 'MANAGE_THREADS', pin: 'PIN_MESSAGES',
 }
 
+// Where the app opens a request's card (shown inline in a chat message, or in the Inbox).
+function requestLink(config: HubConfig, id: string) {
+  const l = config.privateListener
+  return `${l ? `https://${l.names[0]}:${l.port}` : `http://localhost:${config.port}`}/#/requests/${id}`
+}
+
 async function requestCommand(command: string, sub: string | undefined, rest: string[], flags: Record<string, string | true>, json: boolean) {
   const config = requireConfig()
   const { HubAdmin, openTwin } = await import('./discord/local.ts')
@@ -493,7 +743,8 @@ async function requestCommand(command: string, sub: string | undefined, rest: st
       const id = rest[0]
       if (!id) throw new Error('usage: requests undo <id>')
       const created = await admin.call<{ id: string; summary: string }>('POST', `/admin/requests/${encodeURIComponent(id)}/undo`, { origin: process.env['OPENCODE_SESSION_ID'] ? `agent session ${process.env['OPENCODE_SESSION_ID']}` : 'cli' }, { tries: 1 })
-      await emit(created, () => console.log(`Request ${created.id}: ${created.summary}. It waits for the owner's approval like any other.`))
+      const link = requestLink(config, created.id)
+      await emit({ ...created, link }, () => console.log(`Request ${created.id}: ${created.summary}. It waits for the owner's approval like any other.\nApprove: ${link}`))
       return
     }
     if (sub === 'deny') {
@@ -502,9 +753,10 @@ async function requestCommand(command: string, sub: string | undefined, rest: st
       await emit(await admin.call('POST', `/admin/requests/${encodeURIComponent(id)}/deny`, {}, { tries: 1 }), () => console.log(`Denied ${id}.`))
       return
     }
-    const { requests } = await admin.call<{ requests: Array<{ id: string; status: string; summary: string; origin: string; created_at: number }> }>('GET', '/admin/requests', undefined, { tries: 1 })
+    const listed = await admin.call<{ requests: Array<{ id: string; status: string; summary: string; origin: string; created_at: number }> }>('GET', '/admin/requests', undefined, { tries: 1 })
+    const requests = listed.requests.map((r) => ({ ...r, ...(r.status === 'pending' && { link: requestLink(config, r.id) }) }))
     await emit(requests, () => {
-      for (const r of requests) console.log(`${r.id}\t${r.status}\t${new Date(r.created_at).toISOString().slice(0, 16)}\t${r.summary}\t(from ${r.origin})`)
+      for (const r of requests) console.log(`${r.id}\t${r.status}\t${new Date(r.created_at).toISOString().slice(0, 16)}\t${r.summary}\t(from ${r.origin})${r.status === 'pending' ? `\t${requestLink(config, r.id)}` : ''}`)
       if (!requests.length) console.log('No requests.')
     })
     return
@@ -526,6 +778,10 @@ async function requestCommand(command: string, sub: string | undefined, rest: st
       const username = rest[0]
       if (!username) throw new Error('usage: request invite <username> [--guild ID|NAME]')
       input = { method: 'POST', route: `/client/guilds/${guildId}/invites`, body: { username }, summary: `Invite ${username} to ${guild['name']}` }
+    } else if (sub === 'remove') {
+      const name = rest[0]
+      if (!name) throw new Error('usage: request remove <username> [--guild ID|NAME]')
+      input = { method: 'DELETE', route: `/client/guilds/${guildId}/members/${await person(name)}`, body: {}, summary: '' }
     } else if (sub === 'role') {
       const [name, ...roleWords] = rest
       const roleName = roleWords.join(' ')
@@ -561,10 +817,11 @@ async function requestCommand(command: string, sub: string | undefined, rest: st
       const [method, route, body] = rest
       if (!method || !route) throw new Error('usage: request raw <METHOD> <route> [json body]')
       input = { method, route, body: body ? JSON.parse(body) : {}, summary: str(flags['summary']) ?? `${method} ${route}` }
-    } else throw new Error('usage: request invite|role|channel|raw ... (see vocorum help)')
+    } else throw new Error('usage: request invite|remove|role|channel|raw ... (see vocorum help)')
     const origin = str(flags['origin']) ?? (process.env['OPENCODE_SESSION_ID'] ? `agent session ${process.env['OPENCODE_SESSION_ID']}` : 'cli')
     const created = await admin.call<{ id: string; summary: string }>('POST', '/admin/requests', { ...input, reason: str(flags['reason']) ?? '', origin }, { tries: 1 })
-    await emit(created, () => console.log(`Request ${created.id}: ${created.summary}\nIt waits for the owner, who approves it in the app with a passkey (24 hours). Check: vocorum requests`))
+    const link = requestLink(config, created.id)
+    await emit({ ...created, link }, () => console.log(`Request ${created.id}: ${created.summary}\nIt waits for the owner, who approves it with a passkey (24 hours).\nApprove: ${link}`))
   } finally {
     twin.close()
   }

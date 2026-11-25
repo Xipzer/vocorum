@@ -10,6 +10,7 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createClient } from '@libsql/client'
+import { openSqlite } from './sqlite.ts'
 import { loadConfig, readSecret, type HubConfig, type HubPaths } from './config.ts'
 
 const run = promisify(execFile)
@@ -97,17 +98,28 @@ export async function doctor(paths: HubPaths, { repo = path.resolve(import.meta.
   for (const file of [paths.config, paths.adminToken, paths.signingKey]) if (fs.existsSync(file) && (fs.statSync(file).mode & 0o077) !== 0) loose.push(file)
   add('permissions', loose.length ? 'fail' : 'ok', loose.length ? `readable by other users: ${loose.join(', ')}` : 'state folder 0700, secrets 0600', loose.length ? `chmod 700 ${paths.root} && chmod 600 ${loose.filter((f) => f !== paths.root).join(' ')}` : undefined)
 
-  const { serviceName } = await import('./setup.ts')
+  const { serviceName, serviceManager, backgroundPid, rebootLine } = await import('./setup.ts')
   const unit = serviceName(paths)
-  if (process.platform === 'linux') {
+  const manager = await serviceManager()
+  const background = backgroundPid(paths)
+  if (background) add('service', 'warn', `no service: the hub runs in the background (pid ${background}) and does not start after a reboot by itself`, manager ? 'vocorum setup (installs a service)' : rebootLine(paths, repo))
+  else if (process.platform === 'linux' && !manager) add('service', 'warn', 'no service manager here (no systemd user session)', 'vocorum setup starts the hub in the background')
+  else if (process.platform === 'linux') {
     // is-active exits non-zero when the unit is not active, so read its output either way.
     const state = await run('systemctl', ['--user', 'is-active', unit], { timeout: 5000 }).then((r) => r.stdout.trim(), (e: { stdout?: string }) => (e.stdout ?? '').trim() || 'not installed')
     add('service', state === 'active' ? 'ok' : 'warn', `${unit}.service is ${state}`, state === 'active' ? undefined : `vocorum setup (installs and starts it), or systemctl --user start ${unit}`)
   }
   const latency = await hubLatency(config, paths)
-  if (latency === null) add('hub', 'fail', 'the hub does not answer on loopback', `systemctl --user restart ${unit}; then journalctl --user -u ${unit} -n 50`)
+  if (latency === null) add('hub', 'fail', 'the hub does not answer on loopback', manager === 'systemd' ? `vocorum restart; then journalctl --user -u ${unit} -n 50` : `vocorum restart; then tail -50 ${path.join(paths.root, 'hub.log')}`)
   else if (latency === 'other') add('hub', 'fail', `port ${config.port} is held by something else (another hub?)`, `vocorum config get port; give this hub its own port with: vocorum init --port <free port>`)
   else add('hub', latency > 300 ? 'warn' : 'ok', `answers in ${latency} ms`, latency > 300 ? 'Something is keeping it busy (often an import). vocorum discord status' : undefined)
+  if (typeof latency === 'number') {
+    const stats = await fetch(`http://127.0.0.1:${config.port}/admin/stats`, { headers: { authorization: `Bearer ${readSecret(paths.adminToken)}` }, signal: AbortSignal.timeout(5000) }).then((r) => (r.ok ? (r.json() as Promise<{ rss: number; heapUsed: number; uptimeS: number }>) : null), () => null)
+    if (stats) {
+      const mb = Math.round(stats.rss / 1048576)
+      add('memory', mb > 250 ? 'warn' : 'ok', `${mb} MB in use (heap ${Math.round(stats.heapUsed / 1048576)} MB), up ${Math.round(stats.uptimeS / 3600)} h`, mb > 250 ? 'vocorum restart; if it climbs back, check that the service runs node with the memory flags (vocorum setup updates a unit it wrote)' : undefined)
+    }
+  }
 
   const listener = config.privateListener
   if (!listener) add('private-listener', 'warn', 'off: only this machine can reach the hub', 'vocorum setup (or: vocorum private setup --address <private ip>)')
@@ -125,19 +137,19 @@ export async function doctor(paths: HubPaths, { repo = path.resolve(import.meta.
       const missing = ports.filter((p) => !ours.some((local) => local.endsWith(`:${p}`)))
       const status = wild.length || missing.length ? 'fail' : 'ok'
       const detail = wild.length ? 'a hub port listens on every address' : missing.length ? `port ${missing.join(' and ')} is not listening on ${listener.address}${lines.length > ours.length ? ` (held on ${lines.filter((l) => !ours.includes(l)).join(', ')}: another hub?)` : ''}` : `ports ${ports.join(' and ')} only on ${listener.address}`
-      add('listen-address', status, detail, status === 'ok' ? undefined : `systemctl --user restart ${unit}; if another hub holds the ports, give this one others: vocorum private setup --address <ip> --port <n> --http-port <n>`)
+      add('listen-address', status, detail, status === 'ok' ? undefined : `vocorum restart; if another hub holds the ports, give this one others: vocorum private setup --address <ip> --port <n> --http-port <n>`)
     }
     if (fs.existsSync(certFile) && fs.existsSync(caFile)) {
       const cert = new crypto.X509Certificate(fs.readFileSync(certFile))
       const days = Math.floor((new Date(cert.validTo).getTime() - Date.now()) / 86_400_000)
       const sans = cert.subjectAltName ?? ''
       const missing = listener.names.filter((n) => !sans.includes(`DNS:${n}`))
-      add('certificate', days < 14 || missing.length ? 'fail' : 'ok', `valid ${days} more days${missing.length ? `, missing names ${missing.join(', ')}` : ''}`, days < 14 || missing.length ? `systemctl --user restart ${unit} (renews on start)` : undefined)
+      add('certificate', days < 14 || missing.length ? 'fail' : 'ok', `valid ${days} more days${missing.length ? `, missing names ${missing.join(', ')}` : ''}`, days < 14 || missing.length ? `vocorum restart (renews on start)` : undefined)
       add('ca-fingerprint', 'ok', new crypto.X509Certificate(fs.readFileSync(caFile)).fingerprint256)
       const ca = fs.readFileSync(caFile)
       const error = await tlsCheck(listener.address, listener.port, listener.names[0]!, ca)
-      add('https', error ? 'fail' : 'ok', error ? `HTTPS to ${listener.names[0]} failed: ${error}` : `https://${listener.names[0]}:${listener.port} answers with our certificate`, error ? `vocorum private status; systemctl --user restart ${unit}` : undefined)
-    } else add('certificate', 'fail', 'no server certificate yet', `systemctl --user restart ${unit}`)
+      add('https', error ? 'fail' : 'ok', error ? `HTTPS to ${listener.names[0]} failed: ${error}` : `https://${listener.names[0]}:${listener.port} answers with our certificate`, error ? `vocorum private status; vocorum restart` : undefined)
+    } else add('certificate', 'fail', 'no server certificate yet', `vocorum restart`)
     for (const name of listener.names) {
       const found = await resolveName(name)
       const tailnetName = name.endsWith('.ts.net')
@@ -148,8 +160,8 @@ export async function doctor(paths: HubPaths, { repo = path.resolve(import.meta.
   }
 
   if (fs.existsSync(paths.hubDb)) {
-    const hubDb = createClient({ url: `file:${paths.hubDb}` })
-    const twin = fs.existsSync(paths.twinDb) ? createClient({ url: `file:${paths.twinDb}` }) : null
+    const hubDb = openSqlite(paths.hubDb)
+    const twin = fs.existsSync(paths.twinDb) ? openSqlite(paths.twinDb) : null
     try {
       const bots = (await hubDb.execute('SELECT machine FROM bots WHERE revoked_at IS NULL').catch(() => ({ rows: [] }))).rows.map((r) => String(r['machine']))
       add('bots', bots.length ? 'ok' : 'warn', bots.length ? `active: ${bots.join(', ')}` : 'no bots yet', bots.length ? undefined : 'vocorum kimaki setup <machine> (a Kimaki on this machine), or vocorum bots add <machine> --out <file> for another bot')
@@ -198,7 +210,7 @@ export async function doctor(paths: HubPaths, { repo = path.resolve(import.meta.
     let failed = guilds.reduce((n, g) => n + (g.files_failed ?? 0), 0)
     let gone = 0
     if (fs.existsSync(paths.twinDb)) {
-      const twin = createClient({ url: `file:${paths.twinDb}` })
+      const twin = openSqlite(paths.twinDb)
       try {
         const row = (await twin.execute(`SELECT sum(coalesce(json_extract(j.value, '$.missing'), 0) = 1) AS gone, sum(coalesce(json_extract(j.value, '$.missing'), 0) = 0 AND (json_extract(j.value, '$.url') LIKE 'https://cdn.discordapp.com/%' OR json_extract(j.value, '$.url') LIKE 'https://media.discordapp.net/%')) AS left FROM Message m, json_each(m.attachments) j WHERE m.attachments != '[]'`)).rows[0]
         gone = Number(row?.['gone'] ?? 0)
@@ -214,10 +226,14 @@ export async function doctor(paths: HubPaths, { repo = path.resolve(import.meta.
 
   const funnel = await quiet('tailscale', ['funnel', 'status'])
   if (funnel !== null && /https?:\/\//.test(funnel) && !/No serve config/i.test(funnel)) add('tailscale-funnel', 'warn', 'Tailscale Serve or Funnel is publishing something from this machine', 'tailscale funnel status; tailscale serve reset (only if nothing else needs it)')
+  if (config.adminGuildId) {
+    const { adminStatus } = await import('./admin.ts')
+    checks.push(...(await adminStatus(config, paths)))
+  }
   return checks
 }
 
-const TITLES: Record<string, string> = { node: 'Node.js', openssl: 'OpenSSL', ffmpeg: 'ffmpeg', https: 'HTTPS', 'ca-fingerprint': 'CA fingerprint', 'listen-address': 'Listening on', 'agent-access': 'Agent access', 'kimaki-projects': 'Kimaki projects', 'discord-import': 'Discord import', 'tailscale-funnel': 'Tailscale Funnel' }
+const TITLES: Record<string, string> = { node: 'Node.js', openssl: 'OpenSSL', ffmpeg: 'ffmpeg', https: 'HTTPS', 'ca-fingerprint': 'CA fingerprint', 'listen-address': 'Listening on', 'agent-access': 'Agent access', 'kimaki-projects': 'Kimaki projects', 'discord-import': 'Discord import', 'tailscale-funnel': 'Tailscale Funnel', 'admin-members': 'Admin server', 'admin-bots': 'Other bots', 'admin-bot': 'Admin bot', 'admin-limits': 'Admin limits', 'admin-agent': 'Admin agent', memory: 'Memory' }
 // "listen-address" reads "Listening on"; "name <host>" keeps the host as it is.
 const title = (id: string) => {
   const [head = '', ...rest] = id.split(' ')

@@ -6,6 +6,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createClient, type Client } from '@libsql/client'
+import { openSqlite } from '../sqlite.ts'
 import { readSecret, type HubConfig, type HubPaths } from '../config.ts'
 
 export type TokenSource = { tokenFile?: string; kimaki?: boolean | string }
@@ -91,12 +92,14 @@ export class HubAdmin {
   }
 }
 
-export function openTwin(paths: HubPaths): Client {
-  return createClient({ url: `file:${paths.twinDb}` })
+export function openTwin(paths: HubPaths) {
+  return openSqlite(paths.twinDb)
 }
 
-export function openHubDb(paths: HubPaths): Client {
-  return createClient({ url: `file:${paths.hubDb}` })
+// hub.db and twin.db go through the same SQLite as the running hub
+// (node:sqlite): two SQLite libraries on one file in one process can corrupt it.
+export function openHubDb(paths: HubPaths) {
+  return openSqlite(paths.hubDb)
 }
 
 export function jobDir(paths: HubPaths, name: 'import' | 'purge') {

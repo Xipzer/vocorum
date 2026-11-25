@@ -169,6 +169,7 @@ export function deriveState(messages: LiteMessage[], ownerId: string, { typingUn
 }
 
 const RECENT = 30
+const WARM_DAYS = 30
 const TYPING_MS = 12_000
 
 export class Sessions {
@@ -182,6 +183,8 @@ export class Sessions {
   private dirty = new Set<string>()
   private botMachines: string[] = []
   private aliases: Record<string, string> = {}
+  private byDiscordBot = new Map<string, string>()
+  private byGuild = new Map<string, string>()
   readonly links: Links
   readonly services: Services
 
@@ -199,13 +202,37 @@ export class Sessions {
 
   async reloadBots() {
     this.botMachines = (await this.hub.store.listBots()).filter((b) => !b.revokedAt).map((b) => b.machine)
-    this.aliases = Object.fromEntries(Object.entries(await this.hub.mirror.machineBots()).map(([machine, bot]) => [bot.name.toLowerCase(), machine]))
+    const machineBots = await this.hub.mirror.machineBots()
+    this.aliases = Object.fromEntries(Object.entries(machineBots).map(([machine, bot]) => [bot.name.toLowerCase(), machine]))
+    this.byDiscordBot = new Map(Object.entries(machineBots).map(([machine, bot]) => [bot.discord_user_id, machine]))
+    // A guild only one machine's hub bot is in: the hub bot's posts there are that machine's.
+    const inGuild = new Map<string, string[]>()
+    for (const [machine, guilds] of await this.hub.store.botGuilds()) {
+      if (!this.botMachines.includes(machine)) continue
+      for (const guild of guilds) inGuild.set(guild, [...(inGuild.get(guild) ?? []), machine])
+    }
+    this.byGuild = new Map([...inGuild].filter(([, machines]) => machines.length === 1).map(([guild, machines]) => [guild, machines[0]!]))
   }
 
-  // The machine a category stands for. Its Discord bot's name counts too: a
-  // mirrored "Kimaki Laptop" category is the machine whose Discord bot is "Laptop".
+  // The machine a category stands for, when it is one the hub knows (a
+  // registered bot, or a machine's Discord bot name: a mirrored "Kimaki
+  // Laptop" category is the machine whose Discord bot is "Laptop"). Other
+  // "Kimaki ..." categories are project groups, not machines.
   machineOf(category: string): string | null {
-    return machineName(category, this.botMachines, this.aliases)
+    const name = machineName(category, this.botMachines, this.aliases)
+    return name && this.botMachines.some((m) => m.toLowerCase() === name.toLowerCase()) ? name : null
+  }
+
+  // The machine whose agent last posted in a thread: its Discord bot, or the
+  // hub bot in a guild only that machine is in.
+  private machineOfPosts(messages: LiteMessage[], guildId: string | null) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]!
+      if (!m.bot) continue
+      const machine = this.byDiscordBot.get(m.authorId) ?? (m.authorId === this.hub.options.config.botUserId && guildId ? this.byGuild.get(guildId) : undefined)
+      if (machine) return machine
+    }
+    return null
   }
 
   private stopped = false
@@ -236,7 +263,9 @@ export class Sessions {
   // imported history this takes tens of seconds and keeps the database busy,
   // so nothing at start (remote machines connecting) waits for it.
   async warm() {
-    const threads = await this.prisma.channel.findMany({ where: { guildId: { in: [...this.hub.guildIds] }, type: { in: [...THREAD_TYPES] }, archived: false }, orderBy: { lastMessageId: 'desc' }, select: { id: true } })
+    // Threads active in the last 30 days; an older one joins when something happens in it.
+    const since = String((BigInt(Date.now() - WARM_DAYS * 86_400_000) - 1420070400000n) << 22n)
+    const threads = (await this.prisma.channel.findMany({ where: { guildId: { in: [...this.hub.guildIds] }, type: { in: [...THREAD_TYPES] }, archived: false }, orderBy: { lastMessageId: 'desc' }, select: { id: true, lastMessageId: true } })).filter((t) => t.lastMessageId && (t.lastMessageId.length > since.length || (t.lastMessageId.length === since.length && t.lastMessageId >= since)))
     for (const thread of threads) {
       if (this.stopped) return
       await this.recompute(thread.id, { quiet: true }).catch((error) => console.error('[sessions]', error))
@@ -302,7 +331,7 @@ export class Sessions {
       title: plainText(thread.name ?? '') || 'untitled',
       projectId: parent?.id ?? null,
       project: parent?.name ?? null,
-      machine: category ? this.machineOf(category.name ?? '') : null,
+      machine: this.machineOfPosts(messages, thread.guildId) ?? (category ? this.machineOf(category.name ?? '') : null),
       lastMessageId: thread.lastMessageId,
       ...derived,
     }

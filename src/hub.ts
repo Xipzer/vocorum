@@ -15,7 +15,7 @@ import { HttpError, HubAuth } from './auth.ts'
 import { ClientApi } from './client-api.ts'
 import { ClientEvents, type Audience } from './events.ts'
 import { Sessions } from './sessions.ts'
-import { readSecret, type HubConfig, type HubPaths } from './config.ts'
+import { loadConfig, readSecret, type HubConfig, type HubPaths } from './config.ts'
 import { readJson, sendError, sendJson } from './http.ts'
 import { botTokenKey, HubStore, type DeviceRow, type GuildRow } from './store.ts'
 import { serveStatic } from './static.ts'
@@ -24,11 +24,15 @@ import { SearchIndex } from './search.ts'
 import { Presence } from './presence.ts'
 import { Notifications } from './notifications.ts'
 import { Settings } from './settings.ts'
-import { Access } from './access.ts'
+import { Access, P } from './access.ts'
 import { Members } from './members.ts'
 import { MachineIconStore } from './machine-icons.ts'
 import { Mirror } from './mirror.ts'
 import { Requests } from './requests.ts'
+import { DirectMessages } from './dms.ts'
+import { Schedules } from './schedules.ts'
+import { AppReleases, sendDownload } from './app-releases.ts'
+import { Routines } from './routines.ts'
 
 // Constant time, whatever the lengths.
 function sameSecret(a: string, b: string) {
@@ -38,6 +42,9 @@ function sameSecret(a: string, b: string) {
 const DEBUG = Boolean(process.env['VOCORUM_DEBUG'])
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost'])
+
+// What an unknown Tailscale account may call: the sign-in state and pairing.
+const FIRST_PAIRING = new Set(['/client/auth/status', '/client/auth/register/options', '/client/auth/register/verify', '/client/auth/app/register'])
 
 export function assertLoopback(host: string) {
   if (!LOOPBACK.has(host)) throw new Error(`The hub only binds loopback (got "${host}"). Expose it with tailscale serve.`)
@@ -70,9 +77,13 @@ export class Hub {
   readonly access: Access
   readonly members: Members
   readonly requests: Requests
+  readonly dms: DirectMessages
+  readonly schedules: Schedules
+  readonly apps: AppReleases
+  readonly routines: Routines
   readonly machineIcons: MachineIconStore
   readonly mirror: Mirror
-  private readonly api: ClientApi
+  readonly api: ClientApi
   private readonly adminToken: string
   // Registered token key -> machine.
   private activeBotTokens = new Map<string, string>()
@@ -101,6 +112,8 @@ export class Hub {
       gatewayClientKey: botTokenKey,
       // What bots see as a member's permissions in interactions: the hub's own answer.
       memberPermissions: async (userId, channelId) => String(await this.access.channel(userId, channelId)),
+      // Direct messages reach only the bot of the machine they were opened with.
+      directAudience: (channelId) => this.dms.audience(channelId),
       // Never used by a bot: every machine gets its own clientId:secret. A
       // random value keeps the default fake token from being accepted.
       botToken: `${generateSnowflake()}.hub.${readSecret(paths.signingKey).slice(0, 8)}`,
@@ -143,6 +156,10 @@ export class Hub {
     this.access = new Access(this)
     this.members = new Members(this)
     this.requests = new Requests(this)
+    this.dms = new DirectMessages(this)
+    this.schedules = new Schedules(this)
+    this.apps = new AppReleases(paths.apps)
+    this.routines = new Routines(this)
     this.machineIcons = new MachineIconStore(this)
     this.mirror = new Mirror(this)
     this.api = new ClientApi(this, webDir)
@@ -151,6 +168,12 @@ export class Hub {
       ? new PrivateListener(config.privateListener, paths.ca, {
           attach: (server) => this.twin.attachServer(server),
           tailscaleLogins: () => this.logins,
+          installers: async (code, peer) => ((await this.auth.pairingCodeValid(code, peer)) ? this.apps.installers() : null),
+          sendInstaller: (req, res, file) => {
+            const found = this.apps.installerFile(file)
+            if (found) sendDownload(req, res, found, file)
+            return Boolean(found)
+          },
         })
       : null
   }
@@ -223,13 +246,15 @@ export class Hub {
     const timed = async (name: string, step: () => unknown) => {
       const began = performance.now()
       await step()
-      if (process.env['VOCORUM_DEBUG'] === '1') console.log(`[start] ${name} ${Math.round(performance.now() - began)} ms`)
+      if (process.env['VOCORUM_DEBUG'] === '1') console.log(`[start] ${name} ${Math.round(performance.now() - began)} ms, rss ${Math.round(process.memoryUsage().rss / 1048576)} MB`)
     }
     await timed('store', async () => {
       await this.store.migrate()
       await this.store.migrateOwnerData(this.options.config.ownerUserId)
     })
     await timed('twin', () => this.twin.start())
+    await timed('direct messages', () => this.dms.start())
+    await this.routines.start()
     await timed('guilds, bots, logins', async () => {
       await this.syncGuilds()
       await this.syncBots()
@@ -241,10 +266,12 @@ export class Hub {
     await timed('presence', () => this.presence.start())
     this.notifications.start()
     await timed('private listener', () => this.privateListener?.start())
+    await timed('schedules', () => this.schedules.start())
     void timed('session states', () => this.sessions.warm())
   }
 
   async stop() {
+    this.schedules.stop()
     await this.privateListener?.stop()
     this.search.stop()
     this.notifications.stop()
@@ -257,6 +284,10 @@ export class Hub {
 
   // Applies bots and device revocations written by the CLI to the running hub.
   async reload() {
+    // vocorum admin setup names the Admin server in config.json while the hub runs.
+    const fresh = loadConfig(this.options.paths)
+    this.options.config.adminGuildId = fresh?.adminGuildId ?? null
+    this.options.config.adminBotReady = fresh?.adminBotReady ?? false
     const created = await this.syncGuilds()
     this.access.invalidate()
     for (const guild of created) this.events.send('GUILD_CREATE', { id: guild.id, name: guild.name, icon: guild.icon }, { guildId: guild.id })
@@ -306,7 +337,7 @@ export class Hub {
     for (const guild of this.guilds) {
       const existing = await this.twin.prisma.guild.findUnique({ where: { id: guild.id } })
       if (!existing) {
-        await this.twin.createGuild({ id: guild.id, name: guild.name, ownerId: config.ownerUserId, icon: guild.icon, general: !this.mirroredGuilds.delete(guild.id) })
+        await this.twin.createGuild({ id: guild.id, name: guild.name, ownerId: config.ownerUserId, icon: guild.icon, general: !this.mirroredGuilds.delete(guild.id) && guild.id !== this.options.config.adminGuildId })
         created.push(guild)
       } else if (existing.name !== guild.name || existing.icon !== guild.icon) {
         await this.twin.updateGuild({ id: guild.id, name: guild.name, icon: guild.icon })
@@ -327,7 +358,15 @@ export class Hub {
         continue
       }
       active.set(token, bot.machine)
-      const guildIds = (memberships.get(bot.machine) ?? []).filter((id) => known.has(id))
+      // The Admin server holds the admin bot and nothing else, and the admin bot holds nothing else:
+      // no other machine's bot (or a session on it) can read or post where the admin agent listens.
+      const admin = this.options.config.adminGuildId
+      // Until vocorum admin setup has the admin Kimaki logged in once, the admin bot is in no server at all.
+      if (bot.machine === 'admin') {
+        await this.twin.setGatewayClientGuilds({ token, guildIds: admin && known.has(admin) && this.options.config.adminBotReady ? [admin] : [] })
+        continue
+      }
+      const guildIds = (memberships.get(bot.machine) ?? []).filter((id) => known.has(id) && id !== admin)
       await this.twin.setGatewayClientGuilds({ token, guildIds: guildIds.length ? guildIds : [this.options.config.guildId] })
     }
     for (const token of this.activeBotTokens.keys()) if (!active.has(token)) this.twin.revokeGatewayClient({ token })
@@ -406,7 +445,7 @@ export class Hub {
         return await this.attachments.serve(req, res, { authorized })
       }
       // Everything else is for humans: the private listener or a proxy on loopback.
-      await this.checkHuman(req)
+      await this.checkHuman(req, pathname)
       if (pathname.startsWith('/client/')) return await this.api.handle(req, res, pathname)
       return await serveStatic(req, res, pathname, this.api.webDir)
     } catch (error) {
@@ -418,9 +457,15 @@ export class Hub {
   // name an allowed login; on the private listener the peer must pass the
   // optional Tailscale check. Either way a passkey session is required after
   // this, and checkIdentity() then ties the two together.
-  async checkHuman(req: http.IncomingMessage) {
+  async checkHuman(req: http.IncomingMessage, pathname = '') {
     if (this.privateListener?.owns(req)) {
       const login = await this.privateListener.checkPeer(req)
+      // A Tailscale account the hub does not know yet may load the app and pair with an
+      // invite code, nothing else: pairing ties that account to the invited person.
+      if (login === false && (FIRST_PAIRING.has(pathname) || !pathname.startsWith('/client/'))) {
+        this.firstPairings.set(req, this.privateListener.unknownLogin(req)!)
+        return
+      }
       if (login === false) throw new HttpError(403, 'Forbidden: this device is not on an allowed Tailscale account')
       if (login) this.identities.set(req, login)
       return
@@ -429,6 +474,29 @@ export class Hub {
   }
 
   private identities = new WeakMap<http.IncomingMessage, string>()
+  private firstPairings = new WeakMap<http.IncomingMessage, string>()
+
+  // After a passkey is made with an invite code from an unknown Tailscale account: that
+  // account becomes the invited person's, once. The owner's own code, or a person who
+  // already has an account, cannot be used from an unknown one.
+  async firstPairingAllowed(req: http.IncomingMessage, userId: string | null) {
+    const login = this.firstPairings.get(req)
+    if (!login) return true
+    const profile = userId ? (await this.store.profiles())[userId] : undefined
+    return Boolean(userId && userId !== this.options.config.ownerUserId && !profile?.tailscaleLogin && !this.logins.has(login))
+  }
+
+  async bindFirstPairing(req: http.IncomingMessage, device: { id: string; userId: string | null }) {
+    const login = this.firstPairings.get(req)
+    if (!login) return
+    const userId = device.userId
+    if (!(await this.firstPairingAllowed(req, userId)) || !userId) {
+      await this.store.revokeDevice(device.id)
+      throw new HttpError(403, 'Forbidden: this device is not on an allowed Tailscale account')
+    }
+    await this.store.setProfile(userId, { tailscaleLogin: login })
+    await this.refreshLogins()
+  }
 
   // The Tailscale login the network gate verified for this request, if any.
   identityOf(req: http.IncomingMessage) {
@@ -450,12 +518,21 @@ export class Hub {
       await this.reload()
       return sendJson(res, 200, { ok: true })
     }
+    // Memory and CPU of this process, for the resource budget (vocorum doctor, tests).
+    if (pathname === '/admin/stats' && req.method === 'GET') {
+      if (new URL(req.url ?? '/', 'http://x').searchParams.has('gc') && typeof globalThis.gc === 'function') globalThis.gc()
+      const memory = process.memoryUsage()
+      const usage = process.resourceUsage()
+      return sendJson(res, 200, { rss: memory.rss, heapUsed: memory.heapUsed, heapTotal: memory.heapTotal, external: memory.external, arrayBuffers: memory.arrayBuffers, cpuUserMs: Math.round(usage.userCPUTime / 1000), cpuSystemMs: Math.round(usage.systemCPUTime / 1000), uptimeS: Math.round(process.uptime()), sockets: this.events.connections().length })
+    }
     if (pathname.startsWith('/admin/mirror/')) return sendJson(res, 200, await this.mirror.handleAdmin(req, pathname))
     if (pathname.startsWith('/admin/requests')) return sendJson(res, 200, await this.requests.handleAdmin(req, pathname))
     const icon = await this.machineIcons.handleAdmin(req, pathname)
     if (icon !== undefined) return sendJson(res, 200, icon)
     if (pathname === '/admin/people' && req.method === 'GET') return sendJson(res, 200, { people: await this.people() })
     if (pathname === '/admin/people' && req.method === 'POST') return sendJson(res, 200, await this.invitePerson(await readJson(req)))
+    const access = /^\/admin\/people\/([^/]+)\/access$/.exec(pathname)
+    if (access && req.method === 'GET') return sendJson(res, 200, await this.personAccess(decodeURIComponent(access[1]!)))
     const remove = /^\/admin\/people\/([^/]+)$/.exec(pathname)
     if (remove && req.method === 'DELETE') return sendJson(res, 200, await this.removePerson(decodeURIComponent(remove[1]!)))
     throw new HttpError(404, 'Not found')
@@ -477,10 +554,37 @@ export class Hub {
     }))
   }
 
+  // CLI: what one person can see and do, worked out by the same rules the app uses.
+  private async personAccess(name: string) {
+    const user = await this.twin.prisma.user.findFirst({ where: { username: name.toLowerCase(), bot: false } })
+    if (!user) throw new HttpError(404, `No person "${name}"`)
+    const view = await this.access.view(user.id)
+    const channels = await this.twin.prisma.channel.findMany({ where: { id: { in: [...view.channels.keys()] }, type: { in: [0, 2, 4, 5, 15] } }, select: { id: true, name: true, type: true, guildId: true, parentId: true } })
+    const roles = await this.twin.prisma.role.findMany({ where: { guildId: { in: [...view.guilds.keys()] } } })
+    const servers = [...view.guilds.entries()].map(([id, g]) => {
+      const names = roles.filter((r) => g.roles.includes(r.id)).map((r) => r.name)
+      const perms = g.perms
+      return {
+        id,
+        name: this.guilds.find((x) => x.id === id)?.name ?? id,
+        owner: g.owner,
+        roles: names,
+        // Kimaki takes orders from these: a shell on the machines.
+        drives_agents: g.owner || (perms & P.ADMINISTRATOR) !== 0n || (perms & P.MANAGE_GUILD) !== 0n || names.some((n) => /^kimaki$/i.test(n)),
+        manages_people: (perms & (P.ADMINISTRATOR | P.MANAGE_GUILD | P.MANAGE_ROLES)) !== 0n,
+        channels: channels.filter((c) => c.guildId === id && c.type !== 4).map((c) => ({ id: c.id, name: c.name, category: channels.find((x) => x.id === c.parentId)?.name ?? null, send: ((view.channels.get(c.id) ?? 0n) & P.SEND_MESSAGES) !== 0n })),
+      }
+    })
+    const devices = (await this.store.listDevices()).filter((d) => !d.revokedAt && this.userOf(d) === user.id).map((d) => d.name)
+    const profile = (await this.store.profiles())[user.id]
+    return { username: user.username, owner: user.id === this.options.config.ownerUserId, tailscale_login: profile?.tailscaleLogin ?? null, devices, servers }
+  }
+
   // CLI: a new person in the given guilds, with a 24-hour code for their first device.
   private async invitePerson(body: Record<string, unknown>) {
     const guildIds = Array.isArray(body['guilds']) && body['guilds'].length ? (body['guilds'] as string[]) : [this.options.config.guildId]
     for (const id of guildIds) if (!this.guildIds.has(id)) throw new HttpError(404, `Unknown guild ${id}`)
+    if (this.options.config.adminGuildId && guildIds.includes(this.options.config.adminGuildId)) throw new HttpError(400, 'The Admin server is only for you and your admin agent')
     const owner = { userId: this.options.config.ownerUserId, device: { id: 'cli', name: 'cli', userId: null, kind: 'web' as const, createdAt: 0, lastSeenAt: null, revokedAt: null } }
     const invite = (await this.members.invite(owner, guildIds[0]!, { username: body['username'], global_name: body['global_name'] })) as { user: { id: string } }
     for (const id of guildIds.slice(1)) await this.twin.addGuildMember({ guildId: id, userId: invite.user.id })

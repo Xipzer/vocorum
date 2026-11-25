@@ -393,9 +393,11 @@ export class Mirror {
       const body = await readJson(req)
       const threads = Array.isArray(body['threads']) ? (body['threads'] as string[]) : []
       for (const id of threads) await this.hub.sessions.recompute(id, { quiet: true })
-      // Imported history is old news: read for the owner, so it shows no unread or mention badges.
-      if (typeof body['guild_id'] === 'string') {
-        const channels = await this.prisma.channel.findMany({ where: { guildId: body['guild_id'], lastMessageId: { not: null } }, select: { id: true, lastMessageId: true } })
+      // Imported history is old news: read for the owner, so it shows no unread or mention
+      // badges. A whole guild, or only the channels given (history added later).
+      const only = Array.isArray(body['channels']) ? (body['channels'] as unknown[]).filter((id): id is string => typeof id === 'string') : null
+      if (typeof body['guild_id'] === 'string' || only) {
+        const channels = await this.prisma.channel.findMany({ where: { ...(only ? { id: { in: only } } : { guildId: body['guild_id'] as string }), lastMessageId: { not: null } }, select: { id: true, lastMessageId: true } })
         await this.hub.store.markRead(this.hub.options.config.ownerUserId, channels.map((c) => [c.id, c.lastMessageId!] as [string, string]))
       }
       await this.hub.search.flush()
@@ -436,6 +438,7 @@ export class Mirror {
       return this.hub.settings.setGuildIcon(guildId, await readBody(req, 4 * 1024 * 1024))
     }
     if (pathname === '/hub/mirror/machine-bot' && method === 'PUT') return this.machineBot(machine, await readJson(req))
+    if (pathname === '/hub/mirror/routines' && method === 'PUT') return this.hub.routines.put(machine, req)
     if ((params = match('/hub/mirror/channels/:id', pathname)) && method === 'PUT') return this.channel(machine, { ...(await readJson<DiscordChannel>(req)), id: params['id']! })
     if ((params = match('/hub/mirror/channels/:id', pathname)) && method === 'DELETE') return this.deleteChannel(machine, params['id']!)
     if ((params = match('/hub/mirror/channels/:id/latest', pathname)) && method === 'GET') return this.latest(machine, params['id']!)

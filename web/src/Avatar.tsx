@@ -3,7 +3,8 @@
 // before the hub kept hashes) it still tries, and falls back to the initial on a 404.
 
 import { useEffect, useState } from 'react'
-import { useStore } from './store.ts'
+import { dmName, dmUser, useStore } from './store.ts'
+import type { Channel } from './api.ts'
 
 // Pictures that 404'd, so they show initials without asking again. Cleared on reconnect:
 // a request that failed while the hub restarted deserves another go.
@@ -51,4 +52,14 @@ export function machineIcon(icons: Record<string, { avatar: string | null; guild
   const key = Object.keys(icons).find((k) => k.toLowerCase() === machine.toLowerCase())
   const hash = key ? icons[key]![kind] : null
   return hash ? `/client/machine-icons/${encodeURIComponent(key!)}/${kind}?v=${hash}` : null
+}
+
+// The picture for a direct message: the person's avatar, or the machine's bot picture.
+export function DmAvatar({ channel, size }: { channel: Channel; size: 'inline' | 'panel' }) {
+  const state = useStore((d) => d.state)
+  const me = state?.me.id ?? ''
+  const user = dmUser(channel, me)
+  const name = dmName(channel, me)
+  if (channel.machine) return <Avatar id={user?.id ?? channel.id} name={name} size={size} src={machineIcon(state?.machine_icons, channel.machine, 'avatar') ?? undefined} version={user?.avatar} />
+  return <Avatar id={user?.id ?? channel.id} name={name} size={size} version={user?.avatar} />
 }

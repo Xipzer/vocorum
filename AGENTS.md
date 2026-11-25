@@ -20,8 +20,11 @@ Every command is safe to run twice.
 - **Ask before anything that deletes or cannot be undone:**
   `discord purge --execute`, `bots revoke`, `people remove`, `devices revoke`,
   deleting anything in `~/.vocorum`.
-- **Back up first.** Before an import, a purge or an update, stop the hub and
-  copy `~/.vocorum/twin.db` and `~/.vocorum/hub.db`.
+- **Back up first.** Before an import, a purge or an update, run
+  `vocorum backup --json`. It copies the hub while it runs and prints the folder.
+- **Talk to Discord only through `vocorum discord`.** Never call Discord's API
+  yourself with the token, not even to check: `discord scan` and `discord status`
+  are the checks.
 - **Long jobs never run in your shell.** Use `--detach` and check with
   `vocorum discord status`. A job in your shell dies when your session ends.
 - **Run `vocorum doctor --json` after every step.** It names each problem and
@@ -35,15 +38,21 @@ Every command is safe to run twice.
 2. Which private network reaches it: Tailscale (default), WireGuard, or other?
 3. Which devices will they use (iPhone, Mac, Android, Windows, Linux)?
 4. Which machines run bots, and which bots (Kimaki or other discord.js bots)?
-5. Moving from Discord? Which servers (default: all), their Discord user id,
+5. Moving from Discord? Which servers or channels (default: all), their Discord
+   user id (default: the server owner's id from `discord scan`, if they own it),
    and whether to clean up Discord afterwards (default: no).
-6. May you open the private listener on the hub's private address? (Needs a yes.)
+6. May you open the private listener on the hub's private address? (Needs a yes.
+   Without one, run setup with `--address 127.0.0.1`: the hub works on this
+   machine only, and no device can pair until they say yes. When they do, run
+   `vocorum setup --address <private ip> --yes` before pairing anything: with no
+   device paired yet, the new names and certificate cost nothing.)
 
 ## 1. Prerequisites
 
 ```bash
 node --version          # 22 or newer
-pnpm --version          # missing? corepack enable
+pnpm --version          # missing? corepack enable (if Node's folder is not
+                        # writable: corepack enable --install-directory ~/.local/bin)
 openssl version
 which ffmpeg            # optional, voice notes from phones
 ```
@@ -51,16 +60,16 @@ which ffmpeg            # optional, voice notes from phones
 ## 2. Install
 
 ```bash
-git clone https://github.com/Xipzer/vocorum && cd vocorum
+git clone https://github.com/Xipzer/vocorum && cd vocorum   # skip if already cloned
 pnpm install && pnpm build
-vocorum setup --dry-run --json
+node bin/vocorum.js setup --dry-run --json
 ```
 
 Show the person the plan: the address, the names, the allowed networks and the
 service file. When they say yes:
 
 ```bash
-vocorum setup --yes --json
+node bin/vocorum.js setup --yes --json
 vocorum doctor --json
 ```
 
@@ -73,6 +82,11 @@ What setup does:
   nothing appears in public certificate logs and devices need no DNS setup.
 - Writes a systemd user service (macOS: a launchd agent) only if none exists,
   then starts it. It never overwrites a unit someone wrote by hand.
+- No service manager (a container, WSL without systemd): it starts the hub in
+  the background instead (`hub.pid`, `hub.log` in the state folder). It does
+  not come back after a reboot; doctor prints the `@reboot` line to add.
+  `vocorum restart` works either way.
+- Another hub on the machine: it takes the next free ports and says so in the plan.
 - Prints a 30-minute pairing link and QR code if no device is paired yet.
 
 Get the names right the first time. Changing the first name later means a new
@@ -80,12 +94,12 @@ CA, reinstalling the certificate on every device and new passkeys, because a
 passkey is tied to the name. Running `setup` again keeps an existing hub's
 names and prints the command to switch, with that warning.
 
-If another hub holds the port, setup refuses: use `--port N`. Setup starts an
-empty server called Home. After an import the person has Home plus their old
-servers.
+Setup starts an empty server called Home. After an import the person has Home
+plus their old servers.
 
-Check: `doctor` exits 0. On Linux, if it warns about linger, run
-`loginctl enable-linger "$USER"`.
+Check: `doctor` exits 0 (warnings are fine; read them). On Linux, if it warns
+about linger, run `loginctl enable-linger "$USER"`. With `--address 127.0.0.1`
+a name check may fail: the hub's Tailscale name points at the Tailscale address.
 
 Data lives in `~/.vocorum` (`VOCORUM_DIR` overrides): folder 0700, secrets 0600.
 
@@ -153,18 +167,45 @@ it a stop kills Kimaki twice and the unit ends as failed.
 Check: `vocorum bots list --json` shows the bot. In the app the machine's
 category appears. A message in a project channel gets an answer in a new thread.
 
+## 4b. Hand the hub to the person's own admin agent
+
+Once the hub runs and a device is paired, offer this. It needs Kimaki.
+
+```bash
+vocorum admin setup --model <their usual model> --json
+vocorum admin status --json
+```
+
+It makes a private server called Admin with one channel, #admin, and a Kimaki
+of its own that runs the hub through `vocorum` commands only. The person then
+writes there in plain words: "is everything ok?", "invite sam", "pair my new
+phone", "back up", "undo that".
+
+Tell them how it behaves:
+
+- Reading runs straight away (doctor, lists, status, backup).
+- Any other change shows them the exact command to accept or deny.
+- Anything that gives someone more access waits in the Inbox for their passkey.
+
+Why other people's words cannot drive it: only the owner and the admin bot are
+in the Admin server, the admin bot is in no other server, and the agent cannot
+read messages, files outside its folder, the web or any other shell command.
+
+Check: `vocorum admin status --json` is all ok.
+
 ## 5. Move history from Discord
 
 Do this before any cleanup, and when nobody is pairing a device.
 
 ```bash
-vocorum config set ownerDiscordIds <their Discord user id>
+vocorum config set ownerDiscordIds <their Discord user id> && vocorum restart
 vocorum discord scan all --kimaki --json
 ```
 
 The Discord user id: Discord, Settings, Advanced, Developer Mode on, right click
-their name, Copy User ID. Without it their old messages show under their Discord
-name.
+their name, Copy User ID. `scan` prints each server's owner id; if the person
+owns the server, that is theirs. Without it their old messages show under their
+Discord name; it can be set later and the import run again.
 
 Token: `--kimaki` uses this machine's Kimaki bot. Otherwise `--token-file <file>`
 (mode 0600) or `DISCORD_BOT_TOKEN`. With `--detach`, use a file or `--kimaki`.
@@ -174,7 +215,8 @@ the person:
 
 - Message Content intent off: other people's messages would import empty. They
   turn it on in the Discord developer portal, the app, Bot, Privileged Gateway
-  Intents.
+  Intents. "Could not check" means Discord did not show the setting: if other
+  people's messages arrive empty, that is why.
 - Channels the bot cannot read: give the bot access on Discord, or accept they
   stay behind.
 - The time estimate.
@@ -187,7 +229,7 @@ vocorum discord status --json
 ```
 
 - `--channels <id,id>` limits it to some channels, for example to try it on
-  one channel first.
+  one channel first. Pass the server id with it, not `all`.
 - It runs outside the hub, in small batches, and slows down when the hub is
   busy.
 - It keeps Discord's ids, copies files, avatars and icons, and marks old
@@ -197,8 +239,9 @@ vocorum discord status --json
 - Secrets it finds are masked in `~/.vocorum/import/report.json`. Tell the
   person which ones to change.
 
-Check: `discord status` says finished with no gaps. `doctor` shows no import
-gaps. Open old threads in the app: messages and pictures load.
+Check: `discord status` says finished with no gaps, with the message and file
+counts per server. `doctor` shows no import gaps. Open old threads in the app:
+messages and pictures load.
 
 ## 6. Configure
 
@@ -217,10 +260,15 @@ it in the app with their passkey. You never approve.
 vocorum request invite <username> --guild Home --reason '<why>'
 vocorum request role <username> <role name>
 vocorum request channel <channel> <username|role> --allow view,send
+vocorum request remove <username>
 vocorum requests list --json
 ```
 
 - Requests wait 24 hours, then expire.
+- The hub writes the approval card from the change itself. Your `--reason` is
+  shown beside it; there is no summary of your own.
+- `vocorum channels list` shows channel ids. `vocorum projects add <folder>`
+  gives a project folder its own channel on the hub's Kimaki.
 - Only the owner can create or give the `kimaki` and `no-kimaki` roles. Anyone
   who can talk to Kimaki can run commands on that machine.
 - `doctor` lists everyone besides the owner who can drive agents.
@@ -229,6 +277,27 @@ Be honest with the person about one limit: an agent running as the same OS user
 as the hub can read the hub's files. Requests protect against mistakes and
 injected instructions, not against a hostile agent. Running the hub as its own
 OS user is the real boundary.
+
+## 6b. Invite friends
+
+```bash
+vocorum invite <name> --name "<Their name>" --json
+```
+
+Send the friend the message it prints and give the owner their part: share the
+hub computer with the friend in Tailscale. Optionally limit shared users to
+Vocorum's ports with a grant:
+`{"src": ["autogroup:shared"], "dst": ["<hub ip>"], "ip": ["47443", "47080"]}`.
+
+- Friends get the Friends server by default, never Home (machines and agent
+  sessions) and never Admin.
+- The hub learns the friend's Tailscale account at pairing; only that account
+  works for them afterwards.
+- `vocorum welcome <name>` for a fresh link, `vocorum access <name> --json` to
+  check what they can see, `vocorum people remove <name>` to remove them (then
+  the owner revokes the share).
+- A hub still named `hub.home.arpa` needs the profile or a hosts line on the
+  friend's device. A fresh setup does not.
 
 ## 7. Clean up Discord
 
@@ -243,11 +312,15 @@ their bot's older than 7 days (`--older-than`, `--authors me,bot`). Threads in
 use are left whole. `--threads` also deletes threads nobody else wrote in.
 `--kimaki-keep` keeps threads with scheduled Kimaki work.
 
-`--channels <id,id>` limits the plan to some channels. Show the person the
-summary, including what is not touched and why. Messages from other bots and
-webhooks are left alone; the plan names them and gives the `--authors` line
-that would include them. Get a clear
-yes. Then:
+`--channels <id,id>` limits the plan to some channels. To clear everything in
+a channel, including other people's messages and new ones:
+`--channels <id> --older-than 0d --authors all --threads`. The channel itself
+stays on Discord, empty; the person deletes it there if they want.
+
+Show the person the summary, including what is not touched and why. Messages
+from other bots and webhooks are left alone; the plan names them and gives the
+`--authors` line that would include them. Get a clear yes. Then run the command
+the plan prints (`next` in the JSON; it carries the token flag you used):
 
 ```bash
 vocorum discord purge --execute <plan id> --kimaki --detach --json

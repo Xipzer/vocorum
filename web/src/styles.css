@@ -6174,7 +6174,7 @@ svg.flip {
 /* Same card as the panel's thread rows. */
 .request-card {
   margin-bottom: 8px;
-  padding: 12px;
+  padding: 12px 12px 12px 16px;
   border-radius: var(--r-control);
   background: var(--bg-3);
   border: 1px solid var(--line-strong);
@@ -6524,4 +6524,436 @@ svg.flip {
   .switcher-overlay {
     padding-top: max(12px, env(safe-area-inset-top));
   }
+}
+
+/* Direct messages. The rail's Home button and a line under it; unread DMs as avatars. */
+.rail-home {
+  color: var(--text);
+}
+.rail-item.active .rail-home {
+  color: var(--accent-ink);
+}
+.rail-dm .avatar {
+  width: 40px;
+  height: 40px;
+  font-size: 16px;
+}
+.rail-line {
+  flex: none;
+  width: 32px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--line-raised);
+}
+.side-title.static {
+  cursor: default;
+}
+/* Discord's DM rows: 42 tall, a 32 avatar with its status, the name at 16. */
+.dm-list .channel.dm-row {
+  height: 42px;
+  gap: 12px;
+  margin-bottom: 2px;
+}
+.dm-row .channel-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font: 500 16px/20px var(--font);
+}
+.dm-avatar {
+  position: relative;
+  flex: none;
+  display: grid;
+}
+.dm-avatar .presence {
+  right: -2px;
+  bottom: -2px;
+  width: 10px;
+  height: 10px;
+  box-shadow: 0 0 0 3px var(--bg-1);
+}
+.dm-row .bot-tag {
+  flex: none;
+  margin-right: auto;
+}
+.dm-row .channel-name:last-child {
+  margin-right: auto;
+}
+.dm-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: 4px;
+}
+.dm-head .dm-new {
+  width: 24px;
+  height: 24px;
+}
+.dm-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.dm-empty .empty {
+  margin-top: 24px;
+}
+/* The start of a DM: the person, large, as Discord's (80 avatar, name at 32). */
+.dm-start .avatar {
+  width: 80px;
+  height: 80px;
+  font-size: 32px;
+  margin-bottom: 12px;
+}
+.channel-start.dm-start h2 {
+  font: 700 32px/40px var(--font);
+  margin: 0;
+}
+.dm-start-user {
+  display: block;
+  margin-bottom: 16px;
+  font: 500 20px/24px var(--font);
+  color: var(--text);
+}
+.dm-start p {
+  font-size: 16px;
+  line-height: 20px;
+}
+.dm-start b {
+  color: var(--text-strong);
+  font-weight: 600;
+}
+.title-avatar {
+  display: grid;
+  flex: none;
+}
+.title-avatar .avatar {
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
+}
+.snackbar.ok > svg {
+  color: var(--ok);
+}
+
+/* Reminders in the Inbox: when and where on one line, the message under it; a due one
+   carries Later and Done, an upcoming one a cancel cross. */
+.reminder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 8px 4px;
+  padding: 8px 8px 8px 12px;
+  border-radius: 8px;
+}
+.reminder-row.due {
+  background: var(--bg-3);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.reminder-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+}
+.reminder-when {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 600 12px/16px var(--font);
+  color: var(--text-muted);
+}
+.reminder-row.due .reminder-when {
+  color: var(--accent);
+}
+.reminder-where {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--text-faint);
+}
+.reminder-text {
+  font: 400 14px/18px var(--font);
+  color: var(--text);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.reminder-text b {
+  font-weight: 600;
+  color: var(--text-strong);
+}
+.reminder-error {
+  font: 400 12px/16px var(--font);
+  color: var(--danger-text);
+}
+.reminder-actions {
+  flex: none;
+  display: flex;
+  gap: 8px;
+}
+@media (hover: hover) {
+  .reminder-row:not(.due):hover {
+    background: var(--hover);
+  }
+}
+/* A due reminder's buttons sit under its text, so the time and place keep one line. */
+.reminder-row.due {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+.reminder-row.due .reminder-actions {
+  flex-basis: 100%;
+}
+.reminder-actions .button {
+  height: 32px;
+  padding: 0 16px;
+}
+.scheduled-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 500 12px/16px var(--font);
+  color: var(--text-muted);
+}
+@media (hover: hover) {
+  .scheduled-link:hover {
+    color: var(--text);
+  }
+}
+.reminder-row.failed .reminder-when {
+  color: var(--danger-text);
+}
+/* The time picker: date and time side by side; native controls in the field style. */
+.when-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.when .field select {
+  height: 40px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--r-field);
+  background: var(--bg-3);
+  color: var(--text);
+  font: 400 16px/20px var(--font);
+  outline: none;
+}
+.when .field input {
+  color-scheme: dark;
+  min-width: 0;
+  height: 40px;
+  padding: 0 12px;
+  color: var(--text);
+}
+/* Member rows are buttons: Discord's 42px rows, 8px in from the panel's edges. */
+button.member {
+  width: calc(100% - 16px);
+  min-height: 42px;
+  margin: 1px 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+.routine-meta {
+  font: 400 12px/16px var(--mono);
+  color: var(--text-faint);
+}
+.routine-meta:empty {
+  display: none;
+}
+
+/* An agent's permission prompt: a solid card with the ask in words, the exact command,
+   and Discord's buttons; amber while it waits, quiet once decided. */
+.approval {
+  max-width: 520px;
+  margin: 4px 0 2px;
+  padding: 12px 16px;
+  border: 1px solid var(--line-card);
+  border-radius: 8px;
+  background: var(--bg-3);
+}
+/* Waiting: the 4px amber bar inside the rule, as on accented containers. */
+.approval,
+.request-card {
+  position: relative;
+}
+.approval.open::before,
+.request-card.pending::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  border-radius: 7px 0 0 7px;
+  background: var(--warn);
+  pointer-events: none;
+}
+.request-card.pending::before {
+  border-radius: calc(var(--r-control) - 1px) 0 0 calc(var(--r-control) - 1px);
+}
+.approval-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+}
+.approval.open .approval-head > svg {
+  color: var(--warn);
+}
+.approval-head b {
+  font: 600 15px/20px var(--font);
+  color: var(--text-strong);
+}
+.approval-from {
+  font: 400 13px/18px var(--font);
+  color: var(--text-faint);
+}
+.approval-note {
+  margin: 4px 0 0;
+  font: 400 13px/18px var(--font);
+  color: var(--text-muted);
+}
+.approval-code {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 4px 8px 12px;
+  border: 1px solid var(--line-card);
+  border-radius: 6px;
+  background: var(--bg-1);
+}
+.approval-code code {
+  flex: 1;
+  min-width: 0;
+  padding-top: 3px;
+  font: 13px/18px var(--mono);
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.approval-code .icon-button {
+  flex: none;
+  width: 24px;
+  height: 24px;
+}
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.approval-actions .button {
+  height: 32px;
+  padding: 0 16px;
+}
+.approval-outcome {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font: 500 13px/18px var(--font);
+  color: var(--text-muted);
+}
+.approval.ok .approval-outcome {
+  color: var(--ok);
+}
+.approval:not(.open) .approval-code code {
+  color: var(--text-muted);
+}
+.inline-requests {
+  max-width: 520px;
+  margin-top: 4px;
+}
+.inline-requests .request-card {
+  margin-bottom: 4px;
+  border-color: var(--line-card);
+  border-radius: 8px;
+}
+.inline-requests .request-actions {
+  justify-content: flex-start;
+}
+/* A narrow chat (tablets, a panel open): the parent crumb goes below 760px and the less
+   used header buttons move into the More menu below 640px, so the title keeps its room.
+   Collapsed, the search field is one more 32px icon button with the chrome's 22px glyph. */
+@container chat (max-width: 760px) {
+  .chat-header .wide-only {
+    display: none;
+  }
+}
+@container chat (max-width: 640px) {
+  .chat-header .fold {
+    display: none;
+  }
+}
+@container chat (max-width: 760px) {
+  .chat-header .search-field {
+    width: 32px;
+    height: 32px;
+    color: var(--text-muted);
+  }
+  .chat-header .search-field > svg {
+    width: 22px;
+    height: 22px;
+  }
+}
+/* No uppercase micro-labels (ledger): field labels and list heads are sentence case. */
+.login-label {
+  font: 600 13px/18px var(--font);
+  letter-spacing: 0;
+  text-transform: none;
+}
+.switcher-head {
+  color: var(--text-muted);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* The Admin server: last in the rail after a line, with an amber ring; a shield and a
+   line under its name; its chats carry an amber rule under the header. */
+.rail-item.admin .rail-guild {
+  box-shadow: 0 0 0 2px var(--bg-0), 0 0 0 4px rgb(245 166 35 / 0.7);
+}
+.rail-item.admin.active .rail-pip {
+  background: var(--warn);
+}
+.admin-mark {
+  flex: none;
+  color: var(--warn);
+}
+.admin-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -4px 0 0;
+  padding: 0 8px;
+  font: 500 12px/16px var(--font);
+  color: var(--warn);
+}
+.chat.admin .chat-header {
+  box-shadow: inset 0 -1px 0 rgb(245 166 35 / 0.45);
+}
+.request-reason {
+  margin-top: 6px;
+  padding-left: 10px;
+  border-left: 2px solid var(--line-raised);
+}
+.request-reason-label {
+  display: block;
+  font: 600 12px/16px var(--font);
+  color: var(--text-faint);
+}
+.rail-item.admin.active .rail-guild:not(.has-icon) {
+  background: var(--warn);
+  color: #000;
 }

@@ -59,6 +59,8 @@ export function applyOverwrites(base: bigint, overwrites: Overwrite[], { guildId
   return perms
 }
 
+const DM_PERMS = P.VIEW_CHANNEL | P.SEND_MESSAGES | P.READ_MESSAGE_HISTORY | P.ATTACH_FILES | P.ADD_REACTIONS | P.USE_APPLICATION_COMMANDS
+
 type View = {
   version: number
   guilds: Map<string, { perms: bigint; roles: string[]; topRole: number; owner: boolean }>
@@ -129,6 +131,8 @@ export class Access {
         if (parent !== undefined && byId.has(channel.parentId!)) view.channels.set(channel.id, parent)
       }
     }
+    // Direct messages: only their two sides, with what Discord allows in a DM.
+    for (const dm of this.hub.dms.of(userId)) view.channels.set(dm.id, DM_PERMS)
     this.views.set(userId, view)
     return view
   }

@@ -63,7 +63,8 @@ export async function kimakiSetup(config: HubConfig, paths: HubPaths, options: K
   } finally {
     store.close()
   }
-  fs.writeFileSync(envFile, `${env}\nKIMAKI_LOCK_PORT=${lockPort}\n`, { mode: 0o600 })
+  // The command is kept so vocorum projects can run this same Kimaki later.
+  fs.writeFileSync(envFile, `${env}\nKIMAKI_LOCK_PORT=${lockPort}\n# kimaki: ${command}\n`, { mode: 0o600 })
   await fetch(`http://127.0.0.1:${config.port}/admin/reload`, { method: 'POST', headers: { authorization: `Bearer ${readSecret(paths.adminToken)}` }, signal: AbortSignal.timeout(5000) }).catch(() => null)
 
   const args = [`--data-dir`, dataDir, ...(options.peerDataDir ? ['--peer-data-dir', options.peerDataDir] : []), ...options.extraArgs]

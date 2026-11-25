@@ -88,3 +88,22 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
   }
   std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+  #[test]
+  fn private_files_are_owner_only() {
+    let dir = std::env::temp_dir().join(format!("vocorum-secrets-test-{}", std::process::id()));
+    let path = dir.join("nested/key");
+    super::write_private(&path, b"one").unwrap();
+    super::write_private(&path, b"two").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"two");
+    assert!(!path.with_extension("tmp").exists());
+    #[cfg(unix)]
+    {
+      use std::os::unix::fs::PermissionsExt;
+      assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+  }
+}

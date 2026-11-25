@@ -53,7 +53,9 @@ your name and Copy User ID.
 
 ```bash
 node bin/vocorum.js config set ownerDiscordIds <your Discord user id>
-node bin/vocorum.js discord scan all --kimaki
+vocorum restart
+vocorum backup
+vocorum discord scan all --kimaki
 ```
 
 `scan` changes nothing. It shows each server, what the bot cannot read, and how
@@ -92,7 +94,10 @@ This changes nothing. It writes a plan of what it would delete, and prints its
 id and a summary. By default it plans your messages and your bot's that are
 older than 7 days. Threads still in use are left alone. Messages from other bots
 and webhooks are left too: the plan names them and shows how to include them.
-Add `--channels <id,id>` to try it on a few channels first.
+Add `--channels <id,id>` to try it on a few channels first. To empty a channel
+completely, other people's messages included:
+`--channels <id> --older-than 0d --authors all --threads`. The empty channel
+stays on Discord until you delete it there.
 
 When you are happy with the plan:
 

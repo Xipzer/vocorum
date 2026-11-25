@@ -968,7 +968,8 @@ export function ChannelSettings({ channelId, initial, onClose }: { channelId: st
     { id: 'overview', label: 'Overview' },
     { id: 'notifications', label: 'Notifications' },
     ...(category ? [] : [{ id: 'output', label: 'Output view' }]),
-    { id: 'permissions', label: 'Permissions' },
+    // Overrides are for people who can change them (Discord shows the page to them only).
+    ...(can(P.MANAGE_ROLES, channel) ? [{ id: 'permissions', label: 'Permissions' }] : []),
     ...(thread ? [{ id: 'archive', label: 'Archive' }] : []),
   ]
   const manage = can(thread ? P.MANAGE_THREADS : P.MANAGE_CHANNELS, channel)
@@ -977,7 +978,7 @@ export function ChannelSettings({ channelId, initial, onClose }: { channelId: st
     section === 'overview' ? <ChannelOverview state={state} channel={channel} />
     : section === 'notifications' ? <ChannelNotifications state={state} channel={channel} />
     : section === 'output' ? <ChannelOutput channel={channel} />
-    : section === 'permissions' ? <ChannelPermissionsPage state={state} channel={channel} />
+    : section === 'permissions' && can(P.MANAGE_ROLES, channel) ? <ChannelPermissionsPage state={state} channel={channel} />
     : section === 'archive' ? <ArchivePage channel={channel} />
     : section === 'delete' ? <DeletePage state={state} channel={channel} />
     : null

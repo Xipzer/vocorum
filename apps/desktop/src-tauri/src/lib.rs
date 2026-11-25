@@ -5,6 +5,8 @@ mod events;
 mod hub;
 mod protocol;
 mod secrets;
+#[cfg(desktop)]
+mod updates;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
@@ -25,6 +27,8 @@ pub struct State {
   events: events::Events,
   pending_link: Mutex<Option<String>>,
   last_alert: Mutex<Option<(String, Option<String>, std::time::Instant)>>,
+  #[cfg(desktop)]
+  update: Mutex<Option<tauri_plugin_updater::Update>>,
 }
 
 impl State {
@@ -91,12 +95,10 @@ async fn download(app: &AppHandle, url: Url) {
   if !response.status().is_success() {
     return;
   }
-  let name = url.path_segments().and_then(|mut s| s.next_back()).map(|s| percent_decode(s)).unwrap_or_else(|| "file".into());
-  let name: String = name.chars().map(|c| if c.is_alphanumeric() || " ._-()".contains(c) { c } else { '_' }).collect();
-  let name = name.trim_start_matches('.').to_string();
+  let name = download_name(url.path_segments().and_then(|mut s| s.next_back()).unwrap_or(""));
   let Ok(dir) = app.path().download_dir() else { return };
   let Ok(bytes) = response.bytes().await else { return };
-  let mut target = dir.join(if name.is_empty() { "file".into() } else { name.clone() });
+  let mut target = dir.join(&name);
   let mut n = 1;
   while target.exists() {
     let (stem, ext) = name.rsplit_once('.').map(|(s, e)| (s.to_string(), format!(".{e}"))).unwrap_or((name.clone(), String::new()));
@@ -107,6 +109,13 @@ async fn download(app: &AppHandle, url: Url) {
     use tauri_plugin_opener::OpenerExt;
     let _ = app.opener().reveal_item_in_dir(&target);
   }
+}
+
+// A file name that stays inside Downloads, whatever the hub's URL says.
+fn download_name(segment: &str) -> String {
+  let name: String = percent_decode(segment).chars().map(|c| if c.is_alphanumeric() || " ._-()".contains(c) { c } else { '_' }).collect();
+  let name = name.trim_start_matches('.').to_string();
+  if name.is_empty() { "file".into() } else { name }
 }
 
 fn percent_decode(text: &str) -> String {
@@ -291,19 +300,38 @@ async fn set_alerts(app: AppHandle, state: tauri::State<'_, State>, on: bool) ->
 }
 
 #[cfg(desktop)]
-fn tray(app: &AppHandle) -> tauri::Result<()> {
+fn tray_menu(app: &AppHandle, update: Option<&str>) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
   use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
-  use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
   use tauri_plugin_autostart::ManagerExt;
   let open = MenuItem::with_id(app, "open", "Open Vocorum", true, None::<&str>)?;
   let login = CheckMenuItem::with_id(app, "autostart", "Start when I log in", true, app.autolaunch().is_enabled().unwrap_or(false), None::<&str>)?;
   let quit = MenuItem::with_id(app, "quit", "Quit Vocorum", true, None::<&str>)?;
-  let menu = Menu::with_items(app, &[&open, &login, &PredefinedMenuItem::separator(app)?, &quit])?;
-  let toggle = login.clone();
+  let separator = PredefinedMenuItem::separator(app)?;
+  let menu = Menu::with_items(app, &[&open, &login, &separator, &quit])?;
+  if let Some(version) = update {
+    menu.insert(&MenuItem::with_id(app, "update", format!("Update and restart ({version})"), true, None::<&str>)?, 2)?;
+  }
+  Ok(menu)
+}
+
+// Shows or hides "Update and restart" in the tray menu.
+pub fn set_update_item(app: &AppHandle, version: Option<&str>) {
+  #[cfg(desktop)]
+  if let (Some(tray), Ok(menu)) = (app.tray_by_id("tray"), tray_menu(app, version)) {
+    let _ = tray.set_menu(Some(menu));
+  }
+  #[cfg(mobile)]
+  let _ = (app, version);
+}
+
+#[cfg(desktop)]
+fn tray(app: &AppHandle) -> tauri::Result<()> {
+  use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+  use tauri_plugin_autostart::ManagerExt;
   TrayIconBuilder::with_id("tray")
     .icon(app.default_window_icon().cloned().ok_or(tauri::Error::InvalidIcon(std::io::Error::other("no icon")))?)
     .tooltip("Vocorum")
-    .menu(&menu)
+    .menu(&tray_menu(app, None)?)
     .show_menu_on_left_click(false)
     .on_menu_event(move |app, event| match event.id().as_ref() {
       "open" => show_main(app),
@@ -311,8 +339,10 @@ fn tray(app: &AppHandle) -> tauri::Result<()> {
         let launcher = app.autolaunch();
         let on = !launcher.is_enabled().unwrap_or(false);
         let _ = if on { launcher.enable() } else { launcher.disable() };
-        let _ = toggle.set_checked(launcher.is_enabled().unwrap_or(on));
+        let pending = app.state::<State>().update.lock().ok().and_then(|u| u.as_ref().map(|u| u.version.clone()));
+        set_update_item(app, pending.as_deref());
       }
+      "update" => updates::install(app),
       "quit" => app.exit(0),
       _ => {}
     })
@@ -352,7 +382,8 @@ pub fn run() {
         take_link(app, args.iter().filter_map(|a| Url::parse(a).ok()));
         show_main(app);
       }))
-      .plugin(tauri_plugin_autostart::Builder::new().args(["--hidden"]).build());
+      .plugin(tauri_plugin_autostart::Builder::new().args(["--hidden"]).build())
+      .plugin(tauri_plugin_updater::Builder::new().build());
   }
   builder
     .plugin(tauri_plugin_deep_link::init())
@@ -363,7 +394,11 @@ pub fn run() {
     .setup(|app| {
       let dir = app.path().app_config_dir()?;
       std::fs::create_dir_all(&dir)?;
-      let state = State { dir: dir.clone(), hub: RwLock::new(None), events: Default::default(), pending_link: Mutex::new(None), last_alert: Mutex::new(None) };
+      let state = State { dir: dir.clone(), hub: RwLock::new(None), events: Default::default(), pending_link: Mutex::new(None),
+        last_alert: Mutex::new(None),
+        #[cfg(desktop)]
+        update: Mutex::new(None),
+      };
       app.manage(state);
       let handle = app.handle().clone();
       if let Some(config) = HubConfig::load(&dir) {
@@ -380,7 +415,9 @@ pub fn run() {
       // `--pair <link>` from a terminal pairs without the card (scripted setups). Links
       // from browsers arrive as deep links instead and always wait for a click.
       let argv: Vec<String> = std::env::args().collect();
-      if let Some(link) = argv.iter().position(|a| a == "--pair").and_then(|i| argv.get(i + 1)).cloned() {
+      // Ignored once paired: an update restarts the app with the same arguments.
+      let paired = app.state::<State>().hub().is_some();
+      if let Some(link) = argv.iter().position(|a| a == "--pair").and_then(|i| argv.get(i + 1)).cloned().filter(|_| !paired) {
         let pair_handle = handle.clone();
         tauri::async_runtime::spawn(async move {
           let state = pair_handle.state::<State>();
@@ -403,7 +440,10 @@ pub fn run() {
         });
       }
       #[cfg(desktop)]
-      tray(&handle)?;
+      {
+        tray(&handle)?;
+        updates::start(handle.clone());
+      }
       let hidden = std::env::args().any(|a| a == "--hidden");
       if !hidden {
         show_main(&handle);
@@ -423,4 +463,27 @@ pub fn run() {
       RunEvent::Reopen { .. } => show_main(app),
       _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn only_the_app_origin_is_its_own() {
+    assert!(own_origin(&app_url().join("/channels/1").unwrap()));
+    for other in ["https://hub.localhost.example/", "hub://elsewhere/", "http://localhost/", "https://example.com/", "file:///etc/passwd"] {
+      assert!(!own_origin(&Url::parse(other).unwrap()), "{other}");
+    }
+  }
+
+  #[test]
+  fn download_names_stay_in_downloads() {
+    assert_eq!(download_name("report%20(1).pdf"), "report (1).pdf");
+    assert_eq!(download_name("..%2F..%2F.bashrc"), "_.._.bashrc");
+    assert_eq!(download_name("%2e%2e"), "file");
+    assert_eq!(download_name("a%5Cb%00c"), "a_b_c");
+    assert_eq!(download_name(""), "file");
+    assert!(!download_name("....%2Fetc%2Fpasswd").contains(['/', '\\']));
+  }
 }

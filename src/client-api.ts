@@ -14,6 +14,7 @@ import { generateSnowflake, withThreads } from 'discord-digital-twin/src'
 import { channelToAPI, messageToAPI, roleToAPI, userToAPI } from 'discord-digital-twin/src/serializers'
 import { toOggOpus } from './attachments.ts'
 import { HttpError } from './auth.ts'
+import { sendDownload } from './app-releases.ts'
 import { endJson, match, readBody, readJson, sendJson, UPLOAD_LIMIT } from './http.ts'
 import type { Hub } from './hub.ts'
 import type { DeviceRow, NotificationSetting } from './store.ts'
@@ -54,6 +55,20 @@ export class ClientApi {
     const send = (status: number, value: unknown) => endJson(res, status, value === undefined ? '' : this.hub.relativize(JSON.stringify(value)))
     let params: Record<string, string> | null
     if (method === 'GET' && pathname === '/client/state') return send(200, await this.state(v))
+    // App updates (Tauri's updater format; 204 when up to date) and their files.
+    if (method === 'GET' && (params = match('/client/app/update/:target/:arch/:current', pathname))) {
+      const host = typeof req.headers.host === 'string' ? req.headers.host : ''
+      const origin = this.hub.privateListener?.owns(req) ? `https://${host}` : (this.hub.options.config.publicUrl ?? `http://${host}`)
+      const bundle = new URL(req.url ?? '/', 'http://x').searchParams.get('bundle')
+      const update = this.hub.apps.update(params['target']!, params['arch']!, decodeURIComponent(params['current']!), origin, bundle)
+      return update ? send(200, update) : send(204, undefined)
+    }
+    if ((method === 'GET' || method === 'HEAD') && (params = match('/client/app/files/:version/:file', pathname))) {
+      const name = decodeURIComponent(params['file']!)
+      const file = this.hub.apps.file(params['version']!, name)
+      if (!file) throw new HttpError(404, 'Unknown file')
+      return sendDownload(req, res, file, name)
+    }
     if (method === 'GET' && pathname === '/client/overview') return send(200, await this.overview(v))
     if (method === 'PUT' && pathname === '/client/read') {
       const body = await readJson(req)
@@ -129,6 +144,11 @@ export class ClientApi {
     const icon = await this.hub.machineIcons.handle(req, res, pathname, v)
     if (icon === null) return
     if (icon !== undefined) return send(200, icon)
+    const direct = await this.hub.dms.handleClient(req, pathname, v)
+    if (direct !== undefined) return send(200, direct)
+    if (method === 'GET' && pathname === '/client/routines') return send(200, await this.hub.routines.list(v.userId))
+    const scheduled = await this.hub.schedules.handleClient(req, pathname, v)
+    if (scheduled !== undefined) return send(200, scheduled)
     const requested = await this.hub.requests.handleClient(req, pathname, v, typeof req.headers.origin === 'string' ? req.headers.origin : null)
     if (requested !== undefined) return send(200, requested)
     const managed = await this.hub.members.handle(req, pathname, v)
@@ -179,7 +199,13 @@ export class ClientApi {
     // Apps: no ambient credentials, so no Origin check; never a cookie.
     if (pathname.startsWith('/client/auth/app/')) {
       const body = await readJson(req)
-      if (pathname === '/client/auth/app/register') return sendJson(res, 200, await auth.registerApp(body, peer))
+      if (pathname === '/client/auth/app/register') {
+        const pairing = typeof body['code'] === 'string' ? await this.hub.store.findPairing(body['code']) : null
+        if (pairing && !(await this.hub.firstPairingAllowed(req, pairing.userId))) throw new HttpError(403, 'Forbidden: this device is not on an allowed Tailscale account')
+        const registered = await auth.registerApp(body, peer)
+        await this.hub.bindFirstPairing(req, registered.device)
+        return sendJson(res, 200, { ...registered, device: { id: registered.device.id, name: registered.device.name } })
+      }
       if (pathname === '/client/auth/app/challenge') return sendJson(res, 200, auth.appChallenge())
       if (pathname === '/client/auth/app/login') return sendJson(res, 200, await auth.loginApp(body))
       throw new HttpError(404, 'Not found')
@@ -192,11 +218,16 @@ export class ClientApi {
     const origin = auth.checkOrigin(req)
     const body = await readJson(req)
     switch (pathname) {
-      case '/client/auth/register/options':
+      case '/client/auth/register/options': {
+        // From an unknown Tailscale account only a friend's own first code works, and a refused one is not spent.
+        const pairing = typeof body['code'] === 'string' ? await this.hub.store.findPairing(body['code']) : null
+        if (pairing && !(await this.hub.firstPairingAllowed(req, pairing.userId))) throw new HttpError(403, 'Forbidden: this device is not on an allowed Tailscale account')
         // The transport address plus the Tailscale login the network gate verified; never a raw header.
         return sendJson(res, 200, await auth.registrationOptions(origin, body, peer))
+      }
       case '/client/auth/register/verify': {
         const { device, cookie } = await auth.register(origin, body)
+        await this.hub.bindFirstPairing(req, device)
         return sendJson(res, 200, { device: { id: device.id, name: device.name } }, { 'set-cookie': cookie })
       }
       case '/client/auth/login/options':
@@ -222,6 +253,10 @@ export class ClientApi {
     const overwrites = await this.hub.store.overwrites()
     const members = await this.prisma.guildMember.findMany({ where: { guildId: { in: guilds.map((g) => g.id) } } })
     const users = await this.prisma.user.findMany({ where: { id: { in: [...new Set([...members.map((m) => m.userId), v.userId, config.botUserId])] } } })
+    const activeMachines = new Set((await this.hub.store.listBots()).filter((b) => !b.revokedAt).map((b) => b.machine))
+    // Each machine's guilds, or the primary one when none are set (as syncBots does).
+    const botGuilds = await this.hub.store.botGuilds()
+    const agentGuilds = new Set([...activeMachines].flatMap((machine) => (machine === 'admin' ? (config.adminGuildId ? [config.adminGuildId] : []) : (botGuilds.get(machine) ?? [config.guildId]))))
     const roles = await this.prisma.role.findMany({ where: { guildId: { in: guilds.map((g) => g.id) } }, orderBy: [{ position: 'desc' }, { id: 'asc' }] })
     const profiles = await this.hub.store.profiles()
     const guildCommands = Object.fromEntries(await Promise.all(guilds.map(async (g) => [g.id, await this.hub.twin.getRegisteredCommands({ guildId: g.id })] as const)))
@@ -236,6 +271,8 @@ export class ClientApi {
       me: { id: v.userId },
       // True for the person who runs the hub: services, bots and guild registration.
       hub_owner: this.hub.access.isHubOwner(v.userId),
+      // The private Admin server (owner and admin agent only), so the app can mark it apart.
+      ...(this.hub.access.isHubOwner(v.userId) && this.hub.options.config.adminGuildId && { admin_guild_id: this.hub.options.config.adminGuildId }),
       bot: { id: config.botUserId },
       // The guilds this person is in, primary first. Channels and threads carry guild_id.
       guilds: guilds.map((g) => ({ id: g.id, name: g.name, icon: g.icon, owner_id: config.ownerUserId, permissions: String(view.guilds.get(g.id)!.perms) })),
@@ -247,7 +284,8 @@ export class ClientApi {
       users: users.map((u) => ({ ...userToAPI(u), color: profiles[u.id]?.color ?? null })),
       // Per guild: roles (highest first) and members with their roles.
       roles: Object.fromEntries(guilds.map((g) => [g.id, roles.filter((r) => r.guildId === g.id).map(roleToAPI)])),
-      members: Object.fromEntries(guilds.map((g) => [g.id, members.filter((m) => m.guildId === g.id).map((m) => ({ user_id: m.userId, roles: JSON.parse(m.roles) as string[], nick: m.nick, joined_at: m.joinedAt.toISOString() }))])),
+      // The agents' bot only where a machine's agent is (not in a server of friends).
+      members: Object.fromEntries(guilds.map((g) => [g.id, members.filter((m) => m.guildId === g.id && (m.userId !== config.botUserId || agentGuilds.has(g.id))).map((m) => ({ user_id: m.userId, roles: JSON.parse(m.roles) as string[], nick: m.nick, joined_at: m.joinedAt.toISOString() }))])),
       commands: primary ? (guildCommands[primary.id] ?? []) : [],
       guildCommands,
       read: Object.fromEntries(Object.entries(read).filter(([id]) => visible.has(id))),
@@ -265,6 +303,8 @@ export class ClientApi {
       machine_icons: await this.machineIconsFor(v),
       // Each machine's own Discord bot (its Kimaki on Discord): messages by that user are the machine's.
       machine_bots: await this.machineBotsFor(v),
+      // Direct messages the viewer is in (Discord's private_channels).
+      private_channels: await Promise.all(this.hub.dms.of(v.userId).map((dm) => this.hub.dms.toAPI(dm, v.userId))),
       // Discord user ids that are a hub user here (the owner's Discord account): resolve <@id> through it.
       user_aliases: this.hub.mirror.aliases(),
     }
@@ -328,10 +368,11 @@ export class ClientApi {
   }
 
   async search(v: Viewer, q: string, options: { offset: number; order: 'newest' | 'oldest' }) {
-    const { total, results } = await this.hub.search.search(q.slice(0, 500), { ...options, userId: v.userId, channels: await this.hub.access.visibleChannels(v.userId) })
+    const searched = await this.hub.search.search(q.slice(0, 500), { ...options, userId: v.userId, channels: await this.hub.access.visibleChannels(v.userId) })
+    const { total, results } = searched
     const found = await this.withChannels(v, results.map((r) => r.messageId))
     const snippets = new Map(results.map((r) => [r.messageId, r.snippet]))
-    return { total, results: found.map((entry) => ({ ...entry, snippet: snippets.get(entry.message.id) ?? null })) }
+    return { total, ...('total_capped' in searched && { total_capped: true }), results: found.map((entry) => ({ ...entry, snippet: snippets.get(entry.message.id) ?? null })) }
   }
 
   async inbox(v: Viewer) {
@@ -397,7 +438,8 @@ export class ClientApi {
   // even exist for them) and where they hold `perm` (403 otherwise).
   private async channel(v: Viewer, channelId: string, perm = 0n) {
     const channel = await this.prisma.channel.findUnique({ where: { id: channelId } })
-    if (!channel || !this.hub.guildIds.has(channel.guildId ?? '') || !(await this.hub.access.can(v.userId, channelId, 0n))) throw new HttpError(404, 'Unknown channel')
+    const inHub = this.hub.guildIds.has(channel?.guildId ?? '') || this.hub.dms.isMember(v.userId, channelId)
+    if (!channel || !inHub || !(await this.hub.access.can(v.userId, channelId, 0n))) throw new HttpError(404, 'Unknown channel')
     if (perm && !(await this.hub.access.can(v.userId, channelId, perm))) throw new HttpError(403, 'Missing permissions')
     return channel
   }
@@ -420,6 +462,8 @@ export class ClientApi {
     const channel = await this.channel(v, channelId)
     if (channel.type === ChannelType.GuildCategory || channel.type === ChannelType.GuildVoice) throw new HttpError(400, 'Cannot post here')
     const thread = THREAD_TYPES.includes(channel.type)
+    const closed = this.hub.dms.closedNote(channelId)
+    if (closed) throw new HttpError(409, closed)
     if (!(await this.hub.access.can(v.userId, channelId, thread ? P.SEND_MESSAGES_IN_THREADS : P.SEND_MESSAGES))) throw new HttpError(403, 'You cannot send messages here')
     if (Array.isArray(body['attachmentIds']) && body['attachmentIds'].length && !(await this.hub.access.can(v.userId, channelId, P.ATTACH_FILES))) throw new HttpError(403, 'You cannot attach files here')
     const content = typeof body['content'] === 'string' ? body['content'].slice(0, 4000) : ''

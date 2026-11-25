@@ -27,6 +27,8 @@ function when(value: unknown): string {
   return Number.isNaN(date.getTime()) ? new Date(0).toISOString() : date.toISOString()
 }
 
+type Candidate = { channelId: string; text: Ref[]; embeds: Ref[]; at: string }
+
 export function extractRefs(content: string, embeds: string): Ref[] {
   const refs: Ref[] = []
   for (const re of THREAD_REFS) for (const m of content.matchAll(re)) refs.push({ thread: m[1]! })
@@ -133,15 +135,27 @@ export class Links {
     await this.reindex()
   }
 
-  private candidates = new Map<string, { channelId: string; content: string; embeds: string; at: string }>()
+  // Messages with references: only the references are kept (from the text and
+  // from embeds, apart, so an edit of one keeps the other), never the text.
+  private candidates = new Map<string, Candidate>()
 
   private async reindex() {
     if (!this.candidates.size) {
-      const rows = await this.prisma.message.findMany({
-        where: { OR: [{ content: { contains: 'ses_' } }, { content: { contains: '/channels/' } }, { content: { contains: '<#' } }, { content: { contains: '--thread' } }, { content: { contains: 'kimaki session' } }, { embeds: { contains: 'parentSessionId' } }] },
-        select: { id: true, channelId: true, content: true, embeds: true, timestamp: true },
-      })
-      for (const r of rows) this.candidates.set(r.id, { channelId: r.channelId, content: r.content, embeds: r.embeds, at: r.timestamp.toISOString() })
+      // In pages: a large history must not be held in memory at once.
+      for (let cursor: string | undefined; ; ) {
+        const rows = await this.prisma.message.findMany({
+          where: { ...(cursor && { id: { gt: cursor } }), OR: [{ content: { contains: 'ses_' } }, { content: { contains: '/channels/' } }, { content: { contains: '<#' } }, { content: { contains: '--thread' } }, { content: { contains: 'kimaki session' } }, { embeds: { contains: 'parentSessionId' } }] },
+          select: { id: true, channelId: true, content: true, embeds: true, timestamp: true },
+          orderBy: { id: 'asc' },
+          take: 1000,
+        })
+        for (const r of rows) {
+          const candidate = { channelId: r.channelId, text: extractRefs(r.content, '[]'), embeds: extractRefs('', r.embeds), at: r.timestamp.toISOString() }
+          if (candidate.text.length || candidate.embeds.length) this.candidates.set(r.id, candidate)
+        }
+        if (rows.length < 1000) break
+        cursor = rows.at(-1)!.id
+      }
     }
     this.byMessage.clear()
     for (const [id, m] of this.candidates) this.index(id, m)
@@ -156,9 +170,9 @@ export class Links {
     this.changed()
   }
 
-  private index(messageId: string, m: { channelId: string; content: string; embeds: string; at: string }) {
+  private index(messageId: string, m: Candidate) {
     const rows: Row[] = []
-    for (const ref of extractRefs(m.content, m.embeds)) {
+    for (const ref of [...m.text, ...m.embeds]) {
       const to = ref.thread ?? this.sessionThread.get(ref.session!)
       if (!to || to === m.channelId || !this.threads.has(to)) continue
       rows.push({ from: m.channelId, to, parent: !!ref.parent, messageId, at: m.at })
@@ -192,13 +206,13 @@ export class Links {
     }
     if ((event !== 'MESSAGE_CREATE' && event !== 'MESSAGE_UPDATE') || !data?.id || !data.channel_id) return
     const known = this.candidates.get(data.id)
-    const content: string = data.content ?? known?.content ?? ''
-    const embeds = data.embeds ? JSON.stringify(data.embeds) : (known?.embeds ?? '[]')
-    if (!extractRefs(content, embeds).length && !known) return
-    const m = { channelId: data.channel_id, content, embeds, at: data.timestamp ?? known?.at ?? new Date().toISOString() }
+    const text = typeof data.content === 'string' ? extractRefs(data.content, '[]') : (known?.text ?? [])
+    const embeds = data.embeds ? extractRefs('', JSON.stringify(data.embeds)) : (known?.embeds ?? [])
+    if (!text.length && !embeds.length && !known) return
+    const m: Candidate = { channelId: data.channel_id, text, embeds, at: data.timestamp ?? known?.at ?? new Date().toISOString() }
     this.candidates.set(data.id, m)
     // A reference to a session Kimaki only just started: look it up again soon.
-    if (extractRefs(content, embeds).some((r) => r.session && !this.sessionThread.has(r.session))) setTimeout(() => void this.loadSessions().catch(() => {}), 3000).unref()
+    if ([...text, ...embeds].some((r) => r.session && !this.sessionThread.has(r.session))) setTimeout(() => void this.loadSessions().catch(() => {}), 3000).unref()
     this.index(data.id, m)
     this.changed()
   }

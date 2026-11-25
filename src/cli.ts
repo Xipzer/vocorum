@@ -11,6 +11,7 @@
 //   machines icon <machine> avatar|guild_icon <image file|none>                 a machine's bot avatar or server icon
 //   devices add <name> [--ttl 30m]                  one-time pairing code, valid 10 minutes unless --ttl
 //   devices list | devices revoke <id|name>
+//   apps publish <dir> | apps list | apps remove <version>   Vocorum app releases the hub serves to its devices
 //   private setup --address IP [--name hub.home.arpa] [--port 47443] [--http-port 47080|off] [--allow CIDR,...]
 //                 HTTPS on one private address with the hub's own CA (restart the hub after)
 //   private status | private off | private retire-legacy   (stop serving the previous CA's certificate)
@@ -122,6 +123,7 @@ Get started
   doctor                   check everything, and say how to fix what is wrong
   pair <device>            a link and QR code that signs a new device in
   restart                  restart the hub
+  backup [dir]             a consistent copy of the hub while it runs
 
 Move from Discord
   discord scan             what is there, and what the bot cannot read (read only)
@@ -136,13 +138,18 @@ Bots and machines
   machines icon <machine> avatar|guild_icon <image file|none>
 
 People and devices
+  invite <name>            bring a friend: a message to send, a 24-hour link, your Tailscale steps
+  access <name>            what one person can see and do
   people invite|list|remove
   devices add|list|revoke
   requests [list]|deny|undo    changes agents asked for, which you approve in the app
-  request invite|role|channel|raw
+  request invite|remove|role|channel|raw
+  admin setup|status       a private Admin server where you ask your own agent to run the hub
+  projects add|list        a channel for a project folder in the hub's Kimaki
 
 Servers and settings
   guilds add|list|rename
+  channels list            every channel, by server
   config get|set
   private setup|status|off|retire-legacy    HTTPS on one private address
 
@@ -380,6 +387,26 @@ async function main() {
       const path = `/admin/machine-icons/${encodeURIComponent(name)}/${encodeURIComponent(kind)}`
       const result = file === 'none' ? await admin(config, 'DELETE', path) : await adminBytes(config, path, fs.readFileSync(file))
       console.log(JSON.stringify(result))
+      return
+    }
+    case 'apps publish': {
+      if (!name) throw new Error('usage: apps publish <dir with release.json, installers and .sig files>')
+      const { AppReleases } = await import('./app-releases.ts')
+      const result = new AppReleases(paths.apps).publish(name)
+      console.log(`Published Vocorum ${result.version} (${result.files} files). Signed-in apps see it on their next update check.`)
+      return
+    }
+    case 'apps list': {
+      const { AppReleases } = await import('./app-releases.ts')
+      const releases = new AppReleases(paths.apps).list()
+      for (const r of releases) console.log(`${r.version}\t${r.pub_date}\t${Object.keys(r.files).join(', ')}`)
+      if (releases.length === 0) console.log('No app releases.')
+      return
+    }
+    case 'apps remove': {
+      if (!name) throw new Error('usage: apps remove <version>')
+      const { AppReleases } = await import('./app-releases.ts')
+      console.log(new AppReleases(paths.apps).remove(name) ? `Removed ${name}.` : `No release ${name}.`)
       return
     }
     case 'devices add': {

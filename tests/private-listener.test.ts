@@ -127,6 +127,10 @@ test('setup page: a pairing code opens the app on pairing, and each step shows a
   const page = await withCode.text()
   expect(page).toContain(`href="${app}/#pair=ABCDE12345"`)
   expect(page).toContain(`<img class="ok" src="${app}/setup/ok.svg"`)
+  // The fingerprint to check comes first, before any step.
+  const fp = new crypto.X509Certificate(ca).fingerprint256
+  expect(page.indexOf(fp)).toBeGreaterThan(0)
+  expect(page.indexOf(fp)).toBeLessThan(page.indexOf('<h2>'))
   expect(withCode.headers.get('content-security-policy')).toBe(`default-src 'none'; style-src 'unsafe-inline'; img-src ${app}`)
   // The device it is opened on comes first; the others fold away.
   const iphone = await (await fetch(`http://127.0.0.1:${port}/`, { headers: { 'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)' } })).text()

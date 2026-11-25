@@ -136,3 +136,7 @@ CREATE TABLE IF NOT EXISTS "InteractionResponse" (
 CREATE UNIQUE INDEX "Reaction_messageId_userId_emoji_key" ON "Reaction"("messageId", "userId", "emoji");
 CREATE UNIQUE INDEX "ApplicationCommand_applicationId_guildId_name_key" ON "ApplicationCommand"("applicationId", "guildId", "name");
 CREATE UNIQUE INDEX "InteractionResponse_interactionToken_key" ON "InteractionResponse"("interactionToken");
+-- A channel's messages in order: every history page, thread state and search filter.
+CREATE INDEX "Message_channelId_id_idx" ON "Message"("channelId", "id");
+CREATE INDEX "Channel_parentId_idx" ON "Channel"("parentId");
+CREATE INDEX "Channel_guildId_idx" ON "Channel"("guildId");

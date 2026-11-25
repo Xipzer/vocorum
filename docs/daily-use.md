@@ -25,6 +25,20 @@ waiting for an answer, such as a question with buttons. Tap one to answer it.
   the app's settings.
 - Nothing is sent while the app is open on any of your devices.
 
+## Ask your admin agent
+
+If you use Kimaki, `vocorum admin setup` gives you a private Admin server with
+one channel, #admin. Write there in plain words, for example "is everything
+ok?", "invite sam" or "undo that", and your own agent runs the hub for you.
+
+- Checks and lists run straight away.
+- Any change shows you the command first, to accept or deny.
+- Anything that gives someone more access waits in your Inbox for your passkey.
+
+Only you and the admin bot are in that server, and the agent can only run
+`vocorum` commands, so other people's messages cannot steer it.
+`vocorum admin status` checks those guard rails.
+
 ## Devices
 
 In the app, Settings, Devices lists every signed-in device. Rename one, sign it
@@ -58,21 +72,33 @@ node bin/vocorum.js bots guilds <machine> 'Home,Side Projects'
 node bin/vocorum.js guilds list
 ```
 
-## People
+## Invite a friend
 
-You can invite others. They only see the channels their roles allow.
+On the hub:
 
 ```bash
-node bin/vocorum.js people invite <username> --guild Home    # code valid 24 hours
-node bin/vocorum.js people list
-node bin/vocorum.js people remove <username>
+vocorum invite sam --name "Sam"
 ```
+
+- Sam gets the Friends server. Your machines and agent sessions stay in Home,
+  which Sam cannot see. Use `--server` to pick another server.
+- It prints a message to send Sam, and your part: share this computer with Sam
+  in Tailscale (admin console, the machine's menu, Share).
+- You never need Sam's Tailscale email. The hub learns Sam's account when they
+  pair, and after that only that account works for Sam.
+- `vocorum welcome sam` makes a fresh link, for a new device or an expired code.
+- `vocorum access sam` shows exactly what Sam can see and do.
+- `vocorum people remove sam` signs out all of Sam's devices. Then remove the
+  share in Tailscale.
+
+Without Tailscale, Sam has to reach your private network some other way, such
+as WireGuard. Vocorum is never put on the internet.
 
 > Anyone who can talk to an agent bot can run commands on that machine. Kimaki
 > answers admins and people with the `kimaki` role. Only you can give that role.
 
 ## Backups
 
-Everything is in `~/.vocorum`. Stop the hub and copy the folder, or back up
-`twin.db`, `hub.db` and `attachments/` with your usual tool. The folder holds
-keys: keep the copy private.
+Everything is in `~/.vocorum`. `vocorum backup` makes a full copy while the hub
+runs, in `~/.vocorum/backups/` (or give it a folder). Add `--no-files` to leave
+attachments out. The copy holds keys: keep it private.

@@ -6,7 +6,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { EmojiPicker, rememberEmoji } from './EmojiPicker.tsx'
-import { useStore } from './store.ts'
+import { store, useStore } from './store.ts'
+import { Sheet, usePress, type SheetAt, type SheetSpec } from './Sheet.tsx'
+import { cronLabel, remindTime, whenPicker } from './remind.ts'
 import { api, type Attachment, type Command, type CommandOption, type InteractionResult, type Message } from './api.ts'
 import { Icon } from './icons.tsx'
 
@@ -611,6 +613,40 @@ export function Composer({
     setUploads((list) => list.filter((x) => x.key !== u.key))
   }
 
+  // Right-click or hold Send: post it later instead (text only; the hub posts it as you).
+  const [sheet, setSheet] = useState<SheetSpec | null>(null)
+  const canSchedule = useStore((d) => d.reminders !== null)
+  const schedule = async (when: { at: number } | { cron: string; at: number }) => {
+    const content = text
+    const s = await api.schedule({ channel_id: channelId, content, ...('cron' in when ? { cron: when.cron } : { at: when.at }) })
+    store.upsertScheduled(s)
+    setText((t) => (t === content ? '' : t))
+    store.notice('cron' in when ? `Scheduled: ${cronLabel(when.cron, s.next_at)}.` : `Message scheduled for ${remindTime(when.at)}.`)
+  }
+  const scheduleSheet = (at: SheetAt): SheetSpec => {
+    const now = new Date()
+    const nine = (days: number) => new Date(now.getFullYear(), now.getMonth(), now.getDate() + days, 9).getTime()
+    const options = [
+      { label: 'In 1 hour', at: now.getTime() + 3_600_000 },
+      { label: 'Tomorrow', at: nine(1) },
+      { label: 'Next week', at: nine(((8 - now.getDay()) % 7) || 7) },
+    ]
+    const run = (when: { at: number }) => void schedule(when).catch((e: Error) => onError(e.message))
+    return {
+      at,
+      title: 'Schedule message',
+      groups: [
+        [{ label: 'Send now', icon: 'send', run: () => void send() }],
+        options.map((o) => ({ label: o.label, sub: remindTime(o.at).replace(/^Tomorrow /, ''), icon: 'clock' as const, run: () => run({ at: o.at }) })),
+        [{ label: 'Pick a time', icon: 'pencil', run: () => whenPicker.open?.({ title: 'Schedule message', action: 'Schedule', repeat: true, onPick: schedule }) }],
+      ],
+    }
+  }
+  const sendPress = usePress((at) => {
+    if (!canSchedule || !text.trim()) return
+    if (uploads.length) return onError('Scheduled messages are text only. Remove the files to schedule it.')
+    setSheet(scheduleSheet(at))
+  })
   const send = async () => {
     if (matches.length && slashQuery !== '') {
       chooseCommand(matches[pick] ?? matches[0]!)
@@ -967,7 +1003,7 @@ export function Composer({
             </button>
           )}
           {text.trim() || uploads.length ? (
-            <button className="icon-button send" onClick={() => void send()} aria-label="Send">
+            <button className="icon-button send" {...sendPress} onClick={() => void send()} aria-label="Send" title={canSchedule ? 'Send (right-click to schedule)' : 'Send'}>
               <Icon name="send" />
             </button>
           ) : (
@@ -983,6 +1019,7 @@ export function Composer({
           )}
         </div>
       )}
+      {sheet && <Sheet spec={sheet} onClose={() => setSheet(null)} />}
     </>
   )
 }

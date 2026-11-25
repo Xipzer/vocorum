@@ -4,17 +4,23 @@
 import { isMac } from './columns.ts'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { api, type Channel, type Component, type HubState, type InteractionResult, type Message } from './api.ts'
-import { Avatar, machineIcon } from './Avatar.tsx'
+import { Avatar, DmAvatar, machineIcon } from './Avatar.tsx'
 import { EmojiPicker } from './EmojiPicker.tsx'
 import { Components, type Interact } from './components.tsx'
 import { Attachments, Embeds, Forwarded, onlyEmbedLink, PollCard, stamp, Stickers } from './Media.tsx'
 import { Composer } from './Composer.tsx'
 import { Markdown, type MarkdownContext } from './markdown.tsx'
-import { snowflakeGt, store, THREAD_TYPES, useStore } from './store.ts'
+import { dmName, dmUser, isDm, snowflakeGt, store, THREAD_TYPES, useStore } from './store.ts'
 import { workspaceWaiting } from './Workspace.tsx'
 import { Icon, type IconName } from './icons.tsx'
-import { clock, plain, wallHue, machineLabel } from './text.ts'
+import { clock, displayName, plain, wallHue, machineLabel } from './text.ts'
 import { shareOrigin } from './native.ts'
+import { remindSheet, remindTime } from './remind.ts'
+import { parsePermission, PermissionCard } from './Permission.tsx'
+import { RequestCard } from './Panels.tsx'
+import type { HubRequest } from './api.ts'
+
+const NO_REQUESTS: HubRequest[] = []
 import { bellSheet, effective } from './notify.ts'
 import { below, Sheet, sessionActions, usePress, type SheetAction, type SheetAt, type SheetSpec } from './Sheet.tsx'
 import { can, isHubOwner, P } from './perms.ts'
@@ -256,7 +262,14 @@ function MessageItem({
   const embeds = message.embeds.filter((embed) => !feed || !embed.type || embed.type === 'rich')
   const used = message.interaction_metadata ?? message.interaction
   const usedName = message.interaction_metadata?.name ?? message.interaction?.name
-  const needs = current && message.author.bot && (hasOpenComponents(message.components) || (message.content.includes(`<@${state.me.id}>`) && !FOOTER.test(message.content)))
+  // Kimaki's permission prompt shows as an approval card.
+  const ask = message.author.bot ? parsePermission(message.content) : null
+  // A link to one of the hub's requests (an agent filed it) carries the request's card,
+  // so the owner approves it in the conversation.
+  const requestIds = message.author.bot ? [...new Set([...message.content.matchAll(/#\/requests\/([0-9a-f]{12})\b/g)].map((m) => m[1]!))] : []
+  const allRequests = useStore((d) => (requestIds.length ? d.requests : NO_REQUESTS))
+  const linked = requestIds.length ? allRequests.filter((r) => requestIds.includes(r.id)) : NO_REQUESTS
+  const needs = !ask && current && message.author.bot && (hasOpenComponents(message.components) || (message.content.includes(`<@${state.me.id}>`) && !FOOTER.test(message.content)))
   // Kimaki's errors start with a cross: they read red, and an actionable one gets a red band.
   const failed = message.author.bot && /^\s*[×✗✕❌]\s/.test(message.content)
   const interact: Interact = async (body) => {
@@ -279,9 +292,10 @@ function MessageItem({
         ],
         [
           ...(message.content ? [{ label: 'Copy text', icon: 'copy' as const, run: () => void navigator.clipboard?.writeText(message.content) }] : []),
+          ...(store.data.reminders ? [{ label: 'Remind me', icon: 'clock' as const, run: () => onSheet(remindSheet(at, { channelId, messageId: message.id }, onError, (r) => store.notice(`Reminder set for ${remindTime(r.at)}.`))) }] : []),
           { label: 'Mark unread', icon: 'eye', run: () => store.markUnread(channelId, message.id) },
           { label: 'Copy message link', icon: 'link', run: () => void navigator.clipboard?.writeText(`${shareOrigin()}/#/c/${channelId}/${message.id}`) },
-          { label: 'Copy message ID', icon: 'copy', run: () => void navigator.clipboard?.writeText(message.id) },
+          { label: 'Copy message ID', icon: 'hash', run: () => void navigator.clipboard?.writeText(message.id) },
           ...(pinOk ? [{ label: message.pinned ? 'Unpin' : 'Pin', icon: 'pin' as const, run: () => void api.pin(channelId, message.id, !message.pinned).catch((e: Error) => onError(e.message)) }] : []),
         ],
         mine && message.content ? [{ label: 'Edit', icon: 'pencil', run: () => setEditing(message.content) }] : [],
@@ -403,7 +417,7 @@ function MessageItem({
             <div className="subtext">Esc to cancel, Enter to save</div>
           </div>
         ) : (
-          !v2 && !onlyEmbedLink(message.content, embeds) && <Markdown text={message.content} ctx={ctx} />
+          ask ? <PermissionCard ask={ask} components={message.components} interact={interact} /> : !v2 && !onlyEmbedLink(message.content, embeds) && <Markdown text={message.content} ctx={ctx} />
         )}
         {editing === null && message.edited_timestamp && !message.author.bot && (
           <span className="edited-tail" title={`Edited ${stamp(message.edited_timestamp)}`}>
@@ -415,7 +429,14 @@ function MessageItem({
         <Attachments attachments={message.attachments} flags={message.flags} voice={(a) => <VoiceMessage url={a.url} duration={a.duration_secs} waveform={a.waveform} />} />
         {message.sticker_items?.length ? <Stickers items={message.sticker_items} /> : null}
         {message.poll && <PollCard poll={message.poll} />}
-        {message.components?.length ? <Components components={message.components} ctx={ctx} interact={interact} /> : null}
+        {linked.length > 0 && (
+          <div className="inline-requests">
+            {linked.map((r) => (
+              <RequestCard key={r.id} request={r} />
+            ))}
+          </div>
+        )}
+        {message.components?.length && !ask ? <Components components={message.components} ctx={ctx} interact={interact} /> : null}
         {((message.flags ?? 0) & EPHEMERAL) !== 0 && <div className="ephemeral">Only you can see this</div>}
         {message.reactions_summary?.length ? (
           <div className="reactions">
@@ -690,6 +711,9 @@ export function Chat({
   const [sheet, setSheet] = useState<SheetSpec | null>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
+  const notice = useStore((d) => d.notice)
+  const scheduledHere = useStore((d) => d.scheduled.filter((s) => s.channel_id === channel.id && s.status === 'pending').length)
+  const schedulesOn = useStore((d) => d.reminders !== null)
   const [, tick] = useState(0)
   // Scrolled a screen or more above the newest, and the "New messages" line out of sight above.
   const [away, setAway] = useState(false)
@@ -708,6 +732,9 @@ export function Chat({
   const favourite = useStore((d) => d.favourites.includes(channel.id))
   const muted = useStore((d) => (d.state ? effective(d.state, channel).mutedUntil !== null : false))
   const phone = () => window.matchMedia('(max-width: 767px)').matches
+  const header = useRef<HTMLElement>(null)
+  // Matches the header's container query: below 640px of chat, some buttons live in More.
+  const narrow = () => (header.current?.getBoundingClientRect().width ?? window.innerWidth) <= 640
   // Title tap: everything the header holds, as one sheet (the only way in on phones).
   // The More menu (desktop "…", phone title tap): everything that isn't on the toolbar.
   const threadSheet = (at: SheetAt) =>
@@ -726,8 +753,10 @@ export function Chat({
               { label: 'Search', icon: 'search', run: onSearch },
             ]
           : []) as SheetAction[],
+        schedulesOn ? [{ label: `Scheduled${scheduledHere ? ` (${scheduledHere})` : ''}`, icon: 'clock' as const, run: () => sessionActions.scheduled?.(channel.id) }] : [],
         [
-          ...(phone() ? [{ label: `Linked sessions${linkCount ? ` (${linkCount})` : ''}`, icon: 'link' as const, run: onLinks }, ...(isHubOwner() ? [{ label: `Services${serviceCount ? ` (${serviceCount})` : ''}`, icon: 'server' as const, run: onServices }] : [])] : []),
+          // Below 1100px wide these leave the toolbar for this menu, so the title keeps room.
+          ...(!dm && narrow() ? [...(onWorkspace && !phone() ? [{ label: 'Workspace', icon: 'sidebar' as const, run: onWorkspace }] : []), { label: `Linked sessions${linkCount ? ` (${linkCount})` : ''}`, icon: 'link' as const, run: onLinks }, ...(isHubOwner() ? [{ label: `Services${serviceCount ? ` (${serviceCount})` : ''}`, icon: 'server' as const, run: onServices }] : [])] : []),
         ],
         [
           ...(manageThread ? [{ label: 'Rename', icon: 'pencil' as const, run: () => setRenaming(title) }] : []),
@@ -898,11 +927,18 @@ export function Chat({
     const user = state.users.find((u) => u.id === id)
     return { name: user?.global_name ?? user?.username ?? 'Someone', bot: Boolean(user?.bot), seconds: Math.round((now - typingSince.current[id]!) / 1000) }
   })
-  const title = plain(channel.name ?? '', ctx.userName, ctx.channelName)
+  // The private Admin server: marked apart so it is never taken for an ordinary server.
+  const adminHere = Boolean(state.admin_guild_id) && (channel.guild_id ?? state.guild.id) === state.admin_guild_id
+  // A direct message is named after the other person, as in Discord.
+  const dm = isDm(channel)
+  const dmWith = dm ? dmUser(channel, state.me.id) : undefined
+  const title = dm ? dmName(channel, state.me.id) : plain(channel.name ?? '', ctx.userName, ctx.channelName)
+  // Why this channel takes no messages, with the machine named as everywhere else.
+  const note = channel.note ? (channel.machine ? channel.note.replace(channel.machine, machineLabel(channel.machine)) : channel.note) : null
 
   return (
-    <section className={`chat${split ? ' split' : ''}`} style={{ '--wall': wallHue(project.name ?? '') } as CSSProperties}>
-      <header className="chat-header">
+    <section className={`chat${split ? ' split' : ''}${adminHere ? ' admin' : ''}`} style={{ '--wall': adminHere ? '245 166 35' : wallHue(project.name ?? '') } as CSSProperties}>
+      <header className="chat-header" ref={header}>
         {!split && <button className="icon-button menu" onClick={onMenu} aria-label="Channels">
           <Icon name="back" size={22} className="phone-only" />
           <Icon name="sidebar" size={20} className="desk-only-icon" />
@@ -931,15 +967,21 @@ export function Chat({
             <div className="crumbs">
               {parent && !split && (
                 <>
-                  <a className="crumb-parent desk-only" href={`#/c/${parent.id}`} title={`Go to #${parent.name}`}>
+                  <a className="crumb-parent desk-only wide-only" href={`#/c/${parent.id}`} title={`Go to #${parent.name}`}>
                     <Icon name="hash" size={18} />
                     {parent.name}
                   </a>
-                  <Icon name="chevron" size={14} className="crumb-sep desk-only" />
+                  <Icon name="chevron" size={14} className="crumb-sep desk-only wide-only" />
                 </>
               )}
               <button className="chat-title" onClick={(e) => phone() && threadSheet(below(e.currentTarget, 'start'))} aria-label={`${title}: options`}>
-                <Icon name={isThread ? 'thread' : 'hash'} size={18} className="title-icon" />
+                {dm ? (
+                  <span className="title-avatar">
+                    <DmAvatar channel={channel} size="inline" />
+                  </span>
+                ) : (
+                  <Icon name={isThread ? 'thread' : 'hash'} size={18} className="title-icon" />
+                )}
                 <span className="title-text">{title}</span>
               </button>
             </div>
@@ -975,33 +1017,39 @@ export function Chat({
             <button className="icon-button phone-only-button" onClick={onSearch} aria-label="Search messages">
               <Icon name="search" />
             </button>
-            {onWorkspace && (
-              <button className={`icon-button desk-only${waiting ? ' with-dot' : ''}`} onClick={onWorkspace} aria-pressed={open === 'workspace'} aria-label="Workspace" title="Workspace: what this thread made and what it waits on">
+            {onWorkspace && !dm && (
+              <button className={`icon-button desk-only fold${waiting ? ' with-dot' : ''}`} onClick={onWorkspace} aria-pressed={open === 'workspace'} aria-label="Workspace" title="Workspace: what this thread made and what it waits on">
                 <Icon name="sidebar" />
               </button>
             )}
-            <button className="icon-button desk-only" onClick={onThreads} aria-pressed={open === 'threads'} aria-label="Threads" title="Threads">
-              <Icon name="threads" />
-            </button>
+            {!dm && (
+              <button className="icon-button desk-only" onClick={onThreads} aria-pressed={open === 'threads'} aria-label="Threads" title="Threads">
+                <Icon name="threads" />
+              </button>
+            )}
             <button className={`icon-button desk-only${muted ? ' muted-bell' : ''}`} onClick={(e) => setSheet(bellSheet(state, channel, below(e.currentTarget), setToast))} aria-label="Notification settings" title="Notification settings">
               <Icon name="bell" />
             </button>
             <button className="icon-button desk-only" onClick={onPins} aria-pressed={open === 'pins'} aria-label="Pinned messages" title="Pinned messages">
               <Icon name="pin" />
             </button>
-            <button className={`icon-button desk-only${linkCount ? ' with-count' : ''}`} onClick={onLinks} aria-pressed={open === 'links'} aria-label={`Linked sessions: ${linkCount}`} title="Linked sessions: agents this one works with">
+{!dm && (
+            <button className={`icon-button desk-only fold${linkCount ? ' with-count' : ''}`} onClick={onLinks} aria-pressed={open === 'links'} aria-label={`Linked sessions: ${linkCount}`} title="Linked sessions: agents this one works with">
               <Icon name="link" />
               {linkCount > 0 && <span className="num">{linkCount}</span>}
             </button>
-            {isHubOwner() && (
-              <button className={`icon-button desk-only${serviceCount ? ' with-count' : ''}`} onClick={onServices} aria-pressed={open === 'services'} aria-label={`Services: ${serviceCount}`} title="Services this agent started or runs">
+            )}
+            {isHubOwner() && !dm && (
+              <button className={`icon-button desk-only fold${serviceCount ? ' with-count' : ''}`} onClick={onServices} aria-pressed={open === 'services'} aria-label={`Services: ${serviceCount}`} title="Services this agent started or runs">
                 <Icon name="server" />
                 {serviceCount > 0 && <span className="num">{serviceCount}</span>}
               </button>
             )}
-            <button className="icon-button desk-only" onClick={onMembers} aria-pressed={open === 'members'} aria-label="Members" title="Members">
-              <Icon name="members" />
-            </button>
+            {!dm && (
+              <button className="icon-button desk-only" onClick={onMembers} aria-pressed={open === 'members'} aria-label="Members" title="Members">
+                <Icon name="members" />
+              </button>
+            )}
             <button className="icon-button desk-only" onClick={(e) => threadSheet(below(e.currentTarget))} aria-label="More" title="More">
               <Icon name="more" />
             </button>
@@ -1049,7 +1097,25 @@ export function Chat({
         }}
       >
         <div ref={content}>
-          {entry && !entry.hasMore && (
+          {entry && !entry.hasMore && dm && (
+            <div className="channel-start dm-start">
+              <DmAvatar channel={channel} size="panel" />
+              <h2>{title}</h2>
+              <span className="dm-start-user">{channel.machine ? 'Agent' : dmWith?.username}</span>
+              <p>
+                {channel.machine ? (
+                  <>
+                    Direct messages from the agent on <b>{title}</b> show here.
+                  </>
+                ) : (
+                  <>
+                    This is the beginning of your direct message history with <b>{title}</b>.
+                  </>
+                )}
+              </p>
+            </div>
+          )}
+          {entry && !entry.hasMore && !dm && (
             <div className="channel-start">
               <span className="start-icon">
                 <Icon name={isThread ? 'thread' : 'hash'} size={28} />
@@ -1103,9 +1169,9 @@ export function Chat({
           </div>
         )}
       </div>
-      {output ? (
+      {output || note ? (
         <div className="output-bar">
-          {toast && (
+          {toast ? (
             <div className="snackbar" role="alert">
               <Icon name="error" size={18} />
               <span>{toast}</span>
@@ -1113,11 +1179,20 @@ export function Chat({
                 <Icon name="close" size={16} />
               </button>
             </div>
+          ) : (
+            notice && (
+              <div className="snackbar ok" role="status">
+                <Icon name="check" size={18} />
+                <span>{notice}</span>
+              </div>
+            )
           )}
-          <span>Output only. Agents post here; there is nothing to reply to.</span>
-          <button className="link-button" onClick={() => void store.setOutput(channel, false)}>
-            Allow replies
-          </button>
+          <span>{note ?? 'Output only. Agents post here; there is nothing to reply to.'}</span>
+          {!note && (
+            <button className="link-button" onClick={() => void store.setOutput(channel, false)}>
+              Allow replies
+            </button>
+          )}
         </div>
       ) : !sendOk ? (
         <div className="archived-bar" role="status">
@@ -1133,7 +1208,7 @@ export function Chat({
         </div>
       ) : (
         <div className="footer">
-          {toast && (
+          {toast ? (
             <div className="snackbar" role="alert">
               <Icon name="error" size={18} />
               <span>{toast}</span>
@@ -1141,6 +1216,13 @@ export function Chat({
                 <Icon name="close" size={16} />
               </button>
             </div>
+          ) : (
+            notice && (
+              <div className="snackbar ok" role="status">
+                <Icon name="check" size={18} />
+                <span>{notice}</span>
+              </div>
+            )
           )}
           {working.length > 0 && (
             <div className="footer-line">
@@ -1150,9 +1232,17 @@ export function Chat({
               </span>
             </div>
           )}
+          {scheduledHere > 0 && working.length === 0 && (
+            <div className="footer-line">
+              <button className="link-button scheduled-link num" onClick={() => sessionActions.scheduled?.(channel.id)}>
+                <Icon name="clock" size={14} />
+                {scheduledHere} scheduled {scheduledHere === 1 ? 'message' : 'messages'}
+              </button>
+            </div>
+          )}
           <Composer
             channelId={channel.id}
-            placeholder={`Message ${isThread ? clip(title, window.matchMedia('(max-width: 767px)').matches ? 22 : 36) : `#${channel.name ?? ''}`}`}
+            placeholder={adminHere && !isThread ? 'Ask your admin agent' : `Message ${dm ? `@${title}` : isThread ? clip(title, window.matchMedia('(max-width: 767px)').matches ? 22 : 36) : `#${channel.name ?? ''}`}`}
             commands={store.commandsFor(channel.id)}
             channels={state.channels.filter((c) => c.type === 0 && (c.guild_id ?? state.guild.id) === (channel.guild_id ?? state.guild.id)).map((c) => ({ id: c.id, name: c.name ?? '' }))}
             replyTo={replyTo}

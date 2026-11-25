@@ -5,22 +5,23 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { createPortal } from 'react-dom'
 import { ago } from './SettingsKit.tsx'
 import { startAuthentication, startRegistration } from '@simplewebauthn/browser'
-import { api, connectEvents, type Channel, type Guild, type HubState, type LinkKind, type SessionSummary } from './api.ts'
-import { Avatar, machineIcon } from './Avatar.tsx'
+import { api, connectEvents, type Channel, type Guild, type HubState, type LinkKind, type SessionSummary, type User } from './api.ts'
+import { Avatar, DmAvatar, machineIcon } from './Avatar.tsx'
 import { Chat } from './Chat.tsx'
 import { Overview } from './Overview.tsx'
 import { SettingsHost } from './Settings.tsx'
 import { can, P } from './perms.ts'
-import { Empty, Inbox, InboxPanel, LinksPanel, MembersPanel, PinsPanel, SearchPanel, ServicesPanel, ThreadsPanel } from './Panels.tsx'
-import { below, Sheet, sessionActions, usePress, type SheetSpec } from './Sheet.tsx'
+import { Empty, Inbox, InboxPanel, ScheduledPanel, LinksPanel, MembersPanel, PinsPanel, SearchPanel, ServicesPanel, ThreadsPanel } from './Panels.tsx'
+import { below, Sheet, sessionActions, usePress, type SheetAt, type SheetSpec } from './Sheet.tsx'
 import type { MarkdownContext } from './markdown.tsx'
 import { ModalDialog, type OpenModal } from './Modal.tsx'
-import { snowflakeGt, store, useStore } from './store.ts'
+import { DM_GUILD, dmName, dmUser, isDm, snowflakeGt, store, useStore } from './store.ts'
 import { bellSheet, useFocusReporting, useNotificationClicks } from './notify.ts'
 import { native, shareOrigin } from './native.ts'
 import { NativeLogin } from './NativeLogin.tsx'
 import { loginError } from './login.ts'
 import { Tooltips } from './Tooltip.tsx'
+import { WhenHost } from './When.tsx'
 import { WorkspacePanel } from './Workspace.tsx'
 import { QuickSwitcher, rememberVisit, ShortcutSheet } from './Switcher.tsx'
 import { LoadingMark } from './components.tsx'
@@ -28,7 +29,7 @@ import { initColumns, keys, startResize, toggleColumn, useColumnKeys, useColumns
 
 initColumns()
 import { Icon, type IconName } from './icons.tsx'
-import { plain, machineLabel } from './text.ts'
+import { plain, machineLabel, displayName } from './text.ts'
 
 const LIVE_THREADS = 5
 
@@ -257,7 +258,8 @@ function InboxButton() {
   const mentions = useStore((d) => Object.values(d.mentions).reduce((a, b) => a + b, 0))
   const waiting = useStore((d) => Object.values(d.sessions).filter((s) => s.state === 'waiting' || s.state === 'failed').length)
   const requests = useStore((d) => d.requests.filter((r) => r.status === 'pending' && r.expires_at > Date.now()).length)
-  const count = mentions + waiting + requests
+  const due = useStore((d) => (d.reminders ?? []).filter((r) => r.due).length)
+  const count = mentions + waiting + requests + due
   return (
     <button className={`icon-button inbox-button${count ? ' with-count' : ''}`} onClick={() => sessionActions.inbox?.()} aria-label={count ? `Inbox: ${count}` : 'Inbox'} title="Inbox">
       <Icon name="bell" />
@@ -495,19 +497,59 @@ function GuildRail({ guilds, current, onGuild }: { guilds: Guild[]; current: str
   const all = [...state.channels, ...state.threads]
   return (
     <div className="rail" role="navigation" aria-label="Servers">
-      {guilds.map((g) => {
+      {state.private_channels && <DmRail current={current} onGuild={onGuild} />}
+      {[...guilds.filter((g) => g.id !== state.admin_guild_id), ...guilds.filter((g) => g.id === state.admin_guild_id)].map((g) => {
+        const admin = g.id === state.admin_guild_id
         const mine = all.filter((c) => (c.guild_id ?? state.guild.id) === g.id)
         const unread = g.id !== current && mine.some((c) => snowflakeGt(c.last_message_id, seen[c.id]))
         const count = mine.reduce((sum, c) => sum + (mentions[c.id] ?? 0), 0)
         return (
-          <button key={g.id} className={`rail-item${g.id === current ? ' active' : ''}${unread ? ' unread' : ''}`} onClick={() => onGuild(g.id)} title={g.name} aria-label={`${g.name}${count ? `, ${count} mentions` : ''}`} aria-current={g.id === current}>
+          <Fragment key={g.id}>
+          {admin && <i className="rail-line" aria-hidden />}
+          <button className={`rail-item${g.id === current ? ' active' : ''}${unread ? ' unread' : ''}${admin ? ' admin' : ''}`} onClick={() => onGuild(g.id)} title={admin ? `${g.name}: only you and your admin agent` : g.name} aria-label={`${g.name}${count ? `, ${count} mentions` : ''}`} aria-current={g.id === current}>
             <i className="rail-pip" />
             <span className={`rail-guild${g.icon ? ' has-icon' : ''}`}>{g.icon ? <img src={`/client/guild-icons/${g.id}?v=${g.icon}`} alt="" /> : initials(g.name)}</span>
             {count > 0 && <span className="rail-badge num">{count > 99 ? '99+' : count}</span>}
           </button>
+          </Fragment>
         )
       })}
     </div>
+  )
+}
+
+// Discord's Home button and, under it, a direct message with unread messages as its
+// person's avatar with the count; a line parts them from the servers.
+function DmRail({ current, onGuild }: { current: string; onGuild: (id: string) => void }) {
+  const state = useStore((d) => d.state)!
+  const seen = useStore((d) => d.seen)
+  const mentions = useStore((d) => d.mentions)
+  const dms = state.channels.filter(isDm)
+  const unread = dms.filter((c) => snowflakeGt(c.last_message_id, seen[c.id]))
+  const home = current === DM_GUILD
+  return (
+    <>
+      <button className={`rail-item${home ? ' active' : ''}${!home && unread.length ? ' unread' : ''}`} onClick={() => onGuild(DM_GUILD)} title="Direct messages" aria-label="Direct messages" aria-current={home}>
+        <i className="rail-pip" />
+        <span className="rail-guild rail-home">
+          <Icon name="chat" size={22} />
+        </span>
+      </button>
+      {unread.slice(0, 5).map((c) => {
+        const name = dmName(c, state.me.id)
+        const count = mentions[c.id] ?? 0
+        return (
+          <a key={c.id} className="rail-item unread" href={`#/c/${c.id}`} title={name} aria-label={`${name}${count ? `, ${count} unread` : ''}`}>
+            <i className="rail-pip" />
+            <span className="rail-guild has-icon rail-dm">
+              <DmAvatar channel={c} size="panel" />
+            </span>
+            {count > 0 && <span className="rail-badge num">{count > 99 ? '99+' : count}</span>}
+          </a>
+        )
+      })}
+      <i className="rail-line" aria-hidden />
+    </>
   )
 }
 
@@ -629,6 +671,7 @@ function Sidebar({ state, current, open, onOpen, ctx, guild, onGuild, onThreads 
   const machines = useStore((d) => d.machines)
   const favourites = useStore((d) => d.favourites)
   const mentionCounts = useStore((d) => d.mentions)
+  const scheduledCount = useStore((d) => d.scheduled.filter((s) => s.status === 'pending').length + (d.reminders ?? []).filter((r) => !r.due).length + d.routines.reduce((n, m) => n + m.routines.length, 0))
   // This server's mentions only; the inbox bell in the user panel counts every server.
   const totalMentions = Object.entries(mentionCounts).reduce((a, [id, n]) => (store.guildOf(id) === guild ? a + n : a), 0)
   const [sheet, setSheet] = useState<SheetSpec | null>(null)
@@ -672,6 +715,10 @@ function Sidebar({ state, current, open, onOpen, ctx, guild, onGuild, onThreads 
       {guilds.length > 0 && <GuildRail guilds={guilds} current={guild} onGuild={onGuild} />}
       {guilds.length > 0 && <ColumnHandle id="rail" label="Server list" />}
       <div className="side-main">
+      {guild === DM_GUILD ? (
+        <DmList state={state} current={current} onOpen={onOpen} />
+      ) : (
+      <>
       <div className="side-head">
         <button
           className="side-title"
@@ -702,10 +749,17 @@ function Sidebar({ state, current, open, onOpen, ctx, guild, onGuild, onThreads 
           }}
         >
           <span className="side-title-pill">
+            {guild === state.admin_guild_id && <Icon name="shield" size={16} className="admin-mark" />}
             <span>{guildName}</span>
             <Icon name="down" size={16} />
           </span>
         </button>
+        {guild === state.admin_guild_id && (
+          <p className="admin-note">
+            <Icon name="shield" size={14} />
+            Only you and your admin agent.
+          </p>
+        )}
         <label className="search">
           <Icon name="search" size={18} />
           <input ref={search} value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === 'Escape' && setQuery('')} placeholder="Search" aria-label="Search sessions" />
@@ -730,6 +784,13 @@ function Sidebar({ state, current, open, onOpen, ctx, guild, onGuild, onThreads 
             <Icon name="at" size={18} />
             <span className="channel-name">Mentions</span>
             {totalMentions > 0 && <span className="badge num">{totalMentions}</span>}
+          </button>
+        )}
+        {!q && scheduledCount > 0 && (
+          <button className="channel overview-row" onClick={() => sessionActions.scheduled?.()}>
+            <Icon name="clock" size={18} />
+            <span className="channel-name">Scheduled</span>
+            <span className="meta num">{scheduledCount}</span>
           </button>
         )}
         {favouriteThreads.length > 0 && (
@@ -786,12 +847,102 @@ function Sidebar({ state, current, open, onOpen, ctx, guild, onGuild, onThreads 
         })}
       </div>
         <ListPills list={listRef} edge="bottom" />
+      </>
+      )}
       </div>
       <UserPanel state={state} />
       <ColumnHandle id="side" label="Channel list" />
       {sheet && <Sheet spec={sheet} onClose={() => setSheet(null)} />}
     </nav>
   )
+}
+
+// Direct messages in the channel list's place: a finder, then people, newest first, as
+// Discord's DM list (avatar, name, status; bold when unread, a red count for new ones).
+function DmList({ state, current, onOpen }: { state: HubState; current: string | null; onOpen: (id: string) => void }) {
+  const seen = useStore((d) => d.seen)
+  const mentions = useStore((d) => d.mentions)
+  const machines = useStore((d) => d.machines)
+  const [query, setQuery] = useState('')
+  const [sheet, setSheet] = useState<SheetSpec | null>(null)
+  const q = query.trim().toLowerCase()
+  const me = state.me.id
+  const dms = state.channels
+    .filter(isDm)
+    .map((c) => ({ c, user: dmUser(c, me), name: dmName(c, me) }))
+    .filter(({ user, name }) => !q || `${name} ${user?.username ?? ''}`.toLowerCase().includes(q))
+    .sort((a, b) => (snowflakeGt(a.c.last_message_id ?? a.c.id, b.c.last_message_id ?? b.c.id) ? -1 : 1))
+  const start = (at: SheetAt) => setSheet(newDmSheet(state, at, onOpen))
+  return (
+    <>
+      <div className="side-head">
+        <div className="side-title static">
+          <span className="side-title-pill">
+            <span>Direct messages</span>
+          </span>
+        </div>
+        <label className="search">
+          <Icon name="search" size={18} />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === 'Escape' && setQuery('')} placeholder="Find a conversation" aria-label="Find a conversation" />
+        </label>
+      </div>
+      <div className="channel-list dm-list">
+        <div className="category">
+          <div className="category-name static dm-head">
+            Direct messages
+            <button className="icon-button dm-new" onClick={(e) => start(below(e.currentTarget, 'end'))} aria-label="New message" title="New message">
+              <Icon name="plus" size={16} />
+            </button>
+          </div>
+          {dms.map(({ c, user, name }) => {
+            const unread = c.id !== current && snowflakeGt(c.last_message_id, seen[c.id])
+            const count = c.id === current ? 0 : (mentions[c.id] ?? 0)
+            const status = c.machine ? (machines.find((m) => m.name.toLowerCase() === c.machine!.toLowerCase())?.online === false ? 'offline' : 'online') : user ? (state.presence?.[user.id]?.status ?? 'offline') : 'offline'
+            return (
+              <button key={c.id} data-nav={c.id} className={`channel dm-row${c.id === current ? ' active' : ''}${unread ? ' unread' : ''}`} onClick={() => onOpen(c.id)}>
+                <span className="dm-avatar">
+                  <DmAvatar channel={c} size="panel" />
+                  <i className={`presence ${status}`} />
+                </span>
+                <span className="channel-name">{name}</span>
+                {(c.machine || user?.bot) && <span className="bot-tag">BOT</span>}
+                {count > 0 && <span className="badge num">{count > 99 ? '99+' : count}</span>}
+              </button>
+            )
+          })}
+        </div>
+        {dms.length === 0 &&
+          (q ? (
+            <Empty icon="search" title="No conversations match" />
+          ) : (
+            <div className="dm-empty">
+              <Empty icon="chat" title="No direct messages yet">
+                Talk to one person, away from the channels.
+              </Empty>
+              <button className="button primary" onClick={(e) => start(below(e.currentTarget))}>
+                New message
+              </button>
+            </div>
+          ))}
+      </div>
+      {sheet && <Sheet spec={sheet} onClose={() => setSheet(null)} />}
+    </>
+  )
+}
+
+// Who to write to: the people you share a server with (agents work in project channels).
+function newDmSheet(state: HubState, at: SheetAt, onOpen: (id: string) => void): SheetSpec {
+  const people = state.users.filter((u) => u.id !== state.me.id && !u.bot).sort((a, b) => displayName(a).localeCompare(displayName(b)))
+  const open = (to: { recipient_id: string } | { machine: string }) => void store.openDm(to).then((c) => onOpen(c.id)).catch(() => {})
+  return {
+    at,
+    title: 'New message',
+    groups: [
+      people.length
+        ? people.map((u) => ({ label: displayName(u), sub: `@${u.username}`, icon: 'at' as const, run: () => open({ recipient_id: u.id }) }))
+        : [{ label: 'Invite people', sub: 'No one else is on this hub yet', icon: 'members' as const, run: () => sessionActions.settings?.('members') }],
+    ],
+  }
 }
 
 // A new server: what to do first, as Discord's welcome checklist. Commands copy on click.
@@ -842,7 +993,7 @@ function Main() {
   // shows that channel rather than leaving the list over it.
   useEffect(() => {
     const onHash = () => {
-      if (window.matchMedia('(max-width: 767px)').matches && /^#\/c\//.test(location.hash)) setDrawer(false)
+      if (window.matchMedia('(max-width: 767px)').matches && /^#\/(c\/|overview$|inbox$)/.test(location.hash)) setDrawer(false)
     }
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
@@ -863,7 +1014,7 @@ function Main() {
   }, [current, openGuild])
   const openDrawer = useCallback(() => setDrawer(true), [])
   useSwipeBack(!drawer && !linkSheet && !modal, openDrawer)
-  const [panel, setPanel] = useState<{ kind: 'search'; q?: string } | { kind: 'pins' | 'links' | 'threads' | 'members' | 'split' | 'workspace'; channelId: string } | { kind: 'services'; threadId?: string } | { kind: 'inbox' } | null>(null)
+  const [panel, setPanel] = useState<{ kind: 'search'; q?: string } | { kind: 'pins' | 'links' | 'threads' | 'members' | 'split' | 'workspace'; channelId: string } | { kind: 'services'; threadId?: string } | { kind: 'inbox' } | { kind: 'scheduled'; channelId?: string } | null>(null)
   // Channel panels follow the open channel, and close on pages that aren't channels.
   useEffect(() => {
     setPanel((p) => {
@@ -881,6 +1032,18 @@ function Main() {
   }
   sessionActions.services = () => setPanel((p) => (p?.kind === 'services' ? null : { kind: 'services' }))
   sessionActions.inbox = () => setPanel((p) => (p?.kind === 'inbox' ? null : { kind: 'inbox' }))
+  // A request link (#/requests/<id>, from an agent or the CLI) opens the Inbox, where it waits.
+  useEffect(() => {
+    const onHash = () => {
+      if (!/^#\/requests\/[0-9a-f]{12}$/.test(location.hash)) return
+      history.replaceState(null, '', current ? (current === 'overview' || current === 'inbox' ? `#/${current}` : `#/c/${current}`) : '#')
+      setPanel({ kind: 'inbox' })
+    }
+    onHash()
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [current])
+  sessionActions.scheduled = (channelId) => setPanel((p) => (p?.kind === 'scheduled' && p.channelId === channelId ? null : { kind: 'scheduled', ...(channelId && { channelId }) }))
   const [jumpTo, setJumpTo] = useState<{ channelId: string; messageId: string; nonce: number } | null>(null)
   // A message link (#/c/<channel>/<message>) opens the channel and jumps to the message.
   useEffect(() => {
@@ -1025,14 +1188,15 @@ function Main() {
   }
   const channel = overview || inbox ? undefined : (current && (state.channels.find((c) => c.id === current) ?? state.threads.find((c) => c.id === current))) || state.channels.find((c) => c.type === 0 && (c.guild_id ?? state.guild.id) === guildPick) || state.channels.find((c) => c.type === 0)
   // The server shown in the sidebar: the open channel's, else the one picked last.
-  const guildIds = store.guilds().map((g) => g.id)
+  const guildIds = [...store.guilds().map((g) => g.id), ...(state.private_channels ? [DM_GUILD] : [])]
   const activeGuild = guildIds.includes(guildPick) ? guildPick : channel?.guild_id && guildIds.includes(channel.guild_id) ? channel.guild_id : state.guild.id
   const pickGuild = (id: string) => {
     setGuildPick(id)
     localStorage.setItem('guild', id)
     if (window.matchMedia('(max-width: 767px)').matches) return
     const last = JSON.parse(localStorage.getItem('lastByGuild') ?? '{}')[id] as string | undefined
-    const target = [...state.channels, ...state.threads].find((c) => c.id === last) ?? state.channels.find((c) => c.type === 0 && c.guild_id === id)
+    const newest = (list: Channel[]) => [...list].sort((a, b) => (snowflakeGt(a.last_message_id ?? a.id, b.last_message_id ?? b.id) ? -1 : 1))[0]
+    const target = [...state.channels, ...state.threads].find((c) => c.id === last) ?? (id === DM_GUILD ? newest(state.channels.filter(isDm)) : state.channels.find((c) => c.type === 0 && c.guild_id === id))
     if (target) setCurrent(target.id)
   }
   const open = (id: string) => {
@@ -1044,6 +1208,7 @@ function Main() {
   return (
     <div className="app">
       <Tooltips />
+      <WhenHost />
       <Sidebar state={state} current={overview ? 'overview' : inbox ? 'inbox' : (channel?.id ?? null)} open={drawer} onOpen={open} ctx={ctx} guild={activeGuild} onGuild={pickGuild} onThreads={(channelId) => setPanel({ kind: 'threads', channelId })} />
       {overview ? (
         <Overview onMenu={showChannels} onOpen={open} onSearch={() => setPanel({ kind: 'search' })} />
@@ -1120,6 +1285,7 @@ function Main() {
           </aside>
         )
       })()}
+      {panel?.kind === 'scheduled' && <ScheduledPanel key={`sch${panel.channelId ?? ''}`} channelId={panel.channelId} onClose={() => setPanel(null)} onJump={jump} onOpen={(id) => { setCurrent(id); setDrawer(false); if (window.matchMedia('(max-width: 767px)').matches) setPanel(null) }} />}
       {panel?.kind === 'inbox' && <InboxPanel onClose={() => setPanel(null)} onJump={jump} onOpen={(id) => { setCurrent(id); setDrawer(false); if (window.matchMedia('(max-width: 767px)').matches) setPanel(null) }} />}
       {panel?.kind === 'threads' && <ThreadsPanel key={`t${panel.channelId}`} channelId={panel.channelId} onClose={() => setPanel(null)} onOpen={(id) => { setCurrent(id); setDrawer(false); if (window.matchMedia('(max-width: 767px)').matches) setPanel(null) }} />}
       {panel?.kind === 'workspace' && <WorkspacePanel key={`w${panel.channelId}`} channelId={panel.channelId} ctx={ctx} onClose={() => setPanel(null)} onJump={jump} onOpen={(id) => { setCurrent(id); setDrawer(false) }} onServices={() => setPanel({ kind: 'services', threadId: panel.channelId })} />}

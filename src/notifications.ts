@@ -15,7 +15,7 @@ const DEFAULT_SUBJECT = 'mailto:hub@vocorum.invalid'
 const REPEAT_MS = 3000
 const SUPPRESS_NOTIFICATIONS = 1 << 12
 
-export type PushKind = 'message' | 'mention' | 'needs_you'
+export type PushKind = 'message' | 'mention' | 'needs_you' | 'reminder'
 export type PushPayload = { kind: PushKind; title: string; body: string; tag: string; url: string; channel_id: string; guild_id: string | null; message_id: string | null }
 
 // The first level set along thread, channel, category, guild; muted if any is.
@@ -101,6 +101,7 @@ export class Notifications {
     const prisma = this.hub.twin.prisma
     const chain: string[] = []
     let channel = await prisma.channel.findUnique({ where: { id: channelId } })
+    if (channel && this.hub.dms.get(channelId)) return { chain: [channelId], guildId: null, name: 'direct message', guildName: null }
     if (!channel || !this.hub.guildIds.has(channel.guildId ?? '')) return null
     const name = channel.name ?? ''
     const guildId = channel.guildId
@@ -114,6 +115,7 @@ export class Notifications {
 
   // People (not bots) in the channel's guild who can view it.
   private async readers(channelId: string, guildId: string | null) {
+    if (this.hub.dms.get(channelId)) return this.hub.dms.people(channelId)
     if (!guildId) return []
     const members = await this.hub.twin.prisma.guildMember.findMany({ where: { guildId, user: { bot: false } }, select: { userId: true } })
     const out: string[] = []
@@ -133,10 +135,12 @@ export class Notifications {
     for (const userId of await this.readers(message.channel_id, where.guildId)) {
       if (userId === message.author.id) continue
       const you = new RegExp(`<@!?${userId}>`, 'g')
-      const mention = message.mention_everyone || (message.mentions ?? []).some((u) => u.id === userId) || you.test(`${message.content ?? ''}\n${text}`)
+      // A direct message notifies like a mention, as on Discord.
+      const direct = this.hub.dms.get(message.channel_id) !== null
+      const mention = direct || message.mention_everyone || (message.mentions ?? []).some((u) => u.id === userId) || you.test(`${message.content ?? ''}\n${text}`)
       if (!mention && ![0, 19].includes(message.type ?? 0)) continue
       const body = clip(text.replace(you, '@you').replace(/\s+/g, ' ').trim() || '(attachment)', 180)
-      await this.deliver(userId, where, { kind: mention ? 'mention' : 'message', title: `${author} in #${where.name}`, body, message_id: message.id })
+      await this.deliver(userId, where, { kind: mention ? 'mention' : 'message', title: direct ? author : `${author} in #${where.name}`, body, message_id: message.id })
     }
   }
 
@@ -161,7 +165,7 @@ export class Notifications {
     if (this.hub.presence.visibleDevices(userId).size > 0) return
     const key = `${userId}:${channelId}`
     const previous = this.lastPush.get(key)
-    const rank = { message: 0, mention: 1, needs_you: 2 }
+    const rank = { message: 0, mention: 1, needs_you: 2, reminder: 2 }
     if (previous && Date.now() - previous.at < REPEAT_MS && rank[n.kind] <= rank[previous.kind]) return
     this.lastPush.set(key, { at: Date.now(), kind: n.kind })
     const payload: PushPayload = {

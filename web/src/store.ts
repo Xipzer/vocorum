@@ -3,7 +3,8 @@
 
 import { useSyncExternalStore } from 'react'
 import { forgetMissingImages } from './Avatar.tsx'
-import { api, type HubRequest, type Channel, type HubState, type MachineSummary, type Message, type Command, type Guild, type Service, type SessionLink, type SessionSummary, type User, type Role, type GuildMember, type Overwrite } from './api.ts'
+import { displayName, machineLabel } from './text.ts'
+import { api, type HubRequest, type MachineRoutines, type Reminder, type Schedule, toReminder, type Channel, type HubState, type MachineSummary, type Message, type Command, type Guild, type Service, type SessionLink, type SessionSummary, type User, type Role, type GuildMember, type Overwrite } from './api.ts'
 
 export type ChannelMessages = { list: Message[]; hasMore: boolean; loading: boolean }
 
@@ -25,6 +26,13 @@ type Data = {
   services: Service[] | null
   // Changes agents asked for, waiting on the hub owner (owner only).
   requests: HubRequest[]
+  // This person's reminders, soonest first; null on a hub without them.
+  reminders: Reminder[] | null
+  // Messages waiting to be posted (and ones that failed), soonest first.
+  scheduled: Schedule[]
+  routines: MachineRoutines[]
+  // A short confirmation ("Reminder set for 15:40"), shown for a few seconds.
+  notice: string | null
   linked: Record<string, SessionLink[]>
 }
 
@@ -36,8 +44,21 @@ export function snowflakeGt(a: string | null | undefined, b: string | null | und
   return a.length !== b.length ? a.length > b.length : a > b
 }
 
+export const DM_GUILD = '@me'
+export const isDm = (c: { type: number } | undefined) => c?.type === 1 || c?.type === 3
+// The other person in a direct message (yourself for a note to self).
+export function dmUser(c: Channel, me: string) {
+  return c.recipients?.find((u) => u.id !== me) ?? c.recipients?.[0]
+}
+// A DM is named after the person, or after the machine for one with a machine's agent.
+export function dmName(c: Channel, me: string) {
+  if (c.machine) return machineLabel(c.machine)
+  const u = dmUser(c, me)
+  return u ? displayName(u) : 'Direct message'
+}
+
 class Store {
-  data: Data = { state: null, messages: {}, typing: {}, online: false, seen: JSON.parse(localStorage.getItem('seen') ?? '{}'), sessions: {}, machines: [], favourites: [], mentions: {}, links: {}, output: {}, services: null, linked: {}, requests: [], held: {} }
+  data: Data = { state: null, messages: {}, typing: {}, online: false, seen: JSON.parse(localStorage.getItem('seen') ?? '{}'), sessions: {}, machines: [], favourites: [], mentions: {}, links: {}, output: {}, services: null, linked: {}, requests: [], held: {}, reminders: null, scheduled: [], routines: [], notice: null }
   private unsentRead: Record<string, string> = {}
   private readTimer: number | undefined
   private accessTimer: number | undefined
@@ -55,6 +76,8 @@ class Store {
 
   async loadState() {
     const state = await api.state()
+    // Direct messages live with the channels, under the "@me" server, as Discord routes them.
+    if (state.private_channels) state.channels = [...state.channels, ...state.private_channels.map((c) => ({ ...c, guild_id: DM_GUILD }))]
     // Read state lives on the hub so every device agrees; localStorage is the offline copy.
     // The hub's positions win (one may have moved back: mark unread), except reads this
     // device has not sent yet.
@@ -68,6 +91,15 @@ class Store {
     localStorage.setItem('seen', JSON.stringify(seen))
     this.set({ state, seen, favourites: state.favourites ?? [], mentions: state.mentions ?? {}, links: state.links ?? {}, output: state.output ?? {} })
     void this.loadOverview()
+    void api.schedules().then(
+      ({ schedules }) =>
+        this.set({
+          reminders: sortReminders(schedules.filter((x) => x.kind === 'reminder' && x.status !== 'cancelled' && x.status !== 'dismissed').map(toReminder)),
+          scheduled: sortScheduled(schedules.filter(waiting)),
+        }),
+      () => this.set({ reminders: null, scheduled: [] }),
+    )
+    void api.routines().then(({ machines }) => this.set({ routines: machines }), () => this.set({ routines: [] }))
     // Services and machine health are the hub owner's alone.
     if (state.hub_owner !== false) {
       void this.loadServices().catch(() => {})
@@ -180,6 +212,28 @@ class Store {
     return state?.channels.find((c) => c.id === id) ?? state?.threads.find((c) => c.id === id)
   }
 
+  // A direct message: the hub's one if it exists, else a new one; it joins the list at once.
+  async openDm(to: { recipient_id: string } | { machine: string }) {
+    const existing = this.data.state?.channels.find((c) => isDm(c) && ('machine' in to ? c.machine?.toLowerCase() === to.machine.toLowerCase() : !c.machine && c.recipients?.some((u) => u.id === to.recipient_id)))
+    if (existing) return existing
+    const c = await api.openDm(to)
+    this.addUsers(c.recipients ?? [])
+    this.upsertChannel({ ...c, guild_id: DM_GUILD })
+    return c
+  }
+
+  async refreshDms() {
+    const { channels } = await api.dms().catch(() => ({ channels: [] as Channel[] }))
+    for (const c of channels) this.upsertChannel({ ...c, guild_id: DM_GUILD })
+  }
+
+  private addUsers(users: User[]) {
+    const state = this.data.state
+    if (!state) return
+    const fresh = users.filter((u) => !state.users.some((x) => x.id === u.id))
+    if (fresh.length) this.set({ state: { ...state, users: [...state.users, ...fresh] } })
+  }
+
   private upsertChannel(channel: Channel) {
     const state = this.data.state
     if (!state) return
@@ -204,6 +258,21 @@ class Store {
   // Applies one gateway dispatch from the event socket.
   apply(t: string, d: any) {
     switch (t) {
+      case 'ROUTINES_UPDATE': {
+        const m = d as MachineRoutines
+        this.set({ routines: [...this.data.routines.filter((x) => x.machine !== m.machine), m].sort((a, b) => a.machine.localeCompare(b.machine)) })
+        break
+      }
+      case 'SCHEDULE_UPDATE': {
+        const s = d as Schedule
+        if (s.kind === 'message') {
+          this.upsertScheduled(s)
+          break
+        }
+        if (s.status === 'cancelled' || s.status === 'dismissed') this.dropReminder(s.id)
+        else this.upsertReminder(toReminder(s))
+        break
+      }
       // Another of this person's devices read, or marked unread, a channel.
       case 'MESSAGE_ACK': {
         const { channel_id: id, message_id: at, manual } = d as { channel_id: string; message_id: string | null; manual: boolean }
@@ -265,9 +334,14 @@ class Store {
       case 'THREAD_CREATE':
       case 'THREAD_UPDATE':
       case 'CHANNEL_CREATE':
-      case 'CHANNEL_UPDATE':
-        this.upsertChannel(d as Channel)
+      case 'CHANNEL_UPDATE': {
+        const c = d as Channel
+        if (isDm(c)) this.addUsers(c.recipients ?? [])
+        this.upsertChannel(isDm(c) ? { ...c, guild_id: DM_GUILD } : c)
+        // The gateway's DM lacks the hub's own fields (machine, note): read them back.
+        if (isDm(c) && !('machine' in c)) void this.refreshDms()
         break
+      }
       case 'THREAD_DELETE':
       case 'CHANNEL_DELETE': {
         const state = this.data.state
@@ -412,6 +486,28 @@ class Store {
     await api.setOutput(channel.id, value)
   }
 
+  private noticeTimer = 0
+  notice(text: string) {
+    window.clearTimeout(this.noticeTimer)
+    this.set({ notice: text })
+    this.noticeTimer = window.setTimeout(() => this.set({ notice: null }), 3000)
+  }
+
+  upsertScheduled(s: Schedule) {
+    const rest = this.data.scheduled.filter((x) => x.id !== s.id)
+    this.set({ scheduled: waiting(s) ? sortScheduled([...rest, s]) : rest })
+  }
+
+  upsertReminder(reminder: Reminder) {
+    this.set({ reminders: sortReminders([reminder, ...(this.data.reminders ?? []).filter((r) => r.id !== reminder.id)]) })
+  }
+
+  dropReminder(id: string) {
+    this.set({ reminders: (this.data.reminders ?? []).filter((r) => r.id !== id) })
+  }
+
+
+
   async loadRequests() {
     const { requests } = await api.requests()
     this.set({ requests })
@@ -445,6 +541,11 @@ class Store {
     await Promise.all(Object.keys(this.data.messages).map((id) => this.loadMessages(id, { refresh: true }).catch(() => {})))
   }
 }
+
+const sortReminders = (list: Reminder[]) => [...list].sort((a, b) => a.at - b.at)
+// A scheduled message still to post, or one that failed and should be seen.
+const waiting = (s: Schedule) => s.kind === 'message' && (s.status === 'pending' || s.status === 'failed')
+const sortScheduled = (list: Schedule[]) => [...list].sort((a, b) => (a.next_at ?? Infinity) - (b.next_at ?? Infinity))
 
 function mergeSeen(a: Record<string, string>, b: Record<string, string>) {
   const out = { ...a }

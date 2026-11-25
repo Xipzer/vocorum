@@ -72,6 +72,11 @@ export type Channel = {
   // Who may do what here (type 0 role, 1 member), and what the viewer may do (decimal bits).
   permission_overwrites?: Overwrite[]
   permissions?: string
+  // Direct messages (type 1): the other person, or the machine whose agent it is with.
+  recipients?: User[]
+  machine?: string
+  // Why this channel takes no messages (a DM with a machine: agents work in project channels).
+  note?: string | null
 }
 export type Overwrite = { id: string; type: 0 | 1; allow: string; deny: string }
 export type Role = { id: string; name: string; color: number; hoist: boolean; position: number; permissions: string; managed?: boolean; mentionable: boolean }
@@ -85,6 +90,15 @@ export type NotifyLevel = 'all' | 'mentions' | 'nothing'
 export type NotifySetting = { level: NotifyLevel | null; muted_until: number | null }
 export type NotificationState = { settings: Record<string, NotifySetting>; default_level: NotifyLevel; vapid_public_key: string; push_subscribed: boolean }
 export type MachineIcon = { avatar: string | null; guild_icon: string | null }
+// The hub's schedules, per person: a message posted later, or a reminder about a message
+// (or with a note). A reminder that has fired is "done" until it is dismissed.
+export type Schedule = { id: string; kind: 'message' | 'reminder'; channel_id: string; message_id: string | null; content: string; cron: string | null; next_at: number | null; status: 'pending' | 'done' | 'failed' | 'cancelled' | 'dismissed'; last_run_at: number | null; last_result?: string | null; created_at: number; message?: { content: string; author: { id: string; username: string; global_name: string | null } | null } | null }
+// Kimaki's own routines on each machine, read-only here (they are edited in Kimaki).
+export type Routine = { id: string; prompt: string; schedule: string; channel_id: string | null; thread_id: string | null; agent: string | null; model: string | null; next_run: string | null; status: string | null }
+export type MachineRoutines = { machine: string; updated_at?: number; routines: Routine[] }
+export type Reminder = { id: string; channel_id: string; message_id: string | null; at: number; note: string | null; due: boolean; message: Schedule['message'] }
+export const toReminder = (s: Schedule): Reminder => ({ id: s.id, channel_id: s.channel_id, message_id: s.message_id, at: s.next_at ?? s.last_run_at ?? s.created_at, note: s.content || null, due: s.status !== 'pending', message: s.message ?? null })
+
 export type HubState = {
   machine_icons?: Record<string, MachineIcon>
   presence?: Record<string, Presence>
@@ -97,6 +111,8 @@ export type HubState = {
   guildCommands?: Record<string, Command[]>
   channels: Channel[]
   threads: Channel[]
+  // Direct messages, as in Discord's READY; absent on a hub without them.
+  private_channels?: Channel[]
   users: User[]
   commands: Command[]
   read: Record<string, string>
@@ -109,6 +125,7 @@ export type HubState = {
   machines: string[]
   // Several people on one hub: who runs it, roles and members per guild, and this person's privacy.
   hub_owner?: boolean
+  admin_guild_id?: string
   roles?: Record<string, Role[]>
   members?: Record<string, GuildMember[]>
   privacy?: Privacy
@@ -211,6 +228,14 @@ export const api = {
   pin: (channelId: string, messageId: string, on: boolean) => call(`/client/channels/${channelId}/pins/${messageId}`, { method: on ? 'PUT' : 'DELETE' }),
   overview: () => call<{ machines: MachineSummary[]; sessions: SessionSummary[] }>('/client/overview'),
   markRead: (read: Record<string, string>) => call('/client/read', { method: 'PUT', json: { read } }),
+  routines: () => call<{ machines: MachineRoutines[] }>('/client/routines'),
+  schedules: () => call<{ schedules: Schedule[] }>('/client/schedules'),
+  schedule: (body: { channel_id: string; content: string; at?: number; cron?: string }) => call<Schedule>('/client/schedules', { method: 'POST', json: { kind: 'message', ...body } }),
+  remind: (body: { channel_id: string; message_id?: string | null; at: number; content?: string }) => call<Schedule>('/client/schedules', { method: 'POST', json: { kind: 'reminder', ...body } }),
+  forget: (id: string) => call('/client/schedules/' + id, { method: 'DELETE' }),
+  snooze: (id: string, at: number) => call<Schedule>('/client/schedules/' + id, { method: 'PATCH', json: { at } }),
+  dms: () => call<{ channels: Channel[] }>('/client/dms'),
+  openDm: (to: { recipient_id: string } | { machine: string }) => call<Channel>('/client/dms', { method: 'POST', json: to }),
   markUnread: (channelId: string, messageId: string) => call('/client/read', { method: 'PUT', json: { unread: { [channelId]: messageId } } }),
   setOutput: (channelId: string, output: boolean | null) => call(`/client/channels/${channelId}/output`, output === null ? { method: 'DELETE' } : { method: 'PUT', json: { output } }),
   notifications: () => call<NotificationState>('/client/notifications'),

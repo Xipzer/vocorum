@@ -148,12 +148,15 @@ export function Overview({ onMenu, onOpen, onSearch }: { onMenu: () => void; onO
         <div className="ov">
           {machines.length > 0 && (
             <div className="ov-machines">
-              {machines.map((m) => (
-                <span key={m.name}>
-                  <i className={`dot${m.online === false ? ' off' : ''}`} />
-                  <b>{machineLabel(m.name)}</b> {m.online === false ? 'offline' : m.failed ? `${m.failed} failed` : m.running ? `${m.running} running` : m.waiting ? `${m.waiting} waiting` : 'idle'}
-                </span>
-              ))}
+              {machines.map((m) => {
+                const inner = (
+                  <>
+                    <i className={`dot${m.online === false ? ' off' : ''}`} />
+                    <b>{machineLabel(m.name)}</b> {m.online === false ? 'offline' : m.failed ? `${m.failed} failed` : m.running ? `${m.running} running` : m.waiting ? `${m.waiting} waiting` : 'idle'}
+                  </>
+                )
+                return <span key={m.name}>{inner}</span>
+              })}
             </div>
           )}
           {groups.every((g) => g.items.length === 0) && <Empty icon="check" title="Nothing needs you">{running ? `${running} running.` : undefined}</Empty>}

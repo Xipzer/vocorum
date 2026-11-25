@@ -57,8 +57,14 @@ export class Presence {
   }
 
   // What `viewer` may see of `presence`.
-  private async shape(presence: UserPresence, viewer: string, profiles: Record<string, { showPresence: boolean; showActivity: boolean }>): Promise<UserPresence> {
-    if (presence.user_id === viewer || presence.machines) return presence
+  // The bot: only the machines the viewer can see (null: none, so no bot at all).
+  private async shape(presence: UserPresence, viewer: string, profiles: Record<string, { showPresence: boolean; showActivity: boolean }>): Promise<UserPresence | null> {
+    if (presence.machines) {
+      const visible = await this.hub.visibleMachines(viewer)
+      const machines = presence.machines.filter((m) => visible.has(m.machine.toLowerCase()))
+      return machines.length ? { ...presence, status: machines.some((m) => m.online) ? 'online' : 'offline', machines } : null
+    }
+    if (presence.user_id === viewer) return presence
     const profile = profiles[presence.user_id]
     if (profile && !profile.showPresence) return { user_id: presence.user_id, status: 'offline' }
     if (profile && !profile.showActivity) return { user_id: presence.user_id, status: presence.status }
@@ -73,9 +79,10 @@ export class Presence {
     const out: Record<string, UserPresence> = {}
     for (const presence of this.raw().values()) {
       if (presence.user_id !== viewer && !peers.has(presence.user_id) && !presence.machines) continue
-      out[presence.user_id] = await this.shape(presence, viewer, profiles)
+      const shaped = await this.shape(presence, viewer, profiles)
+      if (shaped) out[presence.user_id] = shaped
     }
-    for (const id of peers) out[id] ??= { user_id: id, status: 'offline' }
+    for (const id of peers) if (id !== this.hub.options.config.botUserId) out[id] ??= { user_id: id, status: 'offline' }
     return out
   }
 
@@ -106,7 +113,7 @@ export class Presence {
       if (current.has(id)) this.last.set(id, key)
       else this.last.delete(id)
       const peers = presence.machines ? null : await this.hub.access.peers(id)
-      const shapes = new Map<string, UserPresence>()
+      const shapes = new Map<string, UserPresence | null>()
       for (const connection of this.hub.events.connections()) {
         if (!shapes.has(connection.userId)) shapes.set(connection.userId, await this.shape(presence, connection.userId, profiles))
       }

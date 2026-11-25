@@ -48,6 +48,40 @@ node bin/vocorum.js setup
 
 Setup prints a link and a QR code to sign in your first device.
 
+## Desktop and iPhone apps
+
+Small native apps for Windows, macOS and Linux, and an iPhone build, wrap the
+same UI. The UI is built into the app, the app trusts only your hub's own
+certificate, and it signs in with a device key kept in the system keychain.
+Closing the window leaves a tray icon that still gets alerts. Updates come from
+your own hub and install only if they carry the publisher's signature. See
+[apps/desktop/README.md](apps/desktop/README.md).
+
+Get an app from your hub: run `vocorum pair <device> --app` and open the link
+on that device. Or build it with `apps/desktop/scripts/release.sh`.
+
+> The apps are not signed by Apple or Microsoft yet. Windows shows "unknown
+> publisher" on first install, and the Mac build is not notarised. The apps
+> README explains the one-time warning. On Linux, both the `.deb` and the
+> AppImage update themselves from your hub (the `.deb` asks for your password).
+
+Measured against Discord's desktop app on the same machines (memory as the
+system reports it, CPU averaged over two minutes idle):
+
+| | Vocorum app | Discord |
+|---|---|---|
+| Windows 11: installer, installed | 2.6 MB, 6.8 MB | 549 MB installed |
+| Windows 11: idle, window open | 87 MB, 0.3% CPU | 698 MB, 1.5% CPU |
+| macOS (Apple silicon): app size | 5.3 MB | 481 MB |
+| macOS: idle, window open | 77 to 131 MB, 0.5% CPU | 869 MB, 1.3% CPU |
+| Linux (Ubuntu 24.04): package | 3.8 MB `.deb`, 8 MB installed; AppImage about 83 MB (carries WebKitGTK) | 466 MB after its first download |
+| Linux: idle, window open | 309 to 334 MB, 2.3% CPU | 630 MB, 0.3% CPU (login screen only) |
+| Window closed, tray only | 5 to 44 MB, 0% CPU | no equivalent |
+
+The Windows run used a small test hub. The Mac screen was locked, so neither
+app was drawing. On Linux, Discord was never logged in, and the numbers come
+from WSL2, where WebKitGTK has no GPU.
+
 ## Privacy and security
 
 Vocorum only listens on your own machine, or on one private network address you

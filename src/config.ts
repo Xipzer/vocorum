@@ -39,11 +39,34 @@ export type HubConfig = {
   // null: loopback human routes are rejected (fail closed).
   tailscaleLogin: string | null
   privateListener?: PrivateListenerConfig | null
+  // The owner's private Admin server (vocorum admin setup): only the owner and the admin bot.
+  adminGuildId?: string | null
+  adminBotReady?: boolean
 }
 
 export type HubPaths = ReturnType<typeof hubPaths>
 
-export function hubPaths(root = process.env['VOCORUM_DIR'] || path.join(os.homedir(), '.vocorum')) {
+// The admin agent's folder (<state>/admin) names its hub in .vocorum-hub: its shell
+// comes from the OpenCode service, which has no VOCORUM_DIR, and it may only run
+// `vocorum ...`. Trusted only if this user owns it and nobody else can write it.
+function workspaceHub(): string | null {
+  try {
+    const file = path.join(process.cwd(), '.vocorum-hub')
+    const stat = fs.statSync(file)
+    if (stat.uid !== process.getuid?.() || stat.mode & 0o022) return null
+    const root = fs.readFileSync(file, 'utf8').trim()
+    return path.isAbsolute(root) && path.dirname(process.cwd()) === root ? root : null
+  } catch {
+    return null
+  }
+}
+
+// Node flags for running the hub (dist/hub.mjs start): a heap that stays small
+// after bursts. They must be on the command line (not NODE_OPTIONS). With them
+// a hub with a few hundred thousand messages idles near 150 MB.
+export const HUB_NODE_FLAGS = ['--optimize-for-size', '--max-semi-space-size=2']
+
+export function hubPaths(root = process.env['VOCORUM_DIR'] || workspaceHub() || path.join(os.homedir(), '.vocorum')) {
   return {
     root,
     config: path.join(root, 'config.json'),
@@ -60,6 +83,8 @@ export function hubPaths(root = process.env['VOCORUM_DIR'] || path.join(os.homed
     vapid: path.join(root, 'vapid.json'),
     // The hub's own CA and server certificate (keys 0600).
     ca: path.join(root, 'ca'),
+    // Published Vocorum app releases (installers, update bundles, signatures), 0700.
+    apps: path.join(root, 'apps'),
   }
 }
 

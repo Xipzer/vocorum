@@ -3,15 +3,16 @@
 
 import { isMac } from './columns.ts'
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Sheet, type SheetSpec } from './Sheet.tsx'
+import { below, Sheet, type SheetSpec } from './Sheet.tsx'
 import { startAuthentication } from '@simplewebauthn/browser'
-import { api, type HubRequest, type FoundChannel, type LinkKind, type Mention, type Message, type SearchResult, type Service, type ServiceEvent } from './api.ts'
+import { api, type HubRequest, type Reminder, type FoundChannel, type LinkKind, type Mention, type Message, type SearchResult, type Service, type ServiceEvent } from './api.ts'
 import { Avatar, machineIcon } from './Avatar.tsx'
 import { Icon, type IconName } from './icons.tsx'
 import { Markdown, type MarkdownContext } from './markdown.tsx'
-import { store, useStore } from './store.ts'
+import { dmName, isDm, store, useStore } from './store.ts'
+import { cronLabel, isDue, remindTime, remindSheet } from './remind.ts'
 import { can, P } from './perms.ts'
-import { clock, plain, machineLabel } from './text.ts'
+import { clock, displayName, plain, machineLabel } from './text.ts'
 import { approveInApp, native } from './native.ts'
 
 export type Jump = (channelId: string, messageId: string) => void
@@ -333,11 +334,14 @@ export function InboxPanel({ onClose, onJump, onOpen }: { onClose: () => void; o
   const now = Date.now()
   const requests = allRequests.filter((r) => (r.status === 'pending' && r.expires_at > now) || (r.decided_at ?? 0) > now - 15 * 60_000)
   const pendingCount = requests.filter((r) => r.status === 'pending').length
+  const reminders = useStore((d) => d.reminders) ?? []
+  const due = reminders.filter(isDue).reverse()
+  const upcoming = reminders.filter((r) => !isDue(r))
   return (
     <Panel
       title="Inbox"
       icon="bell"
-      count={pendingCount + needs.length + unreadCount}
+      count={due.length + pendingCount + needs.length + unreadCount}
       onClose={onClose}
       extra={
         unreadCount > 0 ? (
@@ -349,6 +353,14 @@ export function InboxPanel({ onClose, onJump, onOpen }: { onClose: () => void; o
     >
       <div className="panel-body">
         {error && <div className="error panel-pad">{error}</div>}
+        {reminders.length > 0 && (
+          <div className="panel-section">
+            Reminders {due.length > 0 && <span className="num">{due.length}</span>}
+          </div>
+        )}
+        {[...due, ...upcoming].map((r) => (
+          <ReminderRow key={r.id} reminder={r} due={isDue(r)} onJump={onJump} onOpen={onOpen} />
+        ))}
         {requests.length > 0 && (
           <div className="panel-section">
             Requests {pendingCount > 0 && <span className="num">{pendingCount}</span>}
@@ -380,7 +392,133 @@ export function InboxPanel({ onClose, onJump, onOpen }: { onClose: () => void; o
           </div>
         )}
         {list?.map((m) => <MentionRow key={m.message.id} m={m} unread={unread(m)} onJump={onJump} showServer />)}
-        {requests.length === 0 && needs.length === 0 && list?.length === 0 && <Empty icon="bell" title="You're all caught up">Mentions and sessions waiting on you, from every server, show here.</Empty>}
+        {reminders.length === 0 && requests.length === 0 && needs.length === 0 && list?.length === 0 && <Empty icon="bell" title="You're all caught up">Mentions and sessions waiting on you, from every server, show here.</Empty>}
+      </div>
+    </Panel>
+  )
+}
+
+// A reminder: due ones lead with Done and Later; upcoming ones say when, and can go.
+function ReminderRow({ reminder: r, due, onJump, onOpen }: { reminder: Reminder; due: boolean; onJump: Jump; onOpen: (id: string) => void }) {
+  const [sheet, setSheet] = useState<SheetSpec | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const channel = store.channel(r.channel_id)
+  const where = channel ? (isDm(channel) ? `@${dmName(channel, store.data.state?.me.id ?? '')}` : `#${plain(channel.name ?? '')}`) : 'a channel you can no longer see'
+  const loaded = r.message_id ? store.data.messages[r.channel_id]?.list.find((m) => m.id === r.message_id) : undefined
+  const message = r.message ?? (loaded ? { content: loaded.content, author: loaded.author } : null)
+  const text = r.note ?? (message ? plain(message.content) : '')
+  const go = () => (r.message_id ? onJump(r.channel_id, r.message_id) : onOpen(r.channel_id))
+  // Done dismisses a fired one on every device; the cross cancels an upcoming one.
+  const done = () => void api.forget(r.id).then(() => store.dropReminder(r.id), (e: Error) => setError(e.message))
+  return (
+    <div className={`reminder-row${due ? ' due' : ''}`}>
+      <button className="reminder-main" onClick={go}>
+        <span className="reminder-when num">
+          <Icon name="bell" size={14} />
+          {due ? `Due ${remindTime(r.at)}` : remindTime(r.at)}
+          <span className="reminder-where">{where}</span>
+        </span>
+        {text && <span className="reminder-text">{message?.author && !r.note ? <b>{displayName(message.author)}: </b> : null}{text.slice(0, 140)}</span>}
+        {error && <span className="reminder-error">{error}</span>}
+      </button>
+      {due ? (
+        <span className="reminder-actions">
+          <button className="button" onClick={(e) => setSheet(remindSheet(below(e.currentTarget), { reminder: r }, setError))}>
+            Later
+          </button>
+          <button className="button primary" onClick={done}>
+            Done
+          </button>
+        </span>
+      ) : (
+        <button className="icon-button reminder-cancel" onClick={done} aria-label="Cancel reminder" title="Cancel reminder">
+          <Icon name="close" size={16} />
+        </button>
+      )}
+      {sheet && <Sheet spec={sheet} onClose={() => setSheet(null)} />}
+    </div>
+  )
+}
+
+// Messages waiting to be posted: in one channel, or everywhere. Each says when (in local
+// time, or its repeat), where, and what; a failed one says why. The cross cancels it.
+export function ScheduledPanel({ channelId, onClose, onOpen, onJump }: { channelId?: string; onClose: () => void; onOpen: (id: string) => void; onJump: Jump }) {
+  const all = useStore((d) => d.scheduled)
+  const reminders = (useStore((d) => d.reminders) ?? []).filter((r) => !r.due && (!channelId || r.channel_id === channelId))
+  const list = channelId ? all.filter((s) => s.channel_id === channelId) : all
+  const [error, setError] = useState<string | null>(null)
+  const routines = useStore((d) => d.routines)
+    .map((m) => ({ ...m, routines: m.routines.filter((r) => !channelId || r.channel_id === channelId || r.thread_id === channelId) }))
+    .filter((m) => m.routines.length)
+  const routineCount = routines.reduce((n, m) => n + m.routines.length, 0)
+  const where = (id: string) => {
+    const c = store.channel(id)
+    return c ? (isDm(c) ? `@${dmName(c, store.data.state?.me.id ?? '')}` : `#${plain(c.name ?? '')}`) : 'a channel you can no longer see'
+  }
+  const cancel = (id: string) => void api.forget(id).then(() => store.upsertScheduled({ ...all.find((s) => s.id === id)!, status: 'cancelled' }), (e: Error) => setError(e.message))
+  return (
+    <Panel title="Scheduled" icon="clock" count={list.length + reminders.length + routineCount} onClose={onClose}>
+      <div className="panel-body">
+        {error && <div className="error panel-pad">{error}</div>}
+        {list.length > 0 && (
+          <div className="panel-section">
+            Messages <span className="num">{list.length}</span>
+          </div>
+        )}
+        {list.map((s) => (
+          <div key={s.id} className={`reminder-row scheduled${s.status === 'failed' ? ' failed' : ''}`}>
+            <button className="reminder-main" onClick={() => onOpen(s.channel_id)}>
+              <span className="reminder-when num">
+                <Icon name={s.cron ? 'repeat' : 'clock'} size={14} />
+                {s.status === 'failed' ? 'Not sent' : s.cron ? cronLabel(s.cron, s.next_at) : s.next_at ? remindTime(s.next_at) : ''}
+                {!channelId && <span className="reminder-where">{where(s.channel_id)}</span>}
+              </span>
+              <span className="reminder-text">{plain(s.content).slice(0, 200)}</span>
+              {s.status === 'failed' && s.last_result && <span className="reminder-error">{s.last_result}</span>}
+            </button>
+            <button className="icon-button reminder-cancel" onClick={() => cancel(s.id)} aria-label="Cancel scheduled message" title="Cancel">
+              <Icon name="close" size={16} />
+            </button>
+          </div>
+        ))}
+        {reminders.length > 0 && (
+          <div className="panel-section">
+            Reminders <span className="num">{reminders.length}</span>
+          </div>
+        )}
+        {reminders.map((r) => (
+          <ReminderRow key={r.id} reminder={r} due={false} onJump={onJump} onOpen={onOpen} />
+        ))}
+        {routines.map((m) => (
+          <Fragment key={m.machine}>
+            <div className="panel-section">
+              Routines on {machineLabel(m.machine)} <span className="num">{m.routines.length}</span>
+            </div>
+            {m.routines.map((r) => {
+              const target = r.thread_id ?? r.channel_id
+              const next = r.next_run ? Date.parse(r.next_run) : NaN
+              return (
+                <div key={r.id} className="reminder-row routine">
+                  <button className="reminder-main" onClick={() => target && onOpen(target)} disabled={!target}>
+                    <span className="reminder-when num">
+                      <Icon name={r.schedule.startsWith('at ') ? 'clock' : 'repeat'} size={14} />
+                      {Number.isFinite(next) ? remindTime(next) : r.schedule}
+                      {!channelId && target && <span className="reminder-where">{where(target)}</span>}
+                    </span>
+                    <span className="reminder-text">{r.prompt}</span>
+                    <span className="routine-meta">{[Number.isFinite(next) && r.schedule, r.status && r.status !== 'active' ? r.status : null].filter(Boolean).join(' · ')}</span>
+                  </button>
+                </div>
+              )
+            })}
+          </Fragment>
+        ))}
+        {routineCount > 0 && <p className="panel-note">Routines are edited in Kimaki.</p>}
+        {list.length === 0 && reminders.length === 0 && routineCount === 0 && (
+          <Empty icon="clock" title="Nothing scheduled">
+            Right-click Send, or hold it on a phone, to post a message later.
+          </Empty>
+        )}
       </div>
     </Panel>
   )
@@ -389,7 +527,13 @@ export function InboxPanel({ onClose, onJump, onOpen }: { onClose: () => void; o
 // One change an agent asked for. The summary is shown verbatim (it says when a role can
 // give a shell); approving takes a fresh passkey on this device.
 const DECIDED: Record<HubRequest['status'], string> = { pending: '', approved: 'Approved', denied: 'Denied', failed: 'Failed', expired: 'Expired' }
-function RequestCard({ request }: { request: HubRequest }) {
+// "at 14:05", "tomorrow 09:00", "Mon 09:00": when a request lapses, inside a sentence.
+const expiry = (ms: number) => {
+  const t = remindTime(ms)
+  return /^\d/.test(t) ? `at ${t}` : t.replace(/^(Tomorrow|Yesterday)/, (w) => w.toLowerCase())
+}
+
+export function RequestCard({ request }: { request: HubRequest }) {
   const [busy, setBusy] = useState<'approve' | 'deny' | 'undo' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const act = (kind: 'approve' | 'deny' | 'undo') => {
@@ -413,10 +557,16 @@ function RequestCard({ request }: { request: HubRequest }) {
   return (
     <div className={`request-card ${request.status}`}>
       <div className="request-summary">{request.summary}</div>
-      {request.reason && <div className="request-reason">{request.reason}</div>}
+      {/* The summary above is the hub's own account of the change; the reason is the asker's. */}
+      {request.reason && (
+        <div className="request-reason">
+          <span className="request-reason-label">In their words</span>
+          {request.reason}
+        </div>
+      )}
       <div className="request-meta">
         from {request.origin}
-        {pending ? ` · expires ${clock(new Date(request.expires_at).toISOString())}` : ` · ${DECIDED[request.status]}${failure ? `: ${failure}` : ''}`}
+        {pending ? ` · expires ${expiry(request.expires_at)}` : ` · ${DECIDED[request.status]}${failure ? `: ${failure}` : ''}`}
       </div>
       {error && <div className="error">{error}</div>}
       {pending && (
@@ -812,8 +962,19 @@ export function ThreadsPanel({ channelId, onClose, onOpen }: { channelId: string
 export function MembersPanel({ channelId, onClose }: { channelId: string; onClose: () => void }) {
   const state = useStore((d) => d.state)
   const typing = useStore((d) => d.typing[channelId])
+  const [sheet, setSheet] = useState<SheetSpec | null>(null)
   if (!state) return null
   const presence = state.presence ?? {}
+  // A member's menu, as Discord's profile: message them, or the machine's agent.
+  const dmsOn = Boolean(state.private_channels)
+  const openDm = (to: { recipient_id: string } | { machine: string }) => void store.openDm(to).then((c) => (location.hash = `#/c/${c.id}`)).catch(() => {})
+  const memberMenu = (e: React.MouseEvent, title: string, sub: string, to: { recipient_id: string } | { machine: string } | null, copy: string) =>
+    setSheet({
+      at: below(e.currentTarget, 'start'),
+      title,
+      subtitle: sub,
+      groups: [to && dmsOn ? [{ label: 'machine' in to ? 'Message this machine' : 'Message', icon: 'chat' as const, run: () => openDm(to) }] : [], [{ label: sub === 'Agent' ? 'Copy machine name' : 'Copy user ID', icon: 'copy' as const, run: () => void navigator.clipboard?.writeText(copy) }]],
+    })
   const all = [...state.channels, ...state.threads]
   const where = (id: string | null) => {
     if (!id) return 'Overview'
@@ -832,7 +993,7 @@ export function MembersPanel({ channelId, onClose }: { channelId: string; onClos
     for (const d of p?.devices ?? []) notes.push(`${d.name}${d.visible ? '' : ' (away)'} · ${where(d.channel_id)}`)
     if (u.bot && p?.machines?.length) notes.push(p.machines.map((m) => `${m.machine}${m.online ? '' : ' (offline)'}`).join(', '))
     return (
-      <div key={u.id} className={`member${st === 'offline' ? ' away' : ''}`}>
+      <button key={u.id} className={`member${st === 'offline' ? ' away' : ''}`} onClick={(e) => memberMenu(e, u.global_name ?? u.username, `@${u.username}`, u.id === state.me.id || u.bot ? null : { recipient_id: u.id }, u.id)}>
         <span className="member-avatar">
           <Avatar id={u.id} name={u.global_name ?? u.username} size="panel" version={u.avatar} />
           <i className={`presence ${st}`} aria-label={st} />
@@ -844,7 +1005,7 @@ export function MembersPanel({ channelId, onClose }: { channelId: string; onClos
           </span>
           {notes.length > 0 && <span className="member-note">{notes[0]}{notes.length > 1 ? `, +${notes.length - 1}` : ''}</span>}
         </span>
-      </div>
+      </button>
     )
   }
   // The shared bot shows as one member per machine, each with its own Discord picture.
@@ -858,7 +1019,7 @@ export function MembersPanel({ channelId, onClose }: { channelId: string; onClos
     if (!r.machine) return row(r.user)
     const u = r.user
     return (
-      <div key={r.key} className={`member${r.machine.online ? '' : ' away'}`}>
+      <button key={r.key} className={`member${r.machine.online ? '' : ' away'}`} onClick={(e) => memberMenu(e, machineLabel(r.machine!.machine), 'Agent', null, r.machine!.machine)}>
         <span className="member-avatar">
           <Avatar id={u.id} name={r.machine.machine} size="panel" src={machineIcon(state.machine_icons, r.machine.machine, 'avatar')} />
           <i className={`presence ${r.machine.online ? 'online' : 'offline'}`} aria-label={r.machine.online ? 'online' : 'offline'} />
@@ -870,7 +1031,7 @@ export function MembersPanel({ channelId, onClose }: { channelId: string; onClos
           </span>
           {isTyping(u.id) && <span className="member-note">working here</span>}
         </span>
-      </div>
+      </button>
     )
   }
   const online = rows.filter(isOn)
@@ -891,6 +1052,7 @@ export function MembersPanel({ channelId, onClose }: { channelId: string; onClos
           </>
         )}
       </div>
+      {sheet && <Sheet spec={sheet} onClose={() => setSheet(null)} />}
     </Panel>
   )
 }

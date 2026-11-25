@@ -43,6 +43,9 @@ model Channel {
   messages            Message[]
   threadMembers       ThreadMember[]
   createdAt           DateTime       @default(now())
+
+  @@index([parentId])
+  @@index([guildId])
 }
 
 model Message {
@@ -73,6 +76,8 @@ model Message {
   extra            String?
   reactions        Reaction[]
   createdAt        DateTime  @default(now())
+
+  @@index([channelId, id])
 }
 
 model User {

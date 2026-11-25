@@ -231,10 +231,18 @@ async function sendBatches(hub: HubAdmin, messages: Message[]) {
 }
 
 const CDN = new Set(['cdn.discordapp.com', 'media.discordapp.net'])
+// A stand-in Discord (VOCORUM_DISCORD_API) serves its own files.
+const standIn = (() => {
+  try {
+    return process.env['VOCORUM_DISCORD_API'] ? new URL(process.env['VOCORUM_DISCORD_API']).origin : null
+  } catch {
+    return null
+  }
+})()
 const isCdn = (url: string | undefined) => {
   try {
     const u = new URL(url ?? '')
-    return u.protocol === 'https:' && CDN.has(u.hostname)
+    return (u.protocol === 'https:' && CDN.has(u.hostname)) || u.origin === standIn
   } catch {
     return false
   }
@@ -254,10 +262,13 @@ async function download(url: string): Promise<Buffer | null | 'gone'> {
 }
 
 async function copyFiles(rest: DiscordRest, hub: HubAdmin, messages: Message[]) {
-  const todo = messages.flatMap((m) => (m.attachments ?? []).filter((a) => isCdn(a.url) && (a.size ?? 0) <= MAX_FILE).map((a) => ({ message: m.id, a })))
+  const all = messages.flatMap((m) => (m.attachments ?? []).map((a) => ({ message: m.id, a })))
+  const todo = all.filter(({ a }) => isCdn(a.url) && (a.size ?? 0) <= MAX_FILE)
   let copied = 0
   let missing = 0
-  let failed = 0
+  // A file that is not on Discord's file servers cannot be fetched: never silently skipped,
+  // so the channel is not done and the purge keeps its message. Too-big files stay on Discord.
+  let failed = all.filter(({ a }) => !isCdn(a.url)).length
   for (let i = 0; i < todo.length; i += 50) {
     const batch = todo.slice(i, i + 50)
     // Stored links expire; Discord hands out fresh ones for files it still has.

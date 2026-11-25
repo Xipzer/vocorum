@@ -191,7 +191,7 @@ main{width:100%;max-width:480px}
 .card{background:#0d0d10;border:1px solid #27272e;border-radius:8px;padding:32px}
 h1{margin:0;font-weight:700;font-size:24px;line-height:30px;color:#fff;text-align:center}
 .sub{margin:8px 0 24px;color:#a3a3ae;text-align:center}
-h2{margin:24px 0 12px;font-weight:600;font-size:12px;line-height:16px;letter-spacing:.02em;text-transform:uppercase;color:#a3a3ae}
+h2{margin:24px 0 12px;font-weight:600;font-size:14px;line-height:18px;color:#a3a3ae}
 ol{list-style:none;margin:0;padding:0;counter-reset:step}
 li{counter-increment:step;position:relative;padding:0 0 16px 36px;min-height:40px}
 li::before{content:counter(step);position:absolute;left:0;top:0;width:24px;height:24px;border-radius:50%;background:#1a1a20;color:#fff;font-weight:600;font-size:13px;line-height:24px;text-align:center}
@@ -213,7 +213,24 @@ li:has(> .button)::before{top:10px}
 @media (max-width:520px){body{padding:24px 16px}.card{border:0;background:none;padding:0}}
 `
 
-export function enrolPage({ appUrl, fingerprint: fp, hostsLine, code, userAgent = '' }: { appUrl: string; fingerprint: string; hostsLine: string; code: string | null; userAgent?: string }) {
+export type Installer = { platform: string; version: string; file: string; size: number; sha256: string }
+
+const SYSTEMS: Record<string, string> = { windows: 'Windows', darwin: 'macOS', linux: 'Linux' }
+
+// The desktop apps, for someone holding a valid pairing code.
+const BUNDLES: Record<string, string> = { appimage: 'AppImage', deb: '.deb', rpm: '.rpm', nsis: 'installer', msi: '.msi', app: 'app' }
+
+function installersSection(code: string, installers: Installer[]) {
+  if (installers.length === 0) return ''
+  const row = (i: Installer) => {
+    const [system = '', arch = '', bundle] = i.platform.split('-')
+    const kind = bundle ? `, ${BUNDLES[bundle] ?? bundle}` : ''
+    return `<li><a href="/app/${code}/${encodeURIComponent(i.file)}">${xml(SYSTEMS[system] ?? system)} (${xml(arch)})${xml(kind)}, version ${xml(i.version)}</a> <span class="sub">${(i.size / 1_048_576).toFixed(1)} MB</span><code class="cmd">SHA-256 ${i.sha256}</code></li>`
+  }
+  return `<h2>Or install the app</h2><p class="sub">Downloads work while your pairing code is valid. Check the SHA-256 after downloading if you like.</p><ul>${installers.map(row).join('')}</ul>`
+}
+
+export function enrolPage({ appUrl, fingerprint: fp, hostsLine, code, userAgent = '', installers = [] }: { appUrl: string; fingerprint: string; hostsLine: string; code: string | null; userAgent?: string; installers?: Installer[] }) {
   const tick = `<img class="ok" src="${xml(appUrl)}/setup/ok.svg" alt="" width="20" height="20">`
   const check = `<p class="check"><span class="dot">${tick}</span>A green tick here means this device now trusts the hub.</p>`
   const openApp = code ? `${appUrl}/#pair=${code}` : appUrl
@@ -250,11 +267,12 @@ export function enrolPage({ appUrl, fingerprint: fp, hostsLine, code, userAgent 
 <title>Set up Vocorum</title><style>${ENROL_CSS}</style></head><body><main><div class="card">
 <h1>Set up this device</h1>
 <p class="sub">Once per device. Then you sign in with a passkey.</p>
+<p class="fine">Before you install anything, check that this hub certificate fingerprint matches the one the hub's owner gave you:<code class="cmd">${xml(fp)}</code>The certificate can only vouch for this hub's own names, never for any other site.</p>
 ${section(mine)}
 <h2>Then</h2>
 ${code ? `<a class="button" href="${xml(openApp)}">Open Vocorum</a><p class="code">${code}</p><p class="sub">Your pairing code is filled in. Create the passkey when asked.</p>` : `<a class="button" href="${xml(appUrl)}">Open Vocorum</a><p class="sub">Choose <b>Pair this device</b>, enter the code from the hub, and create the passkey.</p>`}
+${code ? installersSection(code, installers) : ''}
 <details><summary>Setting up a different kind of device</summary>${others.map(section).join('')}</details>
-<p class="fine">The profile's certificate fingerprint should match the one the hub printed:<code class="cmd">${xml(fp)}</code>This certificate can only vouch for this hub's own names, never for any other site.</p>
 </div></main></body></html>`
 }
 
@@ -271,7 +289,13 @@ export class PrivateListener {
   constructor(
     readonly config: PrivateListenerConfig,
     caDir: string,
-    private readonly hooks: { attach(server: EventEmitter): void; tailscaleLogins(): Map<string, string> },
+    private readonly hooks: {
+      attach(server: EventEmitter): void
+      tailscaleLogins(): Map<string, string>
+      // The app installers, for a valid pairing code (wrong codes count like pairing): null when the code is not valid.
+      installers?(code: string, peer: string): Promise<Installer[] | null>
+      sendInstaller?(req: http.IncomingMessage, res: http.ServerResponse, file: string): boolean
+    },
   ) {
     assertSpecificAddress(config.address)
     this.files = caFiles(caDir)
@@ -326,15 +350,20 @@ export class PrivateListener {
   async start() {
     await this.prepare()
     const current = { key: fs.readFileSync(this.files.key), cert: fs.readFileSync(this.files.cert) }
-    // After a CA change the old certificate still answers for the names it had and
-    // for connections without a name (by address), so devices that trust only the
-    // old CA keep working; new names get the new certificate.
+    // After a CA change the old certificate still answers for its other names and
+    // for connections without a name, so devices that trust only the old CA keep
+    // working. Never for the app's own name (names[0]: what new pairings use and
+    // what the pairing link's fingerprint is for), and by address only while the
+    // old certificate still has the hub's current address.
     let options: https.ServerOptions = { ...current, minVersion: 'TLSv1.2' }
     if (hasLegacy(this.files)) {
       const legacy = { key: fs.readFileSync(this.files.legacy.key), cert: fs.readFileSync(this.files.legacy.cert) }
-      const legacyNames = new Set((new crypto.X509Certificate(legacy.cert).subjectAltName ?? '').split(', ').filter((s) => s.startsWith('DNS:')).map((s) => s.slice(4).toLowerCase()))
+      const sans = (new crypto.X509Certificate(legacy.cert).subjectAltName ?? '').split(', ')
+      const primary = (this.config.names[0] ?? '').toLowerCase()
+      const legacyNames = new Set(sans.filter((s) => s.startsWith('DNS:')).map((s) => s.slice(4).toLowerCase()).filter((name) => name !== primary))
+      const legacyByAddress = sans.includes(`IP Address:${this.config.address}`)
       const contexts = { legacy: createSecureContext({ ...legacy, minVersion: 'TLSv1.2' }), current: createSecureContext({ ...current, minVersion: 'TLSv1.2' }) }
-      options = { ...legacy, minVersion: 'TLSv1.2', SNICallback: (name, done) => done(null, legacyNames.has(name.toLowerCase()) ? contexts.legacy : contexts.current) }
+      options = { ...(legacyByAddress ? legacy : current), minVersion: 'TLSv1.2', SNICallback: (name, done) => done(null, legacyNames.has(name.toLowerCase()) ? contexts.legacy : contexts.current) }
     }
     const tls = https.createServer(options)
     this.guard(tls)
@@ -354,7 +383,11 @@ export class PrivateListener {
     await new Promise<void>((resolve, reject) => tls.once('error', reject).listen(this.config.port, this.config.address, () => resolve()))
     this.servers.push(tls)
     if (this.config.httpPort !== null) {
-      const plain = http.createServer((req, res) => this.enrol(req, res))
+      const plain = http.createServer((req, res) => {
+        this.enrol(req, res).catch((error: { status?: number }) => {
+          if (!res.headersSent) res.writeHead(typeof error?.status === 'number' ? error.status : 500).end()
+        })
+      })
       this.guard(plain)
       await new Promise<void>((resolve, reject) => plain.once('error', reject).listen(this.config.httpPort ?? 0, this.config.address, () => resolve()))
       this.servers.push(plain)
@@ -400,7 +433,7 @@ export class PrivateListener {
     }
   }
 
-  private enrol(req: http.IncomingMessage, res: http.ServerResponse) {
+  private async enrol(req: http.IncomingMessage, res: http.ServerResponse) {
     const pathname = pathOf(req.url)
     if (pathname === null) return res.writeHead(400).end()
     const headers = { 'x-content-type-options': 'nosniff', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' }
@@ -414,11 +447,21 @@ export class PrivateListener {
     if (pathname === '/vocorum-ca.crt') {
       return res.writeHead(200, { ...headers, 'content-type': 'application/x-x509-ca-cert', 'content-disposition': 'attachment; filename="vocorum-ca.crt"' }).end(caDer)
     }
+    // /app/<code>/<file>: an app installer, only while that pairing code is valid.
+    const download = /^\/app\/([A-Z0-9]{10})\/([A-Za-z0-9][A-Za-z0-9._+-]{0,200})$/.exec(pathname)
+    if (download && this.hooks.installers && this.hooks.sendInstaller) {
+      const valid = await this.hooks.installers(download[1]!, req.socket.remoteAddress ?? '')
+      if (!valid?.some((i) => i.file === download[2])) return res.writeHead(404, headers).end()
+      if (this.hooks.sendInstaller(req, res, download[2]!)) return
+      return res.writeHead(404, headers).end()
+    }
     if (pathname === '/') {
       // ?code= from vocorum pair: the final link opens the app with it filled in.
-      const code = new URL(req.url ?? '/', 'http://x').searchParams.get('code')
+      const raw = new URL(req.url ?? '/', 'http://x').searchParams.get('code')
+      const code = raw && /^[A-Z0-9]{10}$/.test(raw) ? raw : null
       const appUrl = this.appOrigins[0] ?? ''
-      const body = enrolPage({ appUrl, fingerprint: fingerprint(this.files.caCert), hostsLine: `${this.config.address} ${this.config.names.join(' ')}`, code: code && /^[A-Z0-9]{10}$/.test(code) ? code : null, userAgent: req.headers['user-agent'] ?? '' })
+      const installers = code && this.hooks.installers ? ((await this.hooks.installers(code, req.socket.remoteAddress ?? '')) ?? []) : []
+      const body = enrolPage({ appUrl, fingerprint: fingerprint(this.files.caCert), hostsLine: `${this.config.address} ${this.config.names.join(' ')}`, code, userAgent: req.headers['user-agent'] ?? '', installers })
       return res.writeHead(200, { ...headers, 'content-type': 'text/html; charset=utf-8', 'content-security-policy': `default-src 'none'; style-src 'unsafe-inline'; img-src ${appUrl}` }).end(body)
     }
     res.writeHead(404, headers).end()
@@ -441,7 +484,15 @@ export class PrivateListener {
             .then(({ stdout }) => (JSON.parse(stdout) as { UserProfile?: { LoginName?: string } }).UserProfile?.LoginName ?? null)
             .catch(() => null)
     this.whoisCache.set(ip, { login, at: Date.now() })
+    if (login && !allowed.has(login)) this.unknownLogins.set(req, login)
     return login && allowed.has(login) ? login : false
+  }
+
+  // The Tailscale login of a tailnet peer that checkPeer() turned away: a friend
+  // pairing with an invite code before the hub knows their account.
+  private unknownLogins = new WeakMap<http.IncomingMessage, string>()
+  unknownLogin(req: http.IncomingMessage) {
+    return this.unknownLogins.get(req) ?? null
   }
 }
 

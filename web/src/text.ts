@@ -30,3 +30,6 @@ export function clock(iso: string): string {
 
 // Machine names as people say them: "desktop" reads "Desktop".
 export const machineLabel = (name: string) => name.charAt(0).toUpperCase() + name.slice(1)
+
+// How a person is shown: their display name, else their username.
+export const displayName = (u: { username: string; global_name?: string | null } | undefined) => (u ? (u.global_name ?? u.username) : 'Someone')

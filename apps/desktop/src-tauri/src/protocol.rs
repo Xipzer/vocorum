@@ -179,7 +179,20 @@ async fn proxy(app: &AppHandle, request: Request<Vec<u8>>) -> Response<Cow<'stat
 
 #[cfg(test)]
 mod tests {
-  use super::capped_range;
+  use super::{capped_range, CSP};
+
+  #[test]
+  fn the_policy_matches_the_config_and_allows_no_remote_code() {
+    let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+    assert_eq!(config["app"]["security"]["csp"].as_str(), Some(CSP));
+    let directive = |name: &str| CSP.split(';').map(str::trim).find(|d| d.starts_with(&format!("{name} "))).unwrap().to_string();
+    assert_eq!(directive("script-src"), "script-src 'self'");
+    assert_eq!(directive("connect-src"), "connect-src 'self' ipc: http://ipc.localhost");
+    for name in ["worker-src", "frame-src", "object-src", "frame-ancestors", "base-uri", "form-action"] {
+      assert!(directive(name).ends_with("'none'"), "{name}");
+    }
+    assert!(!CSP.contains("unsafe-eval") && !CSP.contains("http://*") && !CSP.contains("https://*"));
+  }
 
   #[test]
   fn open_ranges_are_capped() {

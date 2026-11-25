@@ -449,6 +449,12 @@ mod tests {
   }
 
   #[test]
+  fn a_bad_ca_is_refused() {
+    assert!(tls_config(b"not a certificate").is_err());
+    assert!(tls_config(&[]).is_err());
+  }
+
+  #[test]
   fn colons_in_the_fingerprint_are_fine() {
     let colons = FP.as_bytes().chunks(2).map(|c| std::str::from_utf8(c).unwrap().to_uppercase()).collect::<Vec<_>>().join(":");
     let link = parse_link(&format!("vocorum://pair?h=h.arpa&a=::1&p=1&hp=2&fp={colons}&c=X")).unwrap();

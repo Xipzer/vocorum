@@ -78,6 +78,7 @@ export class Members {
   // { user_id }: someone already on the hub joins this guild.
   async invite(v: Viewer, guildId: string, body: Record<string, unknown>) {
     await this.me(v, guildId, P.MANAGE_GUILD)
+    if (guildId === this.hub.options.config.adminGuildId) throw new HttpError(400, 'The Admin server is only for you and your admin agent')
     if (typeof body['user_id'] === 'string') {
       const user = await this.prisma.user.findUnique({ where: { id: body['user_id'] } })
       if (!user || user.bot || !(await this.hub.access.peers(v.userId)).has(user.id)) throw new HttpError(404, 'Unknown user')

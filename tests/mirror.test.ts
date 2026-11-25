@@ -202,3 +202,45 @@ test('a link that is not Discord\'s CDN is never fetched', async () => {
   const fresh = new Mirror({} as never)
   for (const url of ['http://cdn.discordapp.com/a', 'https://evil.example/cdn.discordapp.com/a', 'https://cdn.discordapp.com.evil.example/a', 'file:///etc/passwd', undefined]) expect(await fresh.download(url)).toBeNull()
 })
+
+test('a session belongs to the machine whose agent posts in it; a project-group category is not a machine', async () => {
+  const admin = (p: string, body: unknown) => fetch(`${t.hub.localUrl}/admin/mirror/${p}`, { method: 'POST', headers: { authorization: `Bearer ${readFileSync(t.paths.adminToken, 'utf8').trim()}`, 'content-type': 'application/json' }, body: JSON.stringify(body) })
+  expect((await admin('machine-bots/desktop', { discord_user_id: '960000000000000001', name: 'Desktop PC' })).status).toBe(200)
+  await put('/channels/920000000000000030', { guild_id: GUILD, type: 4, name: 'Kimaki Group Work' })
+  await put('/channels/920000000000000031', { guild_id: GUILD, type: 0, name: 'shared-project', parent_id: '920000000000000030' })
+  await put('/channels/930000000000000031', { guild_id: GUILD, type: 11, name: 'Look into the data', parent_id: '920000000000000031' })
+  await put('/messages/940000000000000031', { channel_id: '930000000000000031', author: { id: '960000000000000001', username: 'Desktop PC', bot: true }, content: 'Which source should I use?', timestamp: '2026-11-24T10:00:00.000Z' })
+  const overview = await waitFor(async () => {
+    const o = await phone.json('/client/overview')
+    return o.sessions.some((s: { id: string; machine: string | null }) => s.id === '930000000000000031' && s.machine) ? o : null
+  })
+  expect(overview.sessions.find((s: { id: string }) => s.id === '930000000000000031').machine).toBe('desktop')
+  expect(overview.machines.map((m: { name: string }) => m.name)).not.toContain('Group Work')
+})
+
+test('a machine reports its Kimaki routines; the hub shows them read-only and replaces the list each time', async () => {
+  const routine = (id: string, extra: Record<string, unknown> = {}) => ({ id, prompt: 'Weekly report', schedule: '0 9 * * 1 (UTC)', channel_id: '920000000000000031', thread_id: null, agent: 'build', model: 'provider/model', next_run: '2026-11-30T09:00:00.000Z', status: 'active', ...extra })
+  expect((await fetch(`${t.hub.localUrl}/hub/mirror/routines`, { method: 'PUT', headers: { authorization: `Bot ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ routines: 'no' }) })).status).toBe(400)
+  const send = (routines: unknown[]) => fetch(`${t.hub.localUrl}/hub/mirror/routines`, { method: 'PUT', headers: { authorization: `Bot ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ routines }) })
+  expect(await (await send([routine('7'), routine('8', { channel_id: null, thread_id: '930000000000000031' }), routine('9', { channel_id: '999999999999999999' }), routine('10', { thread_id: '939999999999999999' })])).json()).toEqual({ machine: 'desktop', routines: 4 })
+  let listed = (await phone.json('/client/routines')).machines.find((m: { machine: string }) => m.machine === 'desktop')
+  // A routine in a channel nobody here can see is not shown.
+  // A thread the hub never mirrored falls back to the routine's channel.
+  expect(listed.routines.map((r: { id: string }) => r.id)).toEqual(['7', '8', '10'])
+  expect(listed.routines[0]).toMatchObject({ prompt: 'Weekly report', schedule: '0 9 * * 1 (UTC)', next_run: '2026-11-30T09:00:00.000Z' })
+  await send([routine('8', { channel_id: null, thread_id: '930000000000000031' })])
+  listed = (await phone.json('/client/routines')).machines.find((m: { machine: string }) => m.machine === 'desktop')
+  expect(listed.routines.map((r: { id: string }) => r.id)).toEqual(['8'])
+})
+
+test('history added later is marked read for just its channels', async () => {
+  const admin = (p: string, body: unknown) => fetch(`${t.hub.localUrl}/admin/mirror/${p}`, { method: 'POST', headers: { authorization: `Bearer ${readFileSync(t.paths.adminToken, 'utf8').trim()}`, 'content-type': 'application/json' }, body: JSON.stringify(body) })
+  await put('/channels/920000000000000040', { guild_id: GUILD, type: 0, name: 'live-channel' })
+  await put('/messages/940000000000000040', { channel_id: '920000000000000040', author: { id: '960000000000000002', username: 'Someone' }, content: `<@${OWNER_DISCORD}> still unread`, timestamp: '2026-11-24T10:00:00.000Z' })
+  expect((await admin('channels', [{ id: '930000000000000041', guild_id: GUILD, type: 11, name: 'old thread', parent_id: '920000000000000040', thread_metadata: { archived: true } }])).status).toBe(200)
+  expect((await admin('messages', [{ id: '940000000000000041', channel_id: '930000000000000041', author: { id: '960000000000000002', username: 'Someone' }, content: `<@${OWNER_DISCORD}> old news`, timestamp: '2026-08-01T10:00:00.000Z' }])).status).toBe(200)
+  expect((await admin('finish', { threads: ['930000000000000041'], channels: ['930000000000000041'] })).status).toBe(200)
+  const state = await phone.json('/client/state')
+  expect(state.mentions['930000000000000041']).toBeUndefined()
+  expect(state.mentions['920000000000000040']).toBe(1)
+})

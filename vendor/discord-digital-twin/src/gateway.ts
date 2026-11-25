@@ -112,6 +112,7 @@ export class DiscordGateway {
   private resumeUrl: string | null
   private gatewayUrlFor: ((host: string | undefined) => string | undefined) | null
   private tokenKey: (token: string) => string
+  private directAudience: ((channelId: string) => ReadonlySet<string> | null) | null
 
   constructor({
     httpServer,
@@ -126,6 +127,7 @@ export class DiscordGateway {
     gatewayUrlFor,
     resumeUrl,
     tokenKey,
+    directAudience,
   }: {
     httpServer: http.Server
     port: number
@@ -143,8 +145,11 @@ export class DiscordGateway {
     resumeUrl?: string
     // Maps a presented token to the key clients are registered under (e.g. a hash).
     tokenKey?: (token: string) => string
+    // Direct message channels: the client keys that may see one (null: not one).
+    directAudience?: (channelId: string) => ReadonlySet<string> | null
   }) {
     this.tokenKey = tokenKey ?? ((token) => token)
+    this.directAudience = directAudience ?? null
     this.port = port
     this.resumeUrl = resumeUrl ?? null
     this.gatewayUrlFor = gatewayUrlFor ?? null
@@ -236,9 +241,12 @@ export class DiscordGateway {
       data && typeof data === 'object' && 'guild_id' in data && typeof data.guild_id === 'string'
         ? data.guild_id
         : null
+    // No guild: a direct message channel's events go only to the clients it is with.
+    const direct = !guildId && this.directAudience ? this.directAudience(directChannelOf(data) ?? '') : null
     for (const client of this.clients) {
       if (!client.identified) continue
       if (guildId && client.guilds && !client.guilds.has(guildId)) continue
+      if (direct && !(client.token && direct.has(client.token))) continue
       // Still sending READY: deliver after it and after the missed events, in order.
       if (client.held) {
         client.held.push({ event, data })
@@ -560,4 +568,13 @@ export class DiscordGateway {
       return guildData
     }
   }
+}
+
+// The channel a guildless event is about: channel_id, or the id of a DM channel itself.
+function directChannelOf(data: unknown): string | null {
+  if (!data || typeof data !== 'object') return null
+  const record = data as { channel_id?: unknown; id?: unknown; type?: unknown }
+  if (typeof record.channel_id === 'string') return record.channel_id
+  if ((record.type === 1 || record.type === 3) && typeof record.id === 'string') return record.id
+  return null
 }

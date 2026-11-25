@@ -175,6 +175,10 @@ export interface DigitalDiscordOptions {
   // A member's permissions in a channel, sent with interactions (Discord's
   // member.permissions and app_permissions). Default: everything.
   memberPermissions?: (userId: string, channelId: string) => Promise<string>
+  // gatewayProxy mode: direct message channels (no guild). The client keys
+  // that may see one, or null when the channel is not a direct message.
+  // Without it, events of guildless channels go to every client.
+  directAudience?: (channelId: string) => ReadonlySet<string> | null
 }
 
 const isThreadType = (type: number) => type === 10 || type === 11 || type === 12
@@ -274,6 +278,8 @@ export class DigitalDiscord {
   async start(): Promise<void> {
     await this.prisma.$executeRawUnsafe('PRAGMA busy_timeout = 5000')
     await this.prisma.$executeRawUnsafe('PRAGMA journal_mode = WAL')
+    // A bounded page cache (8 MB): reads of a large history must not keep the whole database in memory.
+    await this.prisma.$executeRawUnsafe('PRAGMA cache_size = -8000')
 
     // Apply migrations by pushing schema to in-memory DB
     // For libsql :memory:, we use Prisma's $executeRawUnsafe with the schema SQL
@@ -307,6 +313,7 @@ export class DigitalDiscord {
       extension: this.options.extension,
       storeAttachment: this.options.storeAttachment,
       tokenKey: this.options.gatewayClientKey,
+      directAudience: this.options.directAudience,
     })
 
     const port = await startServer(this.server, { port: this.options.port, host: this.options.host })
@@ -868,6 +875,17 @@ export class DigitalDiscord {
       content: name,
       type: MessageType.ChannelNameChange,
     })
+  }
+
+  // A direct message channel (type 1, no guild) with these people or bots.
+  // CHANNEL_CREATE goes only where the directAudience option allows.
+  // extra: fields the caller adds to the event (e.g. a hub's own annotations).
+  async createDirectChannel({ id, recipientIds, extra = {} }: { id: string; recipientIds: string[]; extra?: Record<string, unknown> }) {
+    if (!this.server) throw new Error('Server not started')
+    const channel = (await this.prisma.channel.findUnique({ where: { id } })) ?? (await this.prisma.channel.create({ data: { id, type: 1 } }))
+    const users = await this.prisma.user.findMany({ where: { id: { in: recipientIds } } })
+    this.server.gateway.broadcast(GatewayDispatchEvents.ChannelCreate, { ...channelToAPI(channel), recipients: users.map((u) => userToAPI(u)), ...extra })
+    return channel
   }
 
   async simulateUserMessageEdit({
