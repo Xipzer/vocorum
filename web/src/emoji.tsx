@@ -8,15 +8,13 @@ import { api, type CustomEmojiInfo } from './api.ts'
 
 const DIR = '/emoji/twemoji-17'
 
-// Recommended emoji (sequences, flags, keycaps, skin tones) where the browser knows the set;
-// a close approximation elsewhere.
-const PATTERN = (() => {
-  try {
-    return new RegExp('\\p{RGI_Emoji}', 'gv')
-  } catch {
-    return /(?:\p{RI}\p{RI}|[#*0-9]\uFE0F?\u20E3|(?:\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F)\p{EMod}?(?:\u200D(?:\p{Extended_Pictographic}\uFE0F?)\p{EMod}?)*)/gu
-  }
-})()
+// Recommended emoji: flags, keycaps, skin tones, subdivision flags and joined sequences.
+// Written out by property rather than as \p{RGI_Emoji}: WebKit runs that set in its regex
+// interpreter, about a thousand times slower on the same text (15 ms against 0.01 ms for
+// 2,000 characters of prose on macOS), and chat scans message text every time it changes.
+// tests/emoji.browser.test.ts holds this pattern to the exact set for every vendored image.
+const PATTERN =
+  /(?:\p{RI}\p{RI}|[#*0-9]\uFE0F?\u20E3|(?!\p{RI})(?:\p{EBase}\p{EMod}|\p{Emoji_Presentation}\uFE0F?|\p{Extended_Pictographic}\uFE0F)(?:[\u{E0020}-\u{E007E}]+\u{E007F})?(?:\u200D(?:\p{EBase}\p{EMod}|\p{Extended_Pictographic}\uFE0F?))*)/gu
 
 // The vendored files are named by code points without U+FE0F.
 export const emojiUrl = (emoji: string) =>
@@ -59,6 +57,8 @@ export function emojify(text: string, key = 'e', className?: string): ReactNode[
 }
 
 function unicode(text: string, key: string, className?: string): ReactNode[] {
+  // Every Unicode emoji sequence has a non-ASCII code unit, including keycaps.
+  if (!/[^\x00-\x7f]/.test(text)) return [text]
   const out: ReactNode[] = []
   let last = 0
   let n = 0

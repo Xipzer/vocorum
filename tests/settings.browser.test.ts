@@ -117,8 +117,10 @@ test.skipIf(!ready)('settings: display name, then a channel created, edited and 
   const channel = dialog(page, 'Channel settings')
   await channel.waitFor()
   await channel.getByRole('textbox', { name: 'Topic' }).fill('What shipped, per version')
+  const saved = page.waitForResponse((r) => r.request().method() === 'PATCH' && new URL(r.url()).pathname.endsWith('/settings'))
   await channel.getByRole('button', { name: 'Save' }).click()
-  await expect.poll(() => page.evaluate(() => fetch('/client/state').then((r) => r.json()).then((s: { channels: Array<{ name: string; topic?: string }> }) => s.channels.find((c: { name: string }) => c.name === 'release-notes')?.topic))).toBe('What shipped, per version')
+  expect((await saved).ok()).toBe(true)
+  expect((await state(page)).channels.find((c: { name: string }) => c.name === 'release-notes')?.topic).toBe('What shipped, per version')
 
   await channel.getByRole('button', { name: 'Delete channel' }).click()
   const remove = channel.getByRole('button', { name: 'Delete channel' }).last()
@@ -127,10 +129,16 @@ test.skipIf(!ready)('settings: display name, then a channel created, edited and 
   await remove.click()
   await channel.waitFor({ state: 'detached' })
   await page.locator('.sidebar .channel', { hasText: 'release-notes' }).waitFor({ state: 'detached' })
-  expect(await page.evaluate(() => fetch('/client/state').then((r) => r.json()).then((s: { channels: Array<{ name: string; topic?: string }> }) => s.channels.some((c: { name: string }) => c.name === 'release-notes')))).toBe(false)
+  expect((await state(page)).channels.some((c: { name: string }) => c.name === 'release-notes')).toBe(false)
 })
 
-const state = (p: Page): Promise<any> => p.evaluate(() => fetch('/client/state').then((r) => r.json()))
+// Verify persisted state in the same signed-in context. Only the application's reloads
+// should pass through the 800 ms delay above; test assertions should not create stale reloads.
+const state = async (p: Page) => {
+  const response = await p.request.get(`${origin}/client/state`)
+  expect(response.ok()).toBe(true)
+  return response.json()
+}
 
 test.skipIf(!ready)('people: a role with a permission, a private channel, an invite with a code', async () => {
   await openSettings(page)

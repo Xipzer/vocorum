@@ -699,7 +699,7 @@ const USER_SECTIONS: NavItem[] = [
   { id: 'devices', label: 'Devices' },
   { id: 'notifications', label: 'Notifications' },
   { id: 'appearance', label: 'Appearance' },
-  ...(desktopUpdates ? [{ id: 'updates', label: 'Updates' }] : []),
+  { id: 'updates', label: 'Updates' },
   { id: 'privacy', label: 'Privacy' },
 ]
 const SERVER_SECTIONS: NavItem[] = [
@@ -725,7 +725,8 @@ export function Settings({ initial, onClose }: { initial?: string; onClose: () =
   const section = picked ?? (phone ? null : 'account')
   const guild = currentGuild(state)
   const groups: NavGroup[] = [
-    { heading: 'User settings', items: USER_SECTIONS },
+    // Updates: this app's on desktop, the hub's own for its owner.
+    { heading: 'User settings', items: USER_SECTIONS.filter((i) => i.id !== 'updates' || desktopUpdates || state.hub_owner === true) },
     // Channels, roles and permissions only for people who may manage them, like Discord.
     { heading: guild.name, items: SERVER_SECTIONS.filter((i) => (i.id === 'channels' ? can(P.MANAGE_CHANNELS, null, guild.id) : i.id === 'roles' || i.id === 'permissions' ? can(P.MANAGE_ROLES, null, guild.id) : true)) },
     { items: [{ id: 'signout', label: 'Sign out', red: true, run: () => void api.logout().then(() => location.reload()) }] },

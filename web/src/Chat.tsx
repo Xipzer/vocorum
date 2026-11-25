@@ -10,6 +10,8 @@ import { Components, uniqueGallery, type Interact } from './components.tsx'
 import { Attachments, Embeds, Forwarded, onlyEmbedLink, PollCard, stamp, Stickers } from './Media.tsx'
 import { Composer } from './Composer.tsx'
 import { Markdown, type MarkdownContext } from './markdown.tsx'
+import { recordingOf } from './recording.ts'
+import './voice-note.css'
 import { modelReceipt } from './ModelBadge.tsx'
 import { dmName, dmUser, isDm, KEEP_AT_BOTTOM, machineOf, snowflakeGt, store, THREAD_TYPES, useStore } from './store.ts'
 import { workspaceWaiting } from './Workspace.tsx'
@@ -40,6 +42,7 @@ const SPEEDS = [1, 1.5, 2]
 function VoiceMessage({ url, duration, waveform }: { url: string; duration?: number; waveform?: string }) {
   const audio = useRef<HTMLAudioElement>(null)
   const [playing, setPlaying] = useState(false)
+  const [failed, setFailed] = useState(false)
   const [progress, setProgress] = useState(0)
   const [speed, setSpeed] = useState(0)
   const bars = (() => {
@@ -52,9 +55,10 @@ function VoiceMessage({ url, duration, waveform }: { url: string; duration?: num
     }
   })()
   const length = duration ? `${Math.floor(duration / 60)}:${String(Math.round(duration % 60)).padStart(2, '0')}` : ''
+  if (failed) return <span className="voice-transcript" role="status">Recording unavailable</span>
   return (
     <div className="voice-message">
-      <button className="voice-play" onClick={() => (playing ? audio.current?.pause() : void audio.current?.play())} aria-label={playing ? 'Pause' : 'Play'}>
+      <button className="voice-play" onClick={() => (playing ? audio.current?.pause() : void audio.current?.play().catch(() => setFailed(true)))} aria-label={playing ? 'Pause voice note' : 'Play voice note'}>
         <Icon name={playing ? 'pause' : 'play'} size={14} />
       </button>
       <div className="voice-wave">
@@ -77,6 +81,7 @@ function VoiceMessage({ url, duration, waveform }: { url: string; duration?: num
       <audio
         ref={audio}
         src={url}
+        onError={() => setFailed(true)}
         preload="none"
         onPlay={(e) => {
           e.currentTarget.playbackRate = SPEEDS[speed]!
@@ -290,6 +295,8 @@ function MessageItem({
   const allRequests = useStore((d) => (requestIds.length ? d.requests : NO_REQUESTS))
   const linked = requestIds.length ? allRequests.filter((r) => requestIds.includes(r.id)) : NO_REQUESTS
   const privateReply = message.private_reply
+  const spoken = Boolean((message.flags ?? 0) & IS_VOICE)
+  const recording = spoken ? recordingOf(message) : undefined
   const needs = !ask && !used && !privateReply && current && message.author.bot && (hasOpenComponents(message.components) || (message.content.includes(`<@${state.me.id}>`) && !FOOTER.test(message.content)))
   // Kimaki's errors start with a cross: they read red, and an actionable one gets a red band.
   const failed = message.author.bot && /^\s*[×✗✕❌]\s/.test(message.content)
@@ -412,7 +419,7 @@ function MessageItem({
               <Avatar id={reference.author.id} name={reference.author.global_name ?? reference.author.username} size="inline" version={state.users.find((u) => u.id === reference.author.id)?.avatar} src={reference.author.bot ? machineIcon(state.machine_icons, botName, 'avatar') : null} />
             </span>
             <strong>{(reference.author.bot && botName && machineLabel(botName)) || (reference.author.global_name ?? reference.author.username)}</strong>
-            <span className="reply-text">{plain(reference.content, ctx.userName, ctx.channelName).slice(0, 160) || attachmentLabel(reference)}</span>
+            <span className="reply-text">{plain(reference.content, ctx.userName, ctx.channelName) || attachmentLabel(reference)}</span>
             {!reference.content && (reference.attachments.length > 0 || reference.embeds.length > 0) && <Icon name="image" size={16} className="reply-media" />}
           </div>
         ) : (
@@ -444,6 +451,7 @@ function MessageItem({
             <span className="message-time" title={receipt && message.edited_timestamp ? `Edited ${stamp(message.edited_timestamp)}` : undefined}>{clock(message.timestamp)}</span>
           </div>
         )}
+        {spoken && <div className="voice-note-label"><Icon name="mic" size={16} />Voice note</div>}
         {editing !== null ? (
           <div className="edit-box">
             <textarea
@@ -461,7 +469,7 @@ function MessageItem({
             <div className="subtext">Esc to cancel, Enter to save</div>
           </div>
         ) : (
-          ask ? <PermissionCard ask={ask} components={message.components} interact={interact} /> : !v2 && !onlyEmbedLink(message.content, embeds) && (receipt || <Markdown text={message.content} ctx={ctx} runFooter={message.author.bot} />)
+          spoken ? (message.content && <div className="voice-transcript">{message.content}</div>) : ask ? <PermissionCard ask={ask} components={message.components} interact={interact} /> : !v2 && !onlyEmbedLink(message.content, embeds) && (receipt || <Markdown text={message.content} ctx={ctx} runFooter={message.author.bot} />)
         )}
         {editing === null && !receipt && message.edited_timestamp && (!message.author.bot || used) && (
           <span className="edited-tail" title={`Edited ${stamp(message.edited_timestamp)}`}>
@@ -470,7 +478,8 @@ function MessageItem({
         )}
         {forward && <Forwarded snapshot={forward} ctx={ctx} source={forwardSource} onSource={message.message_reference?.channel_id && ctx.openChannel ? () => ctx.openChannel!(message.message_reference!.channel_id!) : undefined} />}
         <Embeds embeds={embeds} ctx={ctx} />
-        <Attachments attachments={message.attachments} flags={message.flags} voice={(a) => <VoiceMessage url={a.url} duration={a.duration_secs} waveform={a.waveform} />} />
+        {recording && <VoiceMessage key={recording.url} url={recording.url} duration={recording.duration_secs ?? message.voice_note?.duration_secs} waveform={recording.waveform} />}
+        <Attachments attachments={spoken ? message.attachments.filter(a => a.id !== message.voice_note?.attachment_id && !/^(audio\/|application\/ogg)/i.test(a.content_type ?? '') && !/\.(ogg|opus|mp3|m4a|wav|webm)$/i.test(a.filename)) : message.attachments} />
         {message.sticker_items?.length ? <Stickers items={message.sticker_items} /> : null}
         {message.poll && <PollCard poll={message.poll} />}
         {linked.length > 0 && (
@@ -786,10 +795,13 @@ export function Chat({
   // Scrolled a screen or more above the newest, and the "New messages" line out of sight above.
   const [away, setAway] = useState(false)
   const [newAbove, setNewAbove] = useState(false)
-  const [newRead, setNewRead] = useState(false)
+  const [caughtUp, setCaughtUp] = useState(false)
   const scroller = useRef<HTMLDivElement>(null)
   const content = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
+  const followFrame = useRef(0)
+  const lastArrival = useRef(entry?.arrival)
+  useEffect(() => () => cancelAnimationFrame(followFrame.current), [])
   const history = useMessageHistory(channel.id, entry, scroller, pinned)
   const typingSince = useRef<Record<string, number>>({})
   const isThread = THREAD_TYPES.has(channel.type)
@@ -825,7 +837,7 @@ export function Chat({
         schedulesOn ? [{ label: `Scheduled${scheduledHere ? ` (${scheduledHere})` : ''}`, icon: 'clock' as const, run: () => sessionActions.scheduled?.(channel.id) }] : [],
         [
           // Below 1100px wide these leave the toolbar for this menu, so the title keeps room.
-          ...(!dm && narrow() ? [...(onWorkspace && !phone() ? [{ label: 'Workspace', icon: 'sidebar' as const, run: onWorkspace }] : []), { label: `Linked sessions${linkCount ? ` (${linkCount})` : ''}`, icon: 'link' as const, run: onLinks }, ...(isHubOwner() ? [{ label: `Services${serviceCount ? ` (${serviceCount})` : ''}`, icon: 'server' as const, run: onServices }] : [])] : []),
+          ...(!dm && narrow() ? [...(onWorkspace ? [{ label: 'Workspace', icon: 'sidebar' as const, run: onWorkspace }] : []), { label: `Linked sessions${linkCount ? ` (${linkCount})` : ''}`, icon: 'link' as const, run: onLinks }, ...(isHubOwner() ? [{ label: `Services${serviceCount ? ` (${serviceCount})` : ''}`, icon: 'server' as const, run: onServices }] : [])] : []),
         ],
         [
           ...(manageThread ? [{ label: 'Rename', icon: 'pencil' as const, run: () => setRenaming(title) }] : []),
@@ -849,8 +861,10 @@ export function Chat({
   // Read up to here when the thread was opened: the "New messages" line goes after it.
   // Marking a message unread moves the line to it.
   const heldAt = useStore((d) => d.held[channel.id])
-  const seenAtOpen = useMemo(() => store.data.seen[channel.id], [channel.id, heldAt])
-  useEffect(() => setNewRead(false), [heldAt])
+  const seen = useStore((d) => d.seen[channel.id])
+  // A chat remounts on navigation. Keep the initial backlog bounded to what was
+  // there on entry; later arrivals follow the live read cursor.
+  const [onEntry] = useState(() => ({ after: seen, through: channel.last_message_id }))
   useEffect(() => () => store.release(channel.id), [channel.id])
   useEffect(() => store.show(channel.id), [channel.id])
   const parent = isThread ? state.channels.find((c) => c.id === channel.parent_id) : undefined
@@ -888,13 +902,24 @@ export function Chat({
     pinned.current = true
     setReplyTo(null)
     setAway(false)
-    setNewRead(false)
     void store.loadMessages(channel.id).catch((e: Error) => setToast(e.message))
   }, [channel.id])
 
+  const readVisibleEnd = () => {
+    const el = scroller.current
+    if (!el || !el.clientHeight || !pinned.current || document.visibilityState !== 'visible' || !document.hasFocus()) return
+    if (el.scrollHeight - el.scrollTop - el.clientHeight > 3) return
+    const last = store.data.messages[channel.id]?.list.at(-1)
+    if (last?.channel_id === channel.id) store.markSeen(channel.id, last.id)
+  }
   useEffect(() => {
-    store.markSeen(channel.id)
-  }, [channel.id, channel.last_message_id])
+    window.addEventListener('focus', readVisibleEnd)
+    document.addEventListener('visibilitychange', readVisibleEnd)
+    return () => {
+      window.removeEventListener('focus', readVisibleEnd)
+      document.removeEventListener('visibilitychange', readVisibleEnd)
+    }
+  }, [channel.id])
   // History that arrived without live events (an import, a state refetch) loads when the
   // channel's last message moves past what is shown.
   useEffect(() => {
@@ -904,9 +929,36 @@ export function Chat({
   useLayoutEffect(() => {
     const el = scroller.current
     if (!el) return
-    if (pinned.current && el.scrollHeight - el.clientHeight - el.scrollTop > 1) el.scrollTop = el.scrollHeight
+    const fresh = entry?.arrival && entry.arrival !== lastArrival.current
+    lastArrival.current = entry?.arrival
+    const gap = el.scrollHeight - el.clientHeight - el.scrollTop
+    if (pinned.current && gap > 1 && !followFrame.current) {
+      if (fresh && gap <= Math.min(180, el.clientHeight / 2) && document.hasFocus() && motion() === 'smooth') {
+        // Ease only a live append at the tail. Loading history, switching chats
+        // and reduced motion still place the reader directly at the right row.
+        const start = performance.now()
+        const advance = (now: number) => {
+          followFrame.current = 0
+          if (!pinned.current) return
+          const t = Math.min(1, (now - start) / 120)
+          el.scrollTop = el.scrollHeight - el.clientHeight - gap * (1 - t) ** 3
+          if (t < 1) followFrame.current = requestAnimationFrame(advance)
+          else { measure(el); readVisibleEnd() }
+        }
+        followFrame.current = requestAnimationFrame(advance)
+      } else el.scrollTop = el.scrollHeight
+    }
     measure(el)
-  }, [list])
+    readVisibleEnd()
+  }, [list, entry?.arrival])
+
+  const interruptFollow = () => {
+    if (!followFrame.current) return
+    cancelAnimationFrame(followFrame.current)
+    followFrame.current = 0
+    const el = scroller.current
+    if (el) pinned.current = el.scrollHeight - el.clientHeight - el.scrollTop <= 3
+  }
 
   const measure = (el: HTMLDivElement) => {
     setAway(el.scrollHeight - el.scrollTop - el.clientHeight > Math.max(el.clientHeight, 400))
@@ -917,6 +969,7 @@ export function Chat({
     const el = scroller.current
     if (!el) return
     pinned.current = true
+    setCaughtUp(true)
     setAway(false)
     el.scrollTo({ top: el.scrollHeight, behavior: motion() })
   }
@@ -927,7 +980,7 @@ export function Chat({
     const inner = content.current
     if (!el || !inner) return
     const observer = new ResizeObserver(() => {
-      if (pinned.current && el.scrollHeight - el.clientHeight - el.scrollTop > 1) el.scrollTop = el.scrollHeight
+      if (pinned.current && !followFrame.current && el.scrollHeight - el.clientHeight - el.scrollTop > 1) el.scrollTop = el.scrollHeight
     })
     observer.observe(inner)
     observer.observe(el)
@@ -984,7 +1037,14 @@ export function Chat({
 
   const byId = new Map(list.map((m) => [m.id, m]))
   // Only the current turn can still be waiting: an answer from the owner settles everything above it.
-  const unread = seenAtOpen ? entry?.list.filter((m) => snowflakeGt(m.id, seenAtOpen) && (m.author.id !== state.me.id || heldAt)) : undefined
+  const following = pinned.current && document.visibilityState === 'visible' && document.hasFocus()
+  const unread = entry?.list.filter((m) => {
+    if (m.channel_id !== channel.id || m.private_reply) return false
+    if (heldAt) return !snowflakeGt(heldAt, m.id)
+    if (m.author.id === state.me.id) return false
+    const onReturn = !caughtUp && onEntry.after && onEntry.through && snowflakeGt(m.id, onEntry.after) && !snowflakeGt(m.id, onEntry.through)
+    return Boolean(onReturn || (!following && seen && snowflakeGt(m.id, seen)))
+  })
   const firstNew = unread?.[0]?.id
   const newCount = unread?.length ?? 0
   const firstNewAt = firstNew ? byId.get(firstNew)?.timestamp : undefined
@@ -1057,7 +1117,7 @@ export function Chat({
                 <>
                   <a className="crumb-parent desk-only wide-only" href={`#/c/${parent.id}`} title={`Go to #${parent.name}`}>
                     <Icon name="hash" size={18} />
-                    {parent.name}
+                    <span className="crumb-parent-label">{parent.name}</span>
                   </a>
                   <Icon name="chevron" size={14} className="crumb-sep desk-only wide-only" />
                 </>
@@ -1068,7 +1128,7 @@ export function Chat({
                     <DmAvatar channel={channel} size="inline" />
                   </span>
                 ) : (
-                  <Icon name={isThread ? 'thread' : 'hash'} size={18} className="title-icon" />
+                  <Icon name={isThread ? 'threadCrumb' : 'hash'} size={isThread ? 20 : 18} className="title-icon" />
                 )}
                 <span className="title-text"><E>{title}</E></span>
               </button>
@@ -1152,15 +1212,20 @@ export function Chat({
         </div>
       )}
       <div className="jump-dock top">
-        {firstNew && newAbove && !newRead && (
+        {firstNew && newAbove && (
           <div className="new-bar" role="status">
-            <button className="new-bar-jump" onClick={() => void jump(firstNew)}>
+            <button className="new-bar-jump" onClick={() => {
+              if (scroller.current?.querySelector(`#m-${firstNew}`)) return void jump(firstNew)
+              // A folded run has a visible divider but no individual message row.
+              pinned.current = false
+              scroller.current?.querySelector('.new-divider')?.scrollIntoView({ block: 'center', behavior: motion() })
+            }}>
               {newCount} new {newCount === 1 ? 'message' : 'messages'} since {firstNewAt ? `${clock(firstNewAt)}${dayLabel(firstNewAt) === 'Today' ? '' : ` ${when(firstNewAt)}`}` : 'you were last here'}
             </button>
             <button
               className="new-bar-read"
               onClick={() => {
-                setNewRead(true)
+                setCaughtUp(true)
                 store.release(channel.id)
                 store.markSeen(channel.id)
               }}
@@ -1176,11 +1241,14 @@ export function Chat({
         ref={scroller}
         tabIndex={0}
         aria-label="Messages"
+        onWheelCapture={interruptFollow}
+        onTouchStartCapture={interruptFollow}
+        onPointerDownCapture={interruptFollow}
         onWheel={history.onWheel}
         onTouchStart={history.onTouchStart}
         onTouchMove={history.onTouchMove}
         onPointerDown={history.onPointerDown}
-        onKeyDownCapture={(e) => { if (!e.altKey && !e.ctrlKey && !e.metaKey && !(e.target as Element).closest('textarea,input,[role=dialog]')) history.key(e.key, e.shiftKey) }}
+        onKeyDownCapture={(e) => { interruptFollow(); if (!e.altKey && !e.ctrlKey && !e.metaKey && !(e.target as Element).closest('textarea,input,[role=dialog]')) history.key(e.key, e.shiftKey) }}
         onKeyDown={(e) => {
           // Arrows on the list itself pick the newest message on screen; from there they move.
           if (e.target !== e.currentTarget || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') || e.altKey || e.metaKey || e.ctrlKey) return
@@ -1193,7 +1261,10 @@ export function Chat({
         }}
         onScroll={(e) => {
           const el = e.currentTarget
-          pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+          const wasPinned = pinned.current
+          pinned.current = !!followFrame.current || el.scrollHeight - el.scrollTop - el.clientHeight <= 3
+          if (!wasPinned && pinned.current && document.hasFocus()) setCaughtUp(true)
+          if (pinned.current) readVisibleEnd()
           // Back at the newest after reading far back: let the old pages go.
           if (pinned.current && !selection.picked && list.length > 2 * KEEP_AT_BOTTOM) store.trimMessages(channel.id, KEEP_AT_BOTTOM)
           measure(el)
@@ -1312,7 +1383,9 @@ export function Chat({
           </button>
         </div>
       ) : (
-        <div className="footer">
+        <div className="footer" onChange={(event) => {
+          if (event.target instanceof HTMLTextAreaElement && !heldAt && pinned.current && document.hasFocus()) setCaughtUp(true)
+        }}>
           {toast ? (
             <div className="snackbar" role="alert">
               <Icon name="error" size={18} />

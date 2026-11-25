@@ -35,6 +35,8 @@ export type InteractionMeta = { id: string; type: number; name?: string; command
 export type Component = { type: number; [key: string]: any }
 export type Reaction = { emoji: string; count: number; me: boolean }
 export type Message = {
+  origin?: string
+  voice_note?: { duration_secs?: number; attachment_id?: string }
   id: string
   channel_id: string
   author: User
@@ -68,7 +70,7 @@ export type Channel = {
   parent_id?: string | null
   position?: number
   last_message_id?: string | null
-  thread_metadata?: { archived: boolean; locked?: boolean; archive_timestamp?: string }
+  thread_metadata?: { archived: boolean; locked?: boolean; archive_timestamp?: string; auto_archive_duration?: number }
   message_count?: number
   owner_id?: string
   // Who may do what here (type 0 role, 1 member), and what the viewer may do (decimal bits).
@@ -167,6 +169,13 @@ export type SessionSummary = {
 export type MachineSummary = { name: string; online: boolean | null; waiting: number; running: number; failed: number }
 export type InteractionResult = { interactionId: string; acknowledged: boolean; type: number | null; data: any }
 
+export type HubRelease = { commit: string; date: string; title: string; notes: string[] }
+export type HubUpdate = {
+  mode: 'off' | 'notify' | 'auto'
+  checked: { supported: false; reason: string } | { supported: true; current: HubRelease; checked_at: number; available: HubRelease[]; blocked: string | null } | null
+  run: { status: 'running' | 'done' | 'failed'; step: string; error: string | null } | null
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -177,11 +186,19 @@ export class ApiError extends Error {
 }
 
 export async function call<T>(path: string, init: RequestInit & { json?: unknown } = {}): Promise<T> {
-  const headers: Record<string, string> = {}
+  const headers = new Headers(init.headers)
   let body = init.body
   if (init.json !== undefined) {
-    headers['content-type'] = 'application/json'
+    headers.set('content-type', 'application/json')
     body = JSON.stringify(init.json)
+  }
+  // The Mac app's web view hands a form that holds a file to the app as an empty body
+  // (measured: 0 bytes arrive, where the same form sent as bytes arrives whole). So a
+  // form is always sent as bytes, with the boundary from the same encoder.
+  if (body instanceof FormData) {
+    const encoded = new Response(body)
+    headers.set('content-type', encoded.headers.get('content-type')!)
+    body = await encoded.arrayBuffer()
   }
   // A dropped connection surfaces as the browser's own words ("Load failed" in Safari,
   // "Failed to fetch" in Chrome); say what it means instead.
@@ -203,6 +220,11 @@ export async function call<T>(path: string, init: RequestInit & { json?: unknown
 
 export const api = {
   status: () => call<{ signedIn: boolean; device: { id: string; name: string } | null; open?: boolean }>('/client/auth/status'),
+  // The hub's own updates (owner only): what is new, install it, and whether it installs by itself.
+  hubUpdate: () => call<HubUpdate>('/client/hub/update'),
+  hubUpdateCheck: () => call<HubUpdate>('/client/hub/update/check', { method: 'POST', json: {} }),
+  hubUpdateInstall: () => call<{ started: boolean }>('/client/hub/update', { method: 'POST', json: {} }),
+  hubUpdateMode: (mode: 'notify' | 'auto') => call<HubUpdate>('/client/hub/update', { method: 'PUT', json: { mode } }),
   // A hub set up as open on this computer: no code or passkey.
   openSignIn: () => call('/client/auth/local', { method: 'POST', json: {} }),
   registerOptions: (code: string) => call<{ challengeId: string; options: any }>('/client/auth/register/options', { method: 'POST', json: { code } }),
@@ -222,7 +244,7 @@ export const api = {
   react: (channelId: string, messageId: string, emoji: string, on: boolean) =>
     call(`/client/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`, { method: on ? 'PUT' : 'DELETE' }),
   patchThread: (channelId: string, body: { name?: string; archived?: boolean }) => call<Channel>(`/client/channels/${channelId}`, { method: 'PATCH', json: body }),
-  upload: (file: Blob, filename: string, voice?: { durationSecs: number; waveform: string }) => {
+  upload: async (file: Blob, filename: string, voice?: { durationSecs: number; waveform: string }) => {
     const form = new FormData()
     form.append('file', file, filename)
     if (voice) {
@@ -237,7 +259,7 @@ export const api = {
   services: () => call<{ available: boolean; services: Service[] }>('/client/services'),
   serviceEvents: (unit: string) => call<{ events: ServiceEvent[] }>(`/client/services/${encodeURIComponent(unit)}/events`),
   serviceControl: (unit: string, verb: 'start' | 'stop' | 'restart') => call<{ services: Service[] }>(`/client/services/${encodeURIComponent(unit)}/${verb}`, { method: 'POST' }),
-  inbox: () => call<{ mentions: Mention[] }>('/client/inbox'),
+  inbox: (scope?: { channelId: string } | { guildId: string }) => call<{ mentions: Mention[] }>(`/client/inbox${scope ? '?' + new URLSearchParams('channelId' in scope ? { channel_id:scope.channelId } : { guild_id:scope.guildId }) : ''}`),
   pins: (channelId: string) => call<{ messages: Message[] }>(`/client/channels/${channelId}/pins`),
   pin: (channelId: string, messageId: string, on: boolean) => call(`/client/channels/${channelId}/pins/${messageId}`, { method: on ? 'PUT' : 'DELETE' }),
   overview: () => call<{ machines: MachineSummary[]; sessions: SessionSummary[] }>('/client/overview'),

@@ -71,6 +71,22 @@ export class ClientApi {
     const send = (status: number, value: unknown) => endJson(res, status, value === undefined ? '' : this.hub.relativize(JSON.stringify(value)))
     let params: Record<string, string> | null
     if (method === 'GET' && pathname === '/client/state') return send(200, await this.state(v))
+    if (method === 'GET' && (params = match('/client/threads/:id/panels', pathname))) {
+      const id = params['id']!
+      if (!await this.hub.boards.canRead(v.userId, id)) throw new HttpError(404, 'Unknown thread')
+      const snapshot = await this.hub.boards.read(id, device.id)
+      if (!await this.hub.boards.canRead(v.userId, id)) throw new HttpError(404, 'Unknown thread')
+      return sendJson(res, 200, snapshot)
+    }
+    if (method === 'POST' && (params = match('/client/threads/:id/panels/board/seen', pathname))) {
+      const id = params['id']!
+      if (!await this.hub.boards.canRead(v.userId, id)) throw new HttpError(404, 'Unknown thread')
+      const body = await readJson(req)
+      if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1 || !('v' in body)) throw new HttpError(400, 'Expected {v}')
+      if (!await this.hub.boards.canRead(v.userId, id)) throw new HttpError(404, 'Unknown thread')
+      await this.hub.boards.seen(id, device.id, body.v)
+      return send(204, undefined)
+    }
     // App updates (Tauri's updater format; 204 when up to date) and their files.
     if (method === 'GET' && (params = match('/client/app/update/:target/:arch/:current', pathname))) {
       const host = typeof req.headers.host === 'string' ? req.headers.host : ''
@@ -183,9 +199,11 @@ export class ClientApi {
     if (scheduled !== undefined) return send(200, scheduled)
     const requested = await this.hub.requests.handleClient(req, pathname, v, typeof req.headers.origin === 'string' ? req.headers.origin : null)
     if (requested !== undefined) return send(200, requested)
+    const updating = await this.hub.updates.handleClient(req, pathname, v.userId)
+    if (updating !== undefined) return send(200, updating)
     const managed = await this.hub.members.handle(req, pathname, v)
     if (managed !== undefined) return send(200, managed)
-    if (method === 'GET' && pathname === '/client/inbox') return send(200, await this.inbox(v))
+    if (method === 'GET' && pathname === '/client/inbox') return send(200, await this.inbox(v, new URL(req.url ?? '/', 'http://x').searchParams))
     if (method === 'GET' && pathname === '/client/notifications') return send(200, await this.notificationState(v))
     if ((params = match('/client/notifications/:scope', pathname)) && method === 'PUT') return send(200, await this.setNotification(v, params['scope']!, await readJson(req)))
     if (pathname === '/client/push' && method === 'PUT') {
@@ -435,12 +453,20 @@ export class ClientApi {
     return { total, ...('total_capped' in searched && { total_capped: true }), results: found.map((entry) => ({ ...entry, snippet: snippets.get(entry.message.id) ?? null })) }
   }
 
-  async inbox(v: Viewer) {
+  async inbox(v: Viewer, query = new URLSearchParams()) {
+    const channelId = query.get('channel_id'), guildId = query.get('guild_id')
+    if ((channelId !== null && !/^\d{1,20}$/.test(channelId)) || (guildId !== null && !/^\d{1,20}$/.test(guildId)) || (channelId && guildId)) throw new HttpError(400, 'Choose one channel or server')
+    const view = await this.hub.access.view(v.userId)
+    if (channelId) await this.channel(v, channelId, P.READ_MESSAGE_HISTORY)
+    if (guildId && !view.guilds.has(guildId)) throw new HttpError(404, 'Unknown server')
+    const guildChannels = guildId ? new Set((await this.prisma.channel.findMany({ where: { guildId }, select: { id: true } })).map(c => c.id)) : null
+    const channels = new Set([...view.channels].filter(([id, bits]) => (bits & P.READ_MESSAGE_HISTORY) !== 0n && (!channelId || id === channelId) && (!guildChannels || guildChannels.has(id))).map(([id]) => id))
     const read = await this.hub.store.readState(v.userId)
-    const mentions = await this.hub.search.mentions(v.userId, await this.hub.access.visibleChannels(v.userId), read)
+    const mentions = await this.hub.search.mentions(v.userId, channels, read)
     const newer = (a: string, b: string | undefined) => !b || a.length > b.length || (a.length === b.length && a > b)
     const found = await this.withChannels(v, mentions.map((m) => m.messageId))
-    return { mentions: found.map((entry) => ({ ...entry, read: !newer(entry.message.id, read[entry.channel.id]) })) }
+    const final = await this.hub.access.view(v.userId)
+    return { mentions: found.filter(e => channels.has(e.channel.id) && ((final.channels.get(e.channel.id) ?? 0n) & P.READ_MESSAGE_HISTORY) !== 0n).map((entry) => ({ ...entry, read: !newer(entry.message.id, read[entry.channel.id]) })) }
   }
 
   async pins(v: Viewer, channelId: string) {

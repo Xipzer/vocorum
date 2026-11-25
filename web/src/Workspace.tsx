@@ -1,9 +1,9 @@
-// Workspace panel, phase 1: everything a thread has made
-// and everything it is waiting on, derived from messages the hub already has. Board on top
-// (Now, Waiting on you, Outputs, Linked, Services); an output opens in Look, at full size,
-// with its versions and a side-by-side compare. No agent or server change needed.
+// The agent-maintained thread brief, decisions, outputs and links. A hub with no
+// published board still shows Now from its pinned or latest bot message.
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { AgentBoard } from './AgentBoard.tsx'
+import { can, P } from './perms.ts'
 import type { Attachment, Component, Message } from './api.ts'
 import { highlight } from './highlight.tsx'
 import { Icon } from './icons.tsx'
@@ -64,14 +64,15 @@ function gist(m: Message) {
   return line?.replace(/^#+\s*/, '').replace(/^⬥\s*/, '') ?? ''
 }
 
-export function useOutputs(channelId: string) {
+export function useOutputs(channelId: string, boardMessage: string | null = null) {
   const entry = useStore((d) => d.messages[channelId])
-  // Load history in the background so outputs from earlier in the thread count too.
+  // Scan older outputs in bounded batches on request. Opening the Board
+  // should not page hundreds of unrelated messages into the active chat.
   const [pages, setPages] = useState(0)
   useEffect(() => {
-    if (!entry || entry.loading || !entry.hasMore || pages >= MAX_PAGES) return
+    if (!entry || entry.loading || !entry.hasMore || pages <= 0) return
     const id = window.setTimeout(() => {
-      setPages((n) => n + 1)
+      setPages((n) => n - 1)
       void store.loadMessages(channelId, { older: true }).catch(() => {})
     }, 120)
     return () => window.clearTimeout(id)
@@ -81,6 +82,7 @@ export function useOutputs(channelId: string) {
     const groups = new Map<string, Output>()
     for (const message of list) {
       for (const attachment of message.attachments) {
+        if (message.id === boardMessage && attachment.filename === 'board.panel.md') continue
         if (attachment.waveform || attachment.missing || !attachment.url) continue
         const kind = kindOf(attachment)
         const key = `${kind}:${stem(attachment.filename)}`
@@ -91,8 +93,8 @@ export function useOutputs(channelId: string) {
       }
     }
     return [...groups.values()].sort((a, b) => (snowflakeGt(a.versions.at(-1)!.message.id, b.versions.at(-1)!.message.id) ? -1 : 1))
-  }, [list])
-  return { list, outputs, loading: Boolean(entry?.hasMore && pages < MAX_PAGES) }
+  }, [list, boardMessage])
+  return { list, outputs, loading: Boolean(entry?.hasMore && pages > 0), more: Boolean(entry?.hasMore), loadEarlier: () => setPages(MAX_PAGES) }
 }
 
 export function WorkspacePanel({ channelId, ctx, onClose, onJump, onOpen, onServices }: { channelId: string; ctx: MarkdownContext; onClose: () => void; onJump: Jump; onOpen: (id: string) => void; onServices: () => void }) {
@@ -100,7 +102,9 @@ export function WorkspacePanel({ channelId, ctx, onClose, onJump, onOpen, onServ
   const links = useStore((d) => d.linked[channelId])
   const services = useStore((d) => d.services)
   const sessions = useStore((d) => d.sessions)
-  const { list, outputs, loading } = useOutputs(channelId)
+  const [boardMessage, setBoardMessage] = useState<string | null>(null)
+  const { list, outputs, loading, more, loadEarlier } = useOutputs(channelId, boardMessage)
+  const outputOnly = useStore(d => d.output[channelId])
   const [look, setLook] = useState<{ key: string; v: number } | null>(null)
   useEffect(() => {
     void store.loadLinks(channelId).catch(() => {})
@@ -128,6 +132,14 @@ export function WorkspacePanel({ channelId, ctx, onClose, onJump, onOpen, onServ
 
   const images = outputs.filter((o) => o.kind === 'image')
   const docs = outputs.filter((o) => o.kind !== 'image')
+  const derivedNow = <Section title="Now">
+    <div className="ws-now">{session && <i className={`st ${session.state}`} />}<div className="ws-now-text">
+      {pinned || latest ? <button className="ws-link" onClick={() => onJump(channelId, (pinned ?? latest)!.id)}>
+        <span className="ws-now-line">{plain(gist((pinned ?? latest)!))}</span>
+        <span className="ws-meta">{pinned ? 'Pinned' : latest!.author.global_name ?? latest!.author.username} · {ago((pinned ?? latest)!.id)}</span>
+      </button> : <span className="ws-meta">{thread ? plain(thread.name ?? '') : ''}</span>}
+    </div></div>
+  </Section>
   return (
     <aside className="side-panel workspace" role="complementary" aria-label="Workspace">
       <header className="panel-head">
@@ -141,28 +153,7 @@ export function WorkspacePanel({ channelId, ctx, onClose, onJump, onOpen, onServ
         </button>
       </header>
       <div className="panel-body ws-body">
-        <Section title="Now">
-          <div className="ws-now">
-            {session && <i className={`st ${session.state}`} />}
-            <div className="ws-now-text">
-              {pinned ? (
-                <button className="ws-link" onClick={() => onJump(channelId, pinned.id)}>
-                  <span className="ws-now-line">{plain(gist(pinned))}</span>
-                  <span className="ws-meta">Pinned · {ago(pinned.id)}</span>
-                </button>
-              ) : latest ? (
-                <button className="ws-link" onClick={() => onJump(channelId, latest.id)}>
-                  <span className="ws-now-line">{plain(gist(latest))}</span>
-                  <span className="ws-meta">
-                    {latest.author.global_name ?? latest.author.username} · {ago(latest.id)}
-                  </span>
-                </button>
-              ) : (
-                <span className="ws-meta">{thread ? plain(thread.name ?? '') : ''}</span>
-              )}
-            </div>
-          </div>
-        </Section>
+        {thread && [10, 11, 12].includes(thread.type) && can(P.READ_MESSAGE_HISTORY, thread) ? <AgentBoard key={channelId} thread={channelId} ctx={{ ...ctx, openMessage: onJump }} writable={!outputOnly && !thread.thread_metadata?.archived && !thread.thread_metadata?.locked && can(P.SEND_MESSAGES_IN_THREADS, thread)} onCarrier={setBoardMessage} onCorrect={() => { if (window.matchMedia('(max-width: 767px)').matches) onClose() }}>{derivedNow}</AgentBoard> : derivedNow}
         {waiting.length > 0 && (
           <Section title="Waiting on you" count={waiting.length}>
             {waiting.slice(0, 6).map((m) => (
@@ -173,7 +164,7 @@ export function WorkspacePanel({ channelId, ctx, onClose, onJump, onOpen, onServ
             ))}
           </Section>
         )}
-        {(outputs.length > 0 || loading) && (
+        {(outputs.length > 0 || more) && (
           <Section title="Outputs" count={outputs.length}>
             {images.length > 0 && (
               <div className="ws-shots">
@@ -199,7 +190,7 @@ export function WorkspacePanel({ channelId, ctx, onClose, onJump, onOpen, onServ
                 </button>
               )
             })}
-            {loading && <div className="ws-meta ws-pad">Reading older messages…</div>}
+            {loading ? <div className="ws-meta ws-pad">Reading older messages…</div> : more && <button className="ws-row" onClick={loadEarlier}>Find earlier outputs</button>}
           </Section>
         )}
         {links && links.length > 0 && (
@@ -228,7 +219,6 @@ export function WorkspacePanel({ channelId, ctx, onClose, onJump, onOpen, onServ
             ))}
           </Section>
         )}
-        {!loading && outputs.length === 0 && waiting.length === 0 && !links?.length && !threadServices.length && <div className="ws-meta ws-pad">Nothing made here yet.</div>}
       </div>
     </aside>
   )
@@ -280,26 +270,40 @@ function parseCsv(text: string, sep: string) {
     else if (c !== '\r') cell += c
   }
   if (cell || row.length) row.push(cell), rows.push(row)
-  return rows.slice(0, 501)
+  return rows
 }
 
-function Table({ text, sep }: { text: string; sep: string }) {
-  const rows = parseCsv(text, sep)
+function jsonRows(text: string): string[][] | null {
+  const value = (() => { try { return JSON.parse(text) as unknown } catch { return null } })()
+  if (!Array.isArray(value) || !value.length || value.length > 20_000 || !value.every(row => row && typeof row === 'object' && !Array.isArray(row))) return null
+  const keys = new Set<string>()
+  for (const row of value) for (const key of Object.keys(row)) { keys.add(key); if (keys.size > 64) return null }
+  if (!keys.size || keys.size * value.length > 200_000) return null
+  const head = [...keys]
+  return [head, ...value.map(row => head.map(key => { const v = Object.hasOwn(row, key) ? row[key] : null; return v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v) }))]
+}
+
+function Table({ rows }: { rows: string[][] }) {
   const [sort, setSort] = useState<{ col: number; dir: 1 | -1 } | null>(null)
-  const [head, ...body] = rows
-  const numeric = (head ?? []).map((_, j) => body.every((r) => !r[j] || !Number.isNaN(Number(r[j]!.replace(/[,%$£]/g, '')))))
-  const sorted = sort ? [...body].sort((a, b) => {
+  const [query, setQuery] = useState('')
+  const head = rows[0] ?? [], body = useMemo(() => rows.slice(1), [rows])
+  const numeric = useMemo(() => head.map((_, j) => body.every(r => !r[j] || Number.isFinite(Number(r[j]!.replace(/[,%$£]/g, ''))))), [head, body])
+  const visible = useMemo(() => { const q = query.trim().toLocaleLowerCase(); return q ? body.filter(row => row.some(cell => cell.toLocaleLowerCase().includes(q))) : body }, [body, query])
+  const sorted = useMemo(() => sort ? [...visible].sort((a, b) => {
     const x = a[sort.col] ?? ''
     const y = b[sort.col] ?? ''
+    if (!x || !y) return Number(!x) - Number(!y)
     return (numeric[sort.col] ? Number(x.replace(/[,%$£]/g, '')) - Number(y.replace(/[,%$£]/g, '')) : x.localeCompare(y)) * sort.dir
-  }) : body
+  }) : visible, [visible, sort, numeric])
   return (
+    <>
+    <div className="look-filter"><label><Icon name="search" size={16}/><input type="search" aria-label="Filter table rows" placeholder="Filter rows" value={query} onChange={e => setQuery(e.target.value)}/></label><span className="ws-meta num" role="status">{sorted.length > 500 ? `First 500 of ${sorted.length} rows` : `${sorted.length} of ${body.length} rows`}</span></div>
     <div className="ws-table-wrap">
       <table className="ws-table">
         <thead>
           <tr>
             {(head ?? []).map((h, j) => (
-              <th key={j} className={numeric[j] ? 'n' : undefined}>
+               <th key={j} className={numeric[j] ? 'n' : undefined} aria-sort={sort?.col === j ? (sort.dir === 1 ? 'ascending' : 'descending') : undefined}>
                 <button onClick={() => setSort(sort?.col === j ? { col: j, dir: sort.dir === 1 ? -1 : 1 } : { col: j, dir: 1 })}>
                   {h}
                   {sort?.col === j ? (sort.dir === 1 ? ' ↑' : ' ↓') : ''}
@@ -309,7 +313,8 @@ function Table({ text, sep }: { text: string; sep: string }) {
           </tr>
         </thead>
         <tbody>
-          {sorted.map((r, i) => (
+          {!sorted.length && <tr><td colSpan={head.length || 1}>No matching rows.</td></tr>}
+          {sorted.slice(0, 500).map((r, i) => (
             <tr key={i}>
               {r.map((c, j) => (
                 <td key={j} className={numeric[j] ? 'n num' : undefined}>
@@ -321,6 +326,7 @@ function Table({ text, sep }: { text: string; sep: string }) {
         </tbody>
       </table>
     </div>
+    </>
   )
 }
 
@@ -334,6 +340,7 @@ function Look({ output, v, ctx, onV, onBack, onClose, onJump }: { output: Output
   const textKinds: Kind[] = ['markdown', 'table', 'code']
   const text = useText(textKinds.includes(output.kind) ? url : null)
   const ext = attachment.filename.split('.').pop()?.toLowerCase() ?? ''
+  const rows = useMemo(() => text == null ? null : output.kind === 'table' ? parseCsv(text, ext === 'tsv' ? '\t' : ',') : ext === 'json' ? jsonRows(text) : null, [text, ext, output.kind])
   const prev = v > 0 ? output.versions[v - 1]! : null
   const n = output.versions.length
   return (
@@ -366,8 +373,8 @@ function Look({ output, v, ctx, onV, onBack, onClose, onJump }: { output: Output
             <Icon name="sidebar" size={20} />
           </button>
         )}
-        {output.kind === 'markdown' && (
-          <button className="icon-button" aria-pressed={source} onClick={() => setSource(!source)} aria-label="Show the markdown source" title="Show the markdown source">
+        {(output.kind === 'markdown' || (ext === 'json' && rows)) && (
+          <button className="icon-button" aria-pressed={source} onClick={() => setSource(!source)} aria-label={output.kind === 'markdown' ? 'Show the markdown source' : 'Show the JSON source'} title="Show source">
             <Icon name="file" size={20} />
           </button>
         )}
@@ -415,8 +422,8 @@ function Look({ output, v, ctx, onV, onBack, onClose, onJump }: { output: Output
             <Markdown text={text} ctx={ctx} />
           </div>
         )}
-        {text !== null && output.kind === 'table' && <Table text={text} sep={ext === 'tsv' ? '\t' : ','} />}
-        {text !== null && output.kind === 'code' && (
+        {rows && (output.kind === 'table' || !source) && <Table key={attachment.id} rows={rows}/>}
+        {text !== null && output.kind === 'code' && (!rows || source) && (
           <pre className="look-code">
             <code>{highlight(ext === 'log' || ext === 'txt' ? '' : ext, text)}</code>
           </pre>

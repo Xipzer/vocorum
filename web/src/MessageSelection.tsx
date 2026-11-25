@@ -94,20 +94,32 @@ export function PickRow({ message, allowed, selection, children }: { message: Me
   </div>
 }
 
-// A native modal traps focus, starts on Cancel and keeps the final action
-// away from the button that opened it (including a double click or tap).
+// A modal layer like the app's other dialogs (a native <dialog> stretches to the full window
+// height in the Mac web view). Focus starts on Cancel, stays inside, and the final action
+// sits away from the button that opened it (including a double click or tap).
 function DeleteReview({ count, back, submit }: { count: number; back: () => void; submit: () => void }) {
-  const dialog = useRef<HTMLDialogElement>(null)
+  const panel = useRef<HTMLDivElement>(null)
   const title = `Delete ${count} ${count === 1 ? 'message' : 'messages'}?`
   useLayoutEffect(() => {
-    const el = dialog.current!
-    el.showModal()
-    return () => el.close()
+    const opener = document.activeElement as HTMLElement | null
+    panel.current?.querySelector<HTMLButtonElement>('button')?.focus()
+    return () => opener?.focus?.({ preventScroll: true })
   }, [])
-  return <dialog ref={dialog} className="delete-review" aria-label={title} onCancel={(e) => { e.preventDefault(); back() }}>
-    <h2>{title}</h2><p>This cannot be undone.</p>
-    <div><button autoFocus className="button" onClick={back}>Cancel</button><button className="button danger" onClick={submit}>Delete</button></div>
-  </dialog>
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); back(); return }
+    if (e.key !== 'Tab') return
+    const buttons = [...(panel.current?.querySelectorAll<HTMLButtonElement>('button') ?? [])]
+    const first = buttons[0], last = buttons.at(-1)
+    if (!first || !last) return
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+  }
+  return <div className="overlay delete-layer" onMouseDown={(e) => { if (e.target === e.currentTarget) back() }} onKeyDown={onKeyDown}>
+    <div ref={panel} className="delete-review" role="dialog" aria-modal="true" aria-label={title}>
+      <h2>{title}</h2><p>This cannot be undone.</p>
+      <div><button className="button" onClick={back}>Cancel</button><button className="button danger" onClick={submit}>Delete</button></div>
+    </div>
+  </div>
 }
 
 export function SelectionDock({ selection: s }: { selection: Selection }) {

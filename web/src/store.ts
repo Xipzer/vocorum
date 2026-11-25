@@ -2,11 +2,12 @@
 // REST API and the event socket.
 
 import { useSyncExternalStore } from 'react'
+import { BOARD_UPDATED } from './board-document.ts'
 import { forgetMissingImages } from './Avatar.tsx'
 import { displayName, machineLabel } from './text.ts'
 import { api, type HubRequest, type MachineRoutines, type Reminder, type Schedule, toReminder, type Channel, type HubState, type MachineSummary, type Message, type Command, type Guild, type Service, type SessionLink, type SessionSummary, type User, type Role, type GuildMember, type Overwrite } from './api.ts'
 
-export type ChannelMessages = { list: Message[]; hasMore: boolean; loading: boolean }
+export type ChannelMessages = { list: Message[]; hasMore: boolean; loading: boolean; arrival?: string }
 
 // Messages a channel keeps once no view shows it, and once its reader is back at the newest.
 export const KEEP_HIDDEN = 100
@@ -199,6 +200,22 @@ class Store {
     this.set({ messages: { ...this.data.messages, [channelId]: value } })
   }
 
+  // The POST and gateway acknowledge the same row in either order. A late
+  // HTTP receipt must never overwrite a newer edit or create a second row.
+  confirmSent(m: Message) {
+    const page = this.data.messages[m.channel_id]
+    if (page && !page.list.some(row => row.id === m.id)) this.receiveMessage(m)
+  }
+
+  private receiveMessage(m: Message) {
+    const page = this.data.messages[m.channel_id]
+    if (!page) return
+    const last = page.list.at(-1)
+    const elapsed = Date.now() - Date.parse(m.timestamp)
+    const fresh = !page.loading && last && snowflakeGt(m.id, last.id) && elapsed >= -5000 && elapsed < 60000
+    this.setMessages(m.channel_id, { ...page, list: mergeById(page.list, [m]), ...(fresh && { arrival: m.id }) })
+  }
+
   dismissPrivateReply(channelId: string, id: string) {
     const here = this.data.privateReplies[channelId]
     if (here?.some((m) => m.id === id)) this.set({ privateReplies: { ...this.data.privateReplies, [channelId]: here.filter((m) => m.id !== id) } })
@@ -328,6 +345,12 @@ class Store {
   apply(t: string, d: any) {
     if (this.loading && REPLAYED.has(t)) this.late.push([t, d])
     switch (t) {
+      case 'HUB_UPDATE':
+        window.dispatchEvent(new CustomEvent('vocorum-hub-update', { detail: d }))
+        break
+      case 'PANEL_UPDATE':
+        if (d?.slot === 'board' && typeof d.thread_id === 'string') window.dispatchEvent(new CustomEvent(BOARD_UPDATED, { detail: d.thread_id }))
+        break
       case 'ROUTINES_UPDATE': {
         const m = d as MachineRoutines
         this.set({ routines: [...this.data.routines.filter((x) => x.machine !== m.machine), m].sort((a, b) => a.machine.localeCompare(b.machine)) })
@@ -370,7 +393,7 @@ class Store {
         const me = this.data.state?.me.id
         if (me && message.author.id !== me && (message.content ?? '').includes(`<@${me}>`) && snowflakeGt(message.id, this.data.seen[message.channel_id]))
           this.set({ mentions: { ...this.data.mentions, [message.channel_id]: (this.data.mentions[message.channel_id] ?? 0) + 1 } })
-        this.patchMessages(message.channel_id, (list) => mergeById(list, [message]))
+        this.receiveMessage(message)
         this.bumpLastMessage(message.channel_id, message.id)
         const typing = this.data.typing[message.channel_id]
         if (typing?.[message.author.id]) {
@@ -385,7 +408,7 @@ class Store {
           const replace = (list: Message[]) => list.map((m) => (m.id === d.id ? { ...(d as Message), reactions_summary: m.reactions_summary } : m))
           this.patchMessages(d.channel_id, replace)
           // A thread starter is shown inside its thread too.
-          for (const thread of this.data.state?.threads ?? []) if (thread.parent_id === d.channel_id) this.patchMessages(thread.id, replace)
+          for (const thread of this.data.state?.threads ?? []) if (thread.parent_id === d.channel_id && this.data.messages[thread.id]?.list.some(m => m.id === d.id)) this.patchMessages(thread.id, replace)
         }
         break
       case 'MESSAGE_DELETE':

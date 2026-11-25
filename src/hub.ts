@@ -11,6 +11,7 @@ import type { Duplex } from 'node:stream'
 import { ChannelType } from 'discord-api-types/v10'
 import { DigitalDiscord, generateSnowflake } from 'discord-digital-twin/src'
 import { AttachmentStore } from './attachments.ts'
+import { BOARD_FILE, BOARD_UPLOAD, WorkspaceBoards, safeBoardUpload } from './workspace-board.ts'
 import { HttpError, HubAuth } from './auth.ts'
 import { ClientApi } from './client-api.ts'
 import { ClientEvents, type Audience } from './events.ts'
@@ -28,6 +29,7 @@ import { Access, P } from './access.ts'
 import { Members } from './members.ts'
 import { MachineIconStore } from './machine-icons.ts'
 import { Community } from './community.ts'
+import { Updates } from './updates.ts'
 import { Mirror } from './mirror.ts'
 import { Requests } from './requests.ts'
 import { DirectMessages } from './dms.ts'
@@ -72,6 +74,7 @@ export class Hub {
   readonly store: HubStore
   readonly auth: HubAuth
   readonly attachments: AttachmentStore
+  readonly boards: WorkspaceBoards
   readonly events: ClientEvents
   readonly privateListener: PrivateListener | null
   readonly search: SearchIndex
@@ -91,6 +94,7 @@ export class Hub {
   readonly machineIcons: MachineIconStore
   readonly mirror: Mirror
   readonly community: Community
+  readonly updates: Updates
   readonly api: ClientApi
   private readonly adminToken: string
   // Registered token key -> machine.
@@ -105,6 +109,7 @@ export class Hub {
     const host = options.host ?? '127.0.0.1'
     assertLoopback(host)
     this.store = new HubStore(`file:${paths.hubDb}`)
+    this.boards = new WorkspaceBoards(this)
     this.adminToken = readSecret(paths.adminToken)
     this.attachments = new AttachmentStore(paths.attachments, readSecret(paths.signingKey), this.store, () => this.attachmentBaseUrl)
     this.auth = new HubAuth(this.store, {
@@ -136,10 +141,15 @@ export class Hub {
       users: [{ id: config.ownerUserId, username: config.ownerUsername }],
       ...(config.publicUrl && { gatewayUrlOverride: `${config.publicUrl.replace(/^http/, 'ws')}/gateway` }),
       storeAttachment: async (file) => {
-        const saved = await this.attachments.save({ ...file, uploadedBy: 'bot' })
-        return { url: saved.url, width: saved.width, height: saved.height }
+        const board = file.filename === BOARD_FILE
+        const saved = await this.attachments.save(board
+          ? { ...file, data: safeBoardUpload(file.data), contentType: 'text/markdown', uploadedBy: BOARD_UPLOAD }
+          : { ...file, uploadedBy: 'bot' })
+        return { url: saved.url, size: saved.size, width: saved.width, height: saved.height }
       },
       extension: {
+        channelMessage: (input, write) => this.boards.write(this.activeBotTokens.get(input.clientKey), input, write),
+        channelMessageDelete: (input, remove) => this.boards.removeCarrier(this.activeBotTokens.get(input.clientKey), input, remove),
         privateReply: (userId, message, removed) => {
           const { id, channel_id } = message
           this.events.send(removed ? 'PRIVATE_REPLY_DELETE' : 'PRIVATE_REPLY', removed ? { id, channel_id } : message, { userId, channelId: channel_id })
@@ -181,6 +191,7 @@ export class Hub {
     this.machineIcons = new MachineIconStore(this)
     this.mirror = new Mirror(this)
     this.community = new Community(this)
+    this.updates = new Updates(this)
     this.api = new ClientApi(this, webDir)
     this.search = new SearchIndex(this)
     this.extensions = []
@@ -278,6 +289,7 @@ export class Hub {
     await timed('store', async () => {
       await this.store.migrate()
       await this.store.migrateOwnerData(this.options.config.ownerUserId)
+      await this.boards.init()
     })
     await timed('twin', () => this.twin.start())
     await timed('direct messages', () => this.dms.start())
@@ -293,6 +305,7 @@ export class Hub {
     await timed('search', () => this.search.start())
     await timed('presence', () => this.presence.start())
     this.notifications.start()
+    this.updates.start()
     await timed('private listener', () => this.privateListener?.start())
     await timed('schedules', () => this.schedules.start())
     // One that fails to start is left out; the hub runs without it.
@@ -313,6 +326,7 @@ export class Hub {
     await this.privateListener?.stop()
     this.search.stop()
     this.notifications.stop()
+    this.updates.stop()
     this.presence.stop()
     this.sessions.stop()
     this.voice.stop()
@@ -501,6 +515,25 @@ export class Hub {
         const attachmentId = pathname.split('/')[2] ?? ''
         const machine = this.botMachine(req.headers.authorization)
         const device = machine ? null : await this.auth.device(req)
+        if (decodeURIComponent(pathname.split('/')[3] ?? '') === BOARD_FILE && (await this.store.getAttachment(attachmentId))?.uploadedBy === BOARD_UPLOAD) {
+          const thread = await this.boards.fileThread(attachmentId)
+          if (!thread) throw new HttpError(404, 'Unknown attachment')
+          if (machine) {
+            const key = botTokenKey((req.headers.authorization ?? '').replace(/^Bot\s+/i, ''))
+            const user = this.botUsers.get(key) ?? this.options.config.botUserId
+            const guild = (await this.twin.prisma.channel.findUnique({ where: { id: thread }, select: { guildId: true } }))?.guildId
+            const { guildId, adminGuildId, adminBotReady } = this.options.config
+            const memberships = (await this.store.botGuilds()).get(machine)?.filter(id => this.guildIds.has(id) && id !== adminGuildId)
+            const allowed = machine === 'admin' ? Boolean(adminBotReady && guild === adminGuildId) : guild !== adminGuildId && (memberships?.length ? memberships.includes(guild ?? '') : guild === guildId)
+            if (!allowed || !await this.boards.canRead(user, thread)) throw new HttpError(404, 'Unknown attachment')
+          } else {
+            if (!device) throw new HttpError(404, 'Unknown attachment')
+            await this.checkHuman(req, pathname)
+            this.checkIdentity(req, this.userOf(device))
+            if (!await this.boards.canRead(this.userOf(device), thread)) throw new HttpError(404, 'Unknown attachment')
+          }
+          return await this.attachments.serve(req, res, { authorized: true, cache: false })
+        }
         const authorized = machine ? await this.botCanSeeAttachment(machine, attachmentId) : device !== null && (await this.canSeeAttachment(this.userOf(device), attachmentId))
         return await this.attachments.serve(req, res, { authorized })
       }

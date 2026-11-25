@@ -12,7 +12,7 @@ waiting for an answer, such as a question with buttons. Tap one to answer it.
 
 - Each machine's bot gets its own category, with a channel per project.
 - Write in a project channel to start a session. The bot answers in a thread.
-- Older threads fold into "older" under their channel.
+- Threads stay in creation order, newest first. A reply can bring a quiet thread back to its place. After its inactivity timer runs out, find it under "older". The thread you have open stays put.
 - Type `/` to see the bot's commands.
 - Hold the microphone to send a voice note.
 

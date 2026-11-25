@@ -25,6 +25,10 @@ Every command is safe to run twice.
   folder.
 - **Back up first.** Before an import, a purge or an update, run
   `vocorum backup --json`. It copies the hub while it runs and prints the folder.
+- **Update with `vocorum update`.** To update a hub: `vocorum update --check` to see
+  what is new, then `vocorum update --yes` once the person agrees. It backs up first
+  and puts the old version back if anything fails. Do not run git pull and a build
+  by hand unless update says the checkout is updated by hand.
 - **Talk to Discord only through `vocorum discord`.** Never call Discord's API
   yourself with the token, not even to check: `discord scan` and `discord status`
   are the checks.
@@ -60,8 +64,6 @@ Every command is safe to run twice.
 
 ```bash
 node --version          # 22.16 or newer
-pnpm --version          # missing? corepack enable (if Node's folder is not
-                        # writable: corepack enable --install-directory ~/.local/bin)
 openssl version
 which ffmpeg            # optional, voice notes from phones
 ```
@@ -74,8 +76,7 @@ as `node bin\vocorum.js ...` until setup has added `vocorum.cmd`.
 
 ```bash
 git clone https://github.com/Xipzer/vocorum && cd vocorum   # skip if already cloned
-pnpm install && pnpm build
-node bin/vocorum.js setup --dry-run --json
+node bin/vocorum.js setup --dry-run --json   # setup installs and builds by itself
 ```
 
 Show the person the plan: the address, the names, the allowed networks and the

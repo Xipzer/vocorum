@@ -2,6 +2,9 @@
 
 const PATHS = {
   thread: 'M4.5 5.5h15v10h-7l-4.5 3.5v-3.5H4.5z',
+  // The breadcrumb identifies a thread, rather than a direct-message bubble.
+  threadCrumb: 'm10 3 11 8-2.4 3.2-11-8zM6.7 7.8l11 8-2.4 3.2-11-8zM4 13.3l9.6 7-2.4 2.3L2 16z',
+  voiceChannel: 'M2 8h4.4l5-4.8c.6-.6 1.6-.2 1.6.7v16.2c0 .9-1 1.3-1.6.7l-5-4.8H2zM15.1 8.4l1.4-1.5a7.1 7.1 0 0 1 0 10.2l-1.4-1.5a5 5 0 0 0 0-7.2zM18.3 5.3l1.4-1.5a11.4 11.4 0 0 1 0 16.4l-1.4-1.5a9.4 9.4 0 0 0 0-13.4z',
   mic: 'M12 3.5a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0v-5a3 3 0 0 0-3-3ZM5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v2.5',
   send: 'M4 12 20 4.5 15.5 20 11.5 13 4 12ZM11.5 13 20 4.5',
   plus: 'M12 5v14M5 12h14',
@@ -68,7 +71,7 @@ const PATHS = {
 
 export type IconName = keyof typeof PATHS
 
-const FILLED = new Set<IconName>(['play', 'pause', 'more'])
+const FILLED = new Set<IconName>(['play', 'pause', 'more', 'threadCrumb', 'voiceChannel'])
 
 export function Icon({ name, size = 20, className }: { name: IconName; size?: number; className?: string }) {
   const filled = FILLED.has(name)

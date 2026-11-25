@@ -4,13 +4,13 @@ The quickest way to see Vocorum. No certificate, no pairing code, no passkey.
 
 ```
 git clone https://github.com/Xipzer/vocorum && cd vocorum
-pnpm install && pnpm build
 node bin/vocorum.js setup --open
 ```
 
-Then open the address it prints (http://localhost:47100) in a browser on the same
-computer and write a message. You need Node.js 22.16 or newer, git and pnpm
-(`corepack enable` gives you pnpm).
+The first run installs the packages and builds the app by itself (a minute or
+two, about 470 MB of packages). Then open the address it prints
+(http://localhost:47100) in a browser on the same computer and write a message.
+You need Node.js 22.16 or newer and git. Nothing else.
 
 Add `--dry-run` to see what setup would do without changing anything.
 
@@ -18,6 +18,7 @@ Add `--dry-run` to see what setup would do without changing anything.
 
 - Only this computer can reach the hub. No phone and no other computer can connect.
 - Anyone and any program on this computer can read and post, with no sign-in.
+- Don't forward its port to another machine (for example with an SSH tunnel or a port forwarder). That would let the other machine in with no sign-in too.
 
 That is fine for trying it out on a computer you trust. It is your choice at
 setup: a hub set up without `--open` always asks every browser to pair.

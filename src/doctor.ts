@@ -131,7 +131,7 @@ export async function doctor(paths: HubPaths, { repo = path.resolve(import.meta.
     }
   }
 
-  if (config.localAccess === 'open') add('local-access', 'ok', `open: http://localhost:${config.port} on this computer needs no code or passkey (ask for pairing here too: vocorum config set localAccess off)`)
+  if (config.localAccess === 'open') add('local-access', 'ok', `open: http://localhost:${config.port} on this computer needs no code or passkey. Do not forward this port to other machines (ask for pairing here too: vocorum config set localAccess off)`)
   const listener = config.privateListener
   // Open on this computer alone is a choice, not a fault.
   if (!listener && config.localAccess === 'open') add('private-listener', 'ok', 'off: no other device can connect (add your phone or another computer: vocorum setup)')

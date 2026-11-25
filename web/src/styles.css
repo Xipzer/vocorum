@@ -335,10 +335,11 @@ html[data-keyboard='open'] .footer {
   color: var(--text-muted);
 }
 .channel-list {
+  --list-inset: 12px;
   flex: 1;
   overflow-y: auto;
   overflow-x: clip;
-  padding: 4px 8px 12px 12px;
+  padding: 4px 8px 12px var(--list-inset);
   overscroll-behavior: contain;
   scrollbar-width: none;
 }
@@ -404,16 +405,26 @@ html[data-keyboard='open'] .footer {
   color: var(--text-strong);
   font-weight: 600;
 }
-.channel.unread::after {
+.channel[data-thread-activity='busy'] { --edge-colour: var(--busy); }
+.channel[data-thread-activity='waiting'] { --edge-colour: var(--accent); }
+.channel[data-thread-activity='failed'] { --edge-colour: var(--danger); }
+.channel-list .channel[data-thread-row].unread .channel-name {
+  color: var(--text-strong);
+  font-weight: 600;
+}
+.channel[data-thread-row].active:not(.unread) .channel-name { color: var(--text-muted); }
+.channel.unread::after,
+.channel[data-thread-activity]::after {
   content: '';
   position: absolute;
-  left: -12px;
+  left: calc(0px - var(--list-inset, 12px) - var(--row-indent, 0px));
   top: 50%;
   width: 4px;
   height: 8px;
   margin-top: -4px;
   border-radius: 0 4px 4px 0;
-  background: var(--text-strong);
+  background: var(--edge-colour, var(--text-strong));
+  pointer-events: none;
 }
 .channel .hash {
   color: var(--text-faint);
@@ -434,7 +445,10 @@ html[data-keyboard='open'] .footer {
 }
 .tree {
   position: relative;
-  margin-left: 15px;
+  --tree-inset: 15px;
+  --branch-inset: 18px;
+  --row-indent: calc(var(--tree-inset) + var(--branch-inset));
+  margin-left: var(--tree-inset);
 }
 .tree .trunk {
   position: absolute;
@@ -445,8 +459,8 @@ html[data-keyboard='open'] .footer {
   border-radius: 1px;
 }
 .tree .channel {
-  margin-left: 18px;
-  width: calc(100% - 18px);
+  margin-left: var(--branch-inset);
+  width: calc(100% - var(--branch-inset));
   font-weight: 400;
   /* Threads sit under their channel: a step smaller, like Discord's. */
   font-size: var(--thread-font);
@@ -464,9 +478,6 @@ html[data-keyboard='open'] .footer {
   border-left: 2px solid var(--spine);
   border-bottom: 2px solid var(--spine);
   border-bottom-left-radius: 6px;
-}
-.tree .channel.unread::after {
-  left: -45px;
 }
 .tree .channel.older {
   color: var(--text-faint);
@@ -2157,7 +2168,7 @@ html[data-keyboard='open'] .footer {
 }
 .ov {
   padding: 8px 24px 24px;
-  max-width: 980px;
+  min-width: 0;
 }
 .ov-machines {
   display: flex;
@@ -2439,6 +2450,13 @@ mark {
 .mention-row.unread .ov-title {
   font-weight: 600;
 }
+.mention-row > .ov-line {
+  display: block;
+}
+.ov .ov-title {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 @media (max-width: 1100px) and (min-width: 768px) {
   .side-panel {
     position: fixed;
@@ -2482,13 +2500,16 @@ mark {
 
 /* Linked sessions: nested under the open thread, and the panel */
 .linked {
-  margin: 0 0 2px 14px;
+  --link-inset: 14px;
+  --link-branch: 18px;
+  --row-indent: calc(var(--tree-inset, 0px) + var(--link-inset) + var(--link-branch));
+  margin: 0 0 2px var(--link-inset);
 }
 .tree .linked .channel.linked-row,
 .channel.linked-row {
   min-height: 30px;
-  margin-left: 18px;
-  width: calc(100% - 18px);
+  margin-left: var(--link-branch, 18px);
+  width: calc(100% - var(--link-branch, 18px));
   gap: 8px;
   font: 400 13px/18px var(--font);
   color: var(--text-muted);
@@ -3403,7 +3424,8 @@ a.crumb-parent:hover {
 
   /* Channel list: 32px rows on a 34px pitch, 8px side margins, 8px corners. */
   .channel-list {
-    padding: 4px 8px 12px;
+    --list-inset: 8px;
+    padding: 4px var(--list-inset) 12px;
   }
   .channel {
     height: 32px;
@@ -3456,6 +3478,9 @@ a.crumb-parent:hover {
   padding: 2px 16px 2px var(--gutter);
   margin-top: 16px;
 }
+@media (min-width: 768px) {
+  .message:not(.system) { padding-right: 32px; }
+}
 .message.compact {
   margin-top: 0;
 }
@@ -3485,16 +3510,21 @@ a.crumb-parent:hover {
   font-size: 16px;
   line-height: 22px;
 }
-/* Plain messages wrap at the chat gutter. Embeds and file previews keep their own widths. */
+/* Chat prose and its nested text use the whole lane. Cards and media size themselves. */
 .message > .message-body,
-.message-body > .markdown {
+.message-body > .markdown,
+.message > .reply-preview,
+.message.system > .clip,
+.message > .steps-list,
+.message .steps-list > .markdown,
+.message blockquote > .markdown,
+.message .forwarded-body > .markdown,
+.message .section-body > .markdown,
+.message .codeblock,
+.message .edit-box textarea {
   max-width: none;
 }
-@media (min-width: 768px) {
-  .message-body > .markdown {
-    font-size: 14px;
-  }
-}
+.message blockquote > .markdown { font-size: inherit; line-height: inherit; }
 @media (hover: hover) {
   .message:not(.needs):hover {
     background: rgb(255 255 255 / 0.035);
@@ -3841,9 +3871,8 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
 }
 /* Threads line up with channel names; Discord's 8px tick. */
 @media (min-width: 768px) {
-  .tree .channel {
-    margin-left: 11px;
-    width: calc(100% - 11px);
+  .tree {
+    --branch-inset: 11px;
   }
   .tree .channel::before {
     left: -11px;
@@ -5060,30 +5089,26 @@ html[data-side-collapsed='true'] .user-panel > .inbox-button {
   padding-bottom: 0;
 }
 
-/* Relayed prompt: one quiet line, the chevron opens the rest. */
+/* Two quiet lines across the available width. The chevron opens the full prompt. */
 .relay {
-  display: flex;
-  align-items: flex-start;
-  gap: 4px;
-  max-width: var(--measure);
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: start;
+  gap: 2px;
   font: 400 12px/16px var(--font);
   color: var(--text-faint);
 }
 .relay-text {
+  grid-column: 2;
+  grid-row: 1;
   min-width: 0;
-  flex: 0 1 auto;
+  overflow-wrap: anywhere;
 }
-.relay:not(.open) .relay-text {
+.relay-preview {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.relay:not(.open) .relay-text > div + div {
-  display: none;
-}
-.relay:not(.open) .relay-text > div {
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .relay.open .relay-text > div + div {
   margin-top: 4px;
@@ -5093,7 +5118,8 @@ html[data-side-collapsed='true'] .user-panel > .inbox-button {
   color: var(--text-muted);
 }
 .relay-toggle {
-  flex: none;
+  grid-column: 1;
+  grid-row: 1;
   display: grid;
   place-items: center;
   width: 16px;
@@ -5529,11 +5555,7 @@ img.emoji.jumbo {
 }
 
 /* The relay's chevron leads, as a disclosure: › closed, ⌄ open. */
-.relay {
-  gap: 2px;
-}
 .relay-toggle {
-  order: -1;
   margin-left: -2px;
 }
 .relay-toggle svg {
@@ -6850,6 +6872,17 @@ button.member {
 .routine-meta:empty {
   display: none;
 }
+.scheduled-list .reminder-when { flex-wrap: wrap; }
+.scheduled-list .reminder-where,
+.scheduled-list .reminder-text,
+.scheduled-list .routine-meta {
+  display: block;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.scheduled-list .reminder-text { white-space: pre-wrap; -webkit-line-clamp: unset; }
+.scheduled-list .routine-meta:empty { display: none; }
 
 /* An agent's permission prompt: a solid card with the ask in words, the exact command,
    and Discord's buttons; amber while it waits, quiet once decided. */
@@ -7297,6 +7330,23 @@ html[data-chrome] :is(.overlay, .sheet-layer, .lightbox, .settings-layer) {
   margin: auto;
 }
 /* A forum's row: its icon centred where a channel's # sits. */
+.channel[data-nav] > .hash { width: 20px; display: inline-grid; place-items: center; }
+@media (min-width: 768px) {
+  /* Optical match to the reference at the same 32px row height. */
+  .channel[data-voice-channel] .channel-name { font-size: 15px; letter-spacing: -.22px; }
+  .chat-header .crumbs:has(.crumb-parent) { flex: 1 1 auto; gap: 8px; }
+  .chat-header .crumb-parent { flex: 0 1 auto; max-width: min(18rem, 50%); min-width: 0; gap: 8px; padding: 0; margin: 0; color: var(--text-strong); }
+  .chat-header:has(.crumb-parent) .search-field { transition-property: background-color, border-color; }
+  .crumb-parent-label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .chat-header .crumbs:has(.crumb-parent) .chat-title { flex: 1 1 0; min-width: 0; gap: 8px; }
+  .chat-header .chat-titles:has(.crumb-parent) .chat-sub:has(.sub-parent:only-child) { display: none; }
+}
+/* Give up the search placeholder before clipping the parent and the thread
+   down to a few letters. The search action stays in the same place. */
+@container chat (min-width: 761px) and (max-width: 960px) {
+  .chat-header:has(.crumb-parent) .search-field { width: 32px; padding: 0; justify-content: center; background: transparent; border-color: transparent; }
+  .chat-header:has(.crumb-parent) .search-field :is(span, kbd) { display: none; }
+}
 .channel .hash > svg {
   display: block;
   margin: 0 -1px;
@@ -7827,7 +7877,6 @@ html[data-voice='on'] .side-main {
 .selection-controls .pick-delete { color: var(--danger-text); }
 .selection-dock > p { margin: 0 0 6px; color: var(--danger-text); overflow-wrap: anywhere; }
 .delete-review {
-  margin: auto;
   width: min(360px, calc(100% - 32px));
   padding: 20px;
   color: var(--text);
@@ -7836,7 +7885,8 @@ html[data-voice='on'] .side-main {
   border-radius: var(--r-float);
   box-shadow: var(--shadow-float);
 }
-.delete-review::backdrop { background: rgb(0 0 0 / .65); }
+/* Centred on phones too: a two-button confirmation, not a bottom sheet. */
+.overlay.delete-layer { place-items: center; padding: 16px; }
 .delete-review h2 { margin: 0; font: 600 18px/24px var(--font); }
 .delete-review p { margin: 8px 0 20px; color: var(--text-muted); }
 .delete-review > div { display: flex; justify-content: flex-end; gap: 8px; }

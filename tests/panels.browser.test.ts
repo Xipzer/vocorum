@@ -240,7 +240,7 @@ test.skipIf(!ready)('linked sessions: liaisons and a spawned child show under th
 
   await page.goto(`${origin}/#/c/${demo.thread.id}`)
   const linked = page.locator('.sidebar .linked-row')
-  await expect.poll(() => linked.allTextContents(), { timeout: 15_000 }).toEqual(['Liaison partnerliaison', 'Spawned helperchild'])
+  await expect.poll(() => linked.allTextContents(), { timeout: 15_000 }).toEqual(['Spawned helperchild', 'Liaison partnerliaison'])
   await page.getByRole('button', { name: 'Linked sessions: 2' }).click()
   const item = page.locator('.link-item', { hasText: 'Liaison partner' })
   await item.getByText('Liaison: you name each other').waitFor()
@@ -903,6 +903,33 @@ test.skipIf(!ready)('relays and tool lines: Kimaki-injected prompt stays quiet, 
   await page.screenshot({ path: path.join(shots, 'relay-tools.png'), clip: { x: a!.x, y: a!.y, width: 900, height: b!.y + b!.height - a!.y + 8 } })
 })
 
+test.skipIf(!ready)('a handoff uses the message width and can be read to the end on a phone', async () => {
+  const text = 'The survey crew labelled the gate, the footbridge and the trees by the station. '.repeat(2) + 'The map is ready.'
+  const msg = await demo.thread.send(`-# » **CLI:** ${text}`)
+  const p = await page.context().newPage()
+  try {
+    await p.setViewportSize({ width: 1800, height: 1100 })
+    await p.goto(`${origin}/#/c/${demo.thread.id}`)
+    const row = p.locator(`[id="m-${msg.id}"]`), relay = row.locator('.relay')
+    await relay.waitFor()
+    await p.evaluate(() => document.fonts.ready)
+    const rightGap = () => relay.evaluate(el => {
+      const row = el.closest('.message')!
+      return row.getBoundingClientRect().right - parseFloat(getComputedStyle(row).paddingRight) - el.getBoundingClientRect().right
+    })
+    expect(Math.abs(await rightGap())).toBeLessThan(2)
+    expect(await relay.getByRole('button', { name: 'Show all' }).count()).toBe(0)
+    await p.setViewportSize({ width: 390, height: 844 })
+    await relay.getByRole('button', { name: 'Show all' }).click()
+    await expect.poll(() => relay.locator('.paragraph').textContent()).toContain(text)
+    expect(Math.abs(await rightGap())).toBeLessThan(2)
+    expect(await relay.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true)
+    await relay.getByRole('button', { name: 'Show less' }).click()
+    await p.setViewportSize({ width: 1800, height: 1100 })
+    await expect.poll(() => relay.getByRole('button', { name: 'Show all' }).count()).toBe(0)
+  } finally { await p.close() }
+})
+
 test.skipIf(!ready)('workspace: a thread\'s outputs, waiting items and versions in one panel; Look opens docs, tables and compares', async () => {
   const { ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder } = await import('discord.js')
   const file = (name: string, data: Buffer | string) => new AttachmentBuilder(Buffer.from(data), { name })
@@ -912,7 +939,8 @@ test.skipIf(!ready)('workspace: a thread\'s outputs, waiting items and versions 
   const pin = await demo.thread.send('Weekly build report: build times are stable (4.1 min vs 4.3 min). Next check Monday 09:00.')
   await pin.pin()
   await demo.thread.send({ content: 'First pass of the chart.', files: [file('chart.png', png(480, 300, [88, 101, 242]))] })
-  await demo.thread.send({ content: 'Raw data and the build log.', files: [file('data.csv', data), file('build.log', log)] })
+  const budgets = JSON.stringify(Array.from({length: 530}, (_, i) => ({ run: `batch-${i}`, seconds: 530 - i })))
+  await demo.thread.send({ content: 'Raw data and the build log.', files: [file('data.csv', data), file('build.log', log), file('budgets.json', budgets)] })
   await demo.thread.send({ content: 'Chart after the fix.', files: [file('chart-2.png', png(480, 300, [35, 165, 90])), file('timeline.png', png(640, 360, [250, 166, 26])), file('notes.md', notes)] })
   await demo.thread.send({ content: 'Ship the cache change on Monday?', components: [new ActionRowBuilder<any>().addComponents(new ButtonBuilder().setCustomId('ship-yes').setLabel('Ship on Monday').setStyle(ButtonStyle.Primary), new ButtonBuilder().setCustomId('ship-no').setLabel('Wait a week').setStyle(ButtonStyle.Secondary))] })
   await page.setViewportSize({ width: 1440, height: 900 })
@@ -930,6 +958,17 @@ test.skipIf(!ready)('workspace: a thread\'s outputs, waiting items and versions 
   await ws.locator('.ws-row', { hasText: 'data.csv' }).click()
   await page.locator('.ws-table td').first().waitFor()
   await page.screenshot({ path: path.join(shots, 'workspace-look-csv.png') })
+  await page.getByRole('searchbox',{name:'Filter table rows'}).fill('api')
+  expect(await page.locator('.ws-table tbody tr').count()).toBe(1)
+  await page.locator('.look-back').click()
+  await ws.locator('.ws-row',{hasText:'budgets.json'}).click()
+  await page.getByText('First 500 of 530 rows').waitFor()
+  await page.getByRole('button',{name:'seconds', exact:true}).click()
+  expect(await page.locator('.ws-table tbody td').first().textContent()).toBe('batch-529')
+  await page.getByRole('searchbox',{name:'Filter table rows'}).fill('batch-527')
+  expect(await page.locator('.ws-table tbody td.n').textContent()).toBe('3')
+  await page.getByRole('button',{name:'Show the JSON source'}).click()
+  expect(await page.locator('pre.look-code').textContent()).toContain('batch-529')
   await page.locator('.look-back').click()
   await ws.locator('.ws-shot').filter({ has: page.locator('.ws-badge') }).first().click()
   await page.locator('[aria-label="Compare with the previous version"]').click()
@@ -1014,6 +1053,45 @@ test.skipIf(!ready)('command results: private receipt, paged picker, edited next
     await prompt.screenshot({ path: path.join(shots, 'command-finished.png') })
   } finally { await context.close() }
 }, 60_000)
+
+test.skipIf(!ready)('a bot success action is green and dispatches its own choice', async () => {
+  const msg = await demo.website.send({ content: 'Choose a proof.', components: [{ type: 1, components: [
+    { type: 2, style: 2, custom_id: 'rework', label: 'Revise proof' },
+    { type: 2, style: 3, custom_id: 'proof-ok', label: 'Accept proof' },
+  ] }] } as never)
+  const p = await page.context().newPage()
+  try {
+    await p.goto(`${origin}/#/c/${demo.website.id}`)
+    const row = p.locator(`#m-${msg.id}`), accept = row.getByRole('button', { name: 'Accept proof' })
+    for (const width of [1280, 390]) {
+      await p.setViewportSize({ width, height: 844 }); await p.mouse.move(0, 0)
+      expect(await accept.evaluate(el => [getComputedStyle(el).backgroundColor, getComputedStyle(el).color])).toEqual(['rgb(2, 133, 70)', 'rgb(255, 255, 255)'])
+      expect(await row.getByRole('button', { name: 'Revise proof' }).evaluate(el => getComputedStyle(el).backgroundColor)).not.toBe('rgb(2, 133, 70)')
+    }
+    const interaction = p.waitForRequest(r => r.url().startsWith(origin + '/') && r.method() === 'POST' && r.postDataJSON()?.customId === 'proof-ok')
+    await accept.click(); expect((await interaction).postDataJSON()).toMatchObject({ type: 'button', customId: 'proof-ok' })
+    await accept.waitFor({ state: 'detached' })
+  } finally { await p.close() }
+})
+
+test.skipIf(!ready)('a run footer pairs the model and effort without reinterpreting a branch or ordinary text', async () => {
+  const text = '-# *studio ⋅ draft#high ⋅ 12s ⋅ 17% ⋅ gpt-5.1-codex#max*'
+  const bot = await demo.website.send(text)
+  const p = await page.context().newPage()
+  try {
+    await p.goto(`${origin}/#/c/${demo.website.id}`)
+    const row = p.locator(`#m-${bot.id}`), badge = row.locator('.model-badge')
+    await row.locator('.meta-line').waitFor()
+    expect(await badge.count()).toBe(1)
+    expect(await badge.locator('.model-name').innerText()).toBe('GPT-5.1 Codex')
+    expect(await badge.locator('.model-effort').innerText()).toBe('max')
+    expect(await badge.getAttribute('title')).toBe('gpt-5.1-codex#max')
+    expect(await row.locator('.meta-line').innerText()).toContain('draft#high')
+    const mine = await p.evaluate(async ({ channel, content }) => (await (await fetch(`/client/channels/${channel}/messages`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content }) })).json()).id as string, { channel: demo.website.id, content: text })
+    const ordinary = p.locator(`#m-${mine}`); await ordinary.locator('.meta-line').waitFor()
+    expect(await ordinary.locator('.model-badge').count()).toBe(0)
+  } finally { await p.close() }
+})
 
 test.skipIf(!ready)('multi-select: cancellation discards the draft and Done submits once within bounds', async () => {
   const msg = await demo.website.send({ content: 'Choose two queues', components: [{ type: 1, components: [{ type: 3, custom_id: 'queues', placeholder: 'Select queues', min_values: 2, max_values: 2, options: ['North', 'East', 'West'].map((label) => ({ label, value: label, default: label === 'West', description: 'An available queue' })) }] }] } as never)
@@ -1578,13 +1656,74 @@ test.skipIf(!ready)('keyboard: Ctrl+K switcher, Enter on empty goes back, Alt+ar
   await page.locator('.shortcuts').waitFor({ state: 'detached' })
 }, 60_000)
 
+test.skipIf(!ready)('a catch-up banner excludes arrivals already read and clears when replying at the latest', async () => {
+  const p = page
+  // Other walks use deep links and can still receive bot follow-ups. This
+  // test needs a known read cursor and exactly the 24 arrivals it creates.
+  const thread = await demo.kimaki.threads.create({ name: 'Catch-up notes' })
+  await p.bringToFront(); await p.goto(`${origin}/#/c/${thread.id}`)
+  await p.locator('.chat-title', { hasText: thread.name }).waitFor()
+  const latest = await thread.send('Bookmark before leaving')
+  await p.locator(`#m-${latest.id}`).waitFor()
+  await expect.poll(async () => (await hub.store.readState(hub.options.config.ownerUserId))[thread.id]).toBe(latest.id)
+  await p.goto(`${origin}/#/c/${demo.website.id}`); await p.locator('.composer textarea').waitFor()
+  for (let i=0;i<24;i++) await thread.send(`Reading fixture ${i}\n\nAnother paragraph.\n\nA third paragraph.`)
+  await p.goto(`${origin}/#/c/${thread.id}`)
+  const bar=p.locator('.new-bar'); await bar.waitFor(); expect(await bar.innerText()).toContain('24 new messages')
+  const box=p.locator('.composer textarea'); await box.fill('A local reply')
+  await expect.poll(() => bar.count(),{timeout:2000}).toBe(0)
+  const response=p.waitForResponse(r=>r.request().method()==='POST'&&r.url().endsWith(`/client/channels/${thread.id}/messages`),{timeout:3000});await box.press('Enter');const posted=await response; expect(posted.status()).toBeLessThan(300);const own=await posted.json();await p.locator(`#m-${own.id}`).waitFor({timeout:3000})
+  await thread.send('Got it: A local reply')
+  await p.locator('.message.bot, .message').filter({hasText:'Got it: A local reply'}).first().waitFor()
+  const live=await thread.send('Visible live arrival');await p.locator(`#m-${live.id}`).waitFor()
+  expect(await p.locator('.new-divider').count()).toBe(0)
+  const history=p.locator('.chat-history');await expect.poll(()=>history.evaluate(el=>el.scrollHeight-el.scrollTop-el.clientHeight)).toBeLessThan(2)
+  await expect.poll(async ()=>(await hub.store.readState(hub.options.config.ownerUserId))[thread.id]).toBe(live.id)
+  // Point at the history gutter, not the centre of a nested scrollable code/media block.
+  await history.hover({ position: { x: 4, y: 40 } });await p.mouse.wheel(0,-46);await expect.poll(()=>history.evaluate(el=>el.scrollHeight-el.scrollTop-el.clientHeight)).toBeGreaterThan(35);const before=await history.evaluate(el=>el.scrollTop)
+  await p.waitForTimeout(80); const unseen=await thread.send('Arrived while scrolled away');await p.locator(`#m-${unseen.id}`).waitFor()
+  await p.waitForTimeout(500);expect(Math.abs(await history.evaluate(el=>el.scrollTop)-before)).toBeLessThan(2)
+  expect((await hub.store.readState(hub.options.config.ownerUserId))[thread.id]).not.toBe(unseen.id)
+  expect(await p.locator(`#m-${unseen.id}`).evaluate(el=>el.previousElementSibling?.classList.contains('new-divider'))).toBe(true)
+  await history.evaluate(el=>{el.scrollTop=el.scrollHeight});await expect.poll(() => p.locator('.new-divider').count()).toBe(0)
+},45000)
+
+test.skipIf(!ready)('a slow send keeps the draft and uploads until acknowledged; a rejected send preserves new edits',async()=>{
+  const p=page;await p.goto(`${origin}/#/c/${demo.website.id}`);const box=p.locator('.composer textarea');await box.waitFor()
+  let fail:(()=>void)|undefined
+  await p.route(`**/client/channels/${demo.website.id}/messages`,async r=>{if(r.request().method()!=='POST')return r.continue();await new Promise<void>(resolve=>{fail=resolve});await r.fulfill({status:503,body:'Try again'})})
+  const upload=p.locator('.composer input[type=file]');await upload.setInputFiles({name:'example.txt',mimeType:'text/plain',buffer:Buffer.from('Synthetic file')})
+  await box.fill('Still writing');await box.press('Enter');await expect.poll(()=>!!fail).toBe(true)
+  expect(await box.inputValue()).toBe('Still writing');await box.fill('Still writing more');fail!()
+  await p.getByRole('alert').waitFor();expect(await box.inputValue()).toBe('Still writing more');await p.unroute(`**/client/channels/${demo.website.id}/messages`)
+  const sent=p.waitForResponse(r=>r.request().method()==='POST'&&r.url().endsWith(`/client/channels/${demo.website.id}/messages`));await box.press('Enter');const m=await(await sent).json();expect(m.attachments).toHaveLength(1);await p.locator(`#m-${m.id}`).waitFor();expect(await p.locator(`#m-${m.id}`).count()).toBe(1);await expect.poll(()=>box.inputValue()).toBe('')
+},30000)
+
+test.skipIf(!ready)('live replies ease to the tail once, and reduced motion settles immediately',async()=>{
+  const thread=await demo.kimaki.threads.create({name:'Live arrival notes'})
+  const seed=await thread.send('A line of the field notes.\n'.repeat(65))
+  const p=page;await p.bringToFront();await p.goto(`${origin}/#/c/${thread.id}`);await p.locator(`#m-${seed.id}`).waitFor()
+  await p.evaluate(()=>document.fonts.ready)
+  for (const reduced of [false,true]) {
+    const text=reduced?'Motion fixture two':'Motion fixture one';await p.emulateMedia({reducedMotion:reduced?'reduce':'no-preference'})
+    const history=p.locator('.chat-history');await history.evaluate(el=>{el.scrollTop=el.scrollHeight});await p.waitForTimeout(180)
+    await history.evaluate((el,needle)=>{const a:number[]=[];(window as any).__arrivalGaps=a;const start=performance.now();const sample=()=>{if(el.textContent?.includes(needle))a.push(Math.round(el.scrollHeight-el.clientHeight-el.scrollTop));if(performance.now()-start<1500)requestAnimationFrame(sample)};requestAnimationFrame(sample)},text)
+    const m=await thread.send(text+'\n\nLine two.');await p.locator(`#m-${m.id}`).waitFor();await p.waitForTimeout(220)
+    const gaps:number[]=await p.evaluate(()=>(window as any).__arrivalGaps);expect(gaps.length).toBeGreaterThan(3);expect(Math.abs(gaps.at(-1)!)).toBeLessThan(2)
+    if(reduced)expect(Math.max(...gaps)).toBeLessThan(2);else expect(new Set(gaps.filter(x=>x>1)).size).toBeGreaterThan(1)
+  }
+},20000)
+
 test.skipIf(!ready)('mark unread: from the menu or Alt+click, the line moves there, and other tabs follow', async () => {
   const other = await page.context().newPage()
   await other.goto(`${origin}/#/c/${demo.kimaki.id}`)
   const otherRow = other.locator('.sidebar .channel', { hasText: 'Fix footer on short turns' })
   await page.goto(`${origin}/#/c/${demo.thread.id}`)
   // Messages sent before the event socket is up only show after a resync.
-  await page.getByText('filler 59', { exact: true }).waitFor()
+  // Earlier cases extend this same thread. Its initial 50 rows need not still
+  // include the original filler; wait for the real tail of this fixture.
+  const latest = (await demo.thread.messages.fetch({ limit: 1 })).first()!
+  await page.locator(`#m-${latest.id}`).waitFor()
   await page.waitForTimeout(500)
   await demo.thread.send('zz-unread-one')
   await demo.thread.send('zz-unread-two')

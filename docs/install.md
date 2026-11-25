@@ -2,15 +2,15 @@
 
 This sets up the hub on one computer and signs in your first device.
 
-Just want to look first? [Try it on this computer](try-it.md) in three commands, with no certificate,
+Just want to look first? [Try it on this computer](try-it.md) in two commands, with no certificate,
 code or passkey. Come back here when you want your phone or other devices.
 [Security levels](security-levels.md) explains what each step protects.
 
 ## What you need
 
 - A computer that stays on, running Linux, macOS or Windows. This is the hub.
-- Node.js 22.16 or newer, pnpm (no pnpm? run `corepack enable`), and
-  `openssl`. `ffmpeg` is optional, for voice notes from phones.
+- Node.js 22.16 or newer, git and `openssl`. `ffmpeg` is optional, for voice
+  notes from phones. Setup installs the packages and builds the app by itself.
 - A private network between the hub and your other devices, such as Tailscale or
   WireGuard. Vocorum is never meant to be reachable from the internet.
 
@@ -18,12 +18,11 @@ code or passkey. Come back here when you want your phone or other devices.
 
 ```bash
 git clone https://github.com/Xipzer/vocorum && cd vocorum
-pnpm install
-pnpm build
 node bin/vocorum.js setup --dry-run
 ```
 
-`--dry-run` shows what setup will do and changes nothing. Read it, then:
+`--dry-run` shows what setup will do. It only fetches the packages it needs to
+run and changes nothing else. Read it, then:
 
 ```bash
 node bin/vocorum.js setup
@@ -31,6 +30,7 @@ node bin/vocorum.js setup
 
 Setup:
 
+- installs the packages and builds the app (the first time, a minute or two),
 - finds the hub's private address (Tailscale, then WireGuard),
 - makes the hub's own certificate for that address and the machine's name,
 - starts the hub as a service that comes back after a restart,
@@ -66,13 +66,9 @@ Tailscale. Then, in a normal terminal (not as administrator):
 ```bat
 git clone https://github.com/Xipzer/vocorum
 cd vocorum
-corepack enable
-pnpm install
-pnpm build
 node bin\vocorum.js setup
 ```
 
-- If `corepack enable` is refused, use `npm i -g pnpm` instead.
 - Setup adds a Task Scheduler task for your user. It starts the hub when you log
   in, with no window, and starts it again if it stops. The log is
   `%USERPROFILE%\.vocorum\hub.log`.
@@ -127,13 +123,31 @@ fixes it.
 
 ## Update
 
+Your hub checks for a new version every six hours. When there is one, the
+hub's owner sees an update button at the bottom left of the app. It opens
+**Settings > Updates > Your hub**, which lists what changed.
+
+- **Update now** installs it. The hub backs itself up, installs the new version and restarts. The app reconnects after a few seconds and reloads.
+- **Update automatically** lets the hub install new versions by itself, when no agent is in the middle of a turn.
+- **Check now** asks straight away.
+
+From a terminal on the hub computer:
+
 ```bash
-git pull
-pnpm install
-pnpm build
-vocorum restart
-vocorum doctor
+vocorum update --check   # what is new, nothing changes
+vocorum update           # shows what is new, asks, installs
 ```
+
+If an update fails at any step, the hub goes back to the version it had and
+starts again. The reason is in `update.log` in the hub's folder, and the
+backup taken before it is in `backups/pre-update-<time>`.
+
+Good to know:
+
+- Updates come from the place you cloned the hub from. A check is one small request; nothing else is sent.
+- `vocorum config set updates off` stops the checks; `notify` turns them back on; `auto` is the same as the switch in the app. Restart the hub afterwards.
+- If you changed files in the checkout, or added your own commits, the hub does not update itself: use git as you would for any fork.
+- The desktop app updates separately, from your hub: **Settings > Updates > This app**.
 
 ## When something goes wrong
 

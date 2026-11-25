@@ -53,12 +53,11 @@ or any other company.
 - [Leaving Vocorum](docs/leaving.md): export your messages and uninstall.
 - Using an AI agent to set it up? Point it at [AGENTS.md](AGENTS.md).
 
-Runs on Linux, macOS and Windows. Needs Node.js 22.16 or newer and pnpm (no
-pnpm? run `corepack enable`).
+Runs on Linux, macOS and Windows. Needs Node.js 22.16 or newer and git. Setup
+installs and builds the rest.
 
 ```bash
 git clone https://github.com/Xipzer/vocorum && cd vocorum
-pnpm install && pnpm build
 node bin/vocorum.js setup
 ```
 

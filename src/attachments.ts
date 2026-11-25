@@ -173,7 +173,7 @@ export class AttachmentStore {
   }
 
   // GET /attachments/:id/:name. `authorized` = device session or bot token.
-  async serve(req: http.IncomingMessage, res: http.ServerResponse, { authorized }: { authorized: boolean }): Promise<void> {
+  async serve(req: http.IncomingMessage, res: http.ServerResponse, { authorized, cache = true }: { authorized: boolean; cache?: boolean }): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://localhost')
     const [, , id = '', rawName = ''] = url.pathname.split('/')
     const filename = decodeURIComponent(rawName)
@@ -198,7 +198,7 @@ export class AttachmentStore {
       'content-length': stat.size,
       'x-content-type-options': 'nosniff',
       'content-security-policy': "default-src 'none'; sandbox",
-      'cache-control': 'private, max-age=31536000, immutable',
+      'cache-control': cache ? 'private, max-age=31536000, immutable' : 'no-store',
       'content-disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(row.filename)}`,
     })
     if (req.method === 'HEAD') {

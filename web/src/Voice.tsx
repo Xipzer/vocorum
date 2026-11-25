@@ -12,6 +12,7 @@ import { Sheet, below, type SheetAction, type SheetSpec } from './Sheet.tsx'
 import { canPickOutput, join, leave, outputs, setDeaf, setMute, setNoise, setOutput, useVoice, type VoiceUi } from './voice.ts'
 
 export const inVoice = (state: HubState, channelId: string) => (state.voice_states ?? []).filter((v) => v.channel_id === channelId)
+const connectionLabel = (v: VoiceUi) => v.status === 'connecting' ? 'Connecting…' : v.listenOnly ? 'Voice connected · Listen-only' : 'Voice connected'
 const nameOf = (state: HubState, id: string) => {
   const u = state.users.find((x) => x.id === id)
   return u ? (u.global_name ?? u.username) : 'Someone'
@@ -135,7 +136,7 @@ export function VoiceView({ channel, state, onMenu }: { channel: Channel; state:
               </span>
             </span>
           </div>
-          <span className="chat-sub">{here ? (voice.status === 'connecting' ? 'Connecting…' : 'Voice connected') : people.length ? `${people.length} in voice` : 'Voice channel'}</span>
+          <span className="chat-sub">{here ? connectionLabel(voice) : people.length ? `${people.length} in voice` : 'Voice channel'}</span>
         </div>
       </header>
       <div className="voice-stage">
@@ -182,12 +183,12 @@ export function VoiceStrip({ state, onOpen }: { state: HubState; onOpen: (id: st
   return (
     <div className="voice-strip">
       <button className="voice-strip-where" onClick={() => channel && onOpen(channel.id)}>
-        <span className={`voice-strip-status${voice.status === 'connecting' ? ' connecting' : ''}`}>{voice.status === 'connecting' ? 'Connecting…' : 'Voice connected'}</span>
+        <span className={`voice-strip-status${voice.status === 'connecting' ? ' connecting' : ''}`}>{connectionLabel(voice)}</span>
         <span className="voice-strip-channel">
           <E>{channel?.name ?? 'Voice'}</E> / {guild}
         </span>
       </button>
-      <button className={`icon-button${micOff ? ' off' : ''}`} onClick={() => setMute(!voice.mute)} aria-label={micOff ? 'Unmute' : 'Mute'} title={micOff ? 'Unmute' : 'Mute'}>
+      <button className={`icon-button${micOff ? ' off' : ''}`} onClick={() => setMute(!voice.mute)} disabled={voice.listenOnly} aria-label={micOff ? 'Unmute' : 'Mute'} title={micOff ? 'Unmute' : 'Mute'}>
         <Icon name={micOff ? 'mic-off' : 'mic'} size={20} />
       </button>
       <button className={`icon-button${voice.deaf ? ' off' : ''}`} onClick={() => setDeaf(!voice.deaf)} aria-label={voice.deaf ? 'Undeafen' : 'Deafen'} title={voice.deaf ? 'Undeafen' : 'Deafen'}>

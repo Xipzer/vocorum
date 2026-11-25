@@ -1,0 +1,23 @@
+.agent-board { margin: 0 0 16px; color: var(--text); }
+.board-heading { display: flex; align-items: center; gap: 8px; padding: 5px 8px 0; }
+.board-heading > div:first-child { flex: 1; min-width: 0; }
+.board-heading .ws-label { padding: 0; margin: 0; }
+.board-heading h2 { font: 600 16px/22px var(--font); color: var(--text-strong); margin: 2px 0; overflow-wrap: anywhere; }
+.board-heading .look-versions { flex: none; }
+.board-byline, .board-changes, .board-notice { padding: 4px 8px; font-size: 12px; line-height: 16px; }
+.board-changes, .board-notice { color: var(--text-muted); }.board-notice button { color: var(--accent); }
+.board-section { margin: 14px 0 0; }
+.board-line { display: flex; align-items: flex-start; gap: 6px; position: relative; padding: 4px 8px; border-radius: 4px; }
+.board-line[data-changed] { background: var(--fill-selected); }
+.board-line[data-wait] { border-inline-start: 4px solid var(--accent); }
+.board-prose { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.board-prose .markdown { font: 400 14px/20px var(--font); }
+.board-prose .markdown > :first-child { margin-top: 0; }.board-prose .markdown > :last-child { margin-bottom: 0; }
+.board-line .board-correct { width: 24px; height: 24px; flex: none; opacity: 0; }
+.board-line:hover .board-correct, .board-line:focus-within .board-correct { opacity: 1; }
+.board-task { align-self: flex-start; display: grid; place-items: center; width: 16px; min-height: 20px; flex: none; color: var(--text-muted); }
+.board-task.current { color: var(--accent); }.board-line[data-done] .board-prose { color: var(--text-muted); }
+@media (hover: none), (max-width: 767px) { .board-line .board-correct { width: 32px; height: 32px; opacity: 1; } }
+.look-filter { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 12px; flex-wrap:wrap; }
+.look-filter label { display:flex; align-items:center; gap:6px; min-width:0; max-width:100%; padding:4px 8px; border-radius:var(--r-control); background:var(--bg-0); color:var(--text-muted); }
+.look-filter input { min-width:0; width:12em; max-width:100%; border:0; background:transparent; color:var(--text); font:400 14px/20px var(--font); }

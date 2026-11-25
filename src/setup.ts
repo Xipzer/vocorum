@@ -14,7 +14,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { HUB_NODE_FLAGS, initHub, loadConfig, type HubPaths, type PrivateListenerConfig } from './config.ts'
 import { doctor, hubLatency, printLine, type Check } from './doctor.ts'
-import { installTask, launchdFile, launchdLabel, NODE_MIN, nodeSupported, restartTask, tool, WINDOWS } from './platform.ts'
+import { installTask, launchdFile, launchdLabel, NODE_MIN, nodeSupported, restartTask, taskState, tool, WINDOWS } from './platform.ts'
 
 const run = promisify(execFile)
 
@@ -64,6 +64,33 @@ export async function stopBackground(paths: HubPaths) {
   if (!pid) return
   process.kill(pid, WINDOWS ? undefined : 'SIGTERM')
   for (let i = 0; i < 50 && backgroundPid(paths); i++) await new Promise((r) => setTimeout(r, 200))
+}
+
+// Restarts this hub (its service, or its background process) and waits until it answers.
+export async function restartHub(paths: HubPaths, repo: string): Promise<{ unit: string; seconds: number }> {
+  const config = loadConfig(paths)
+  if (!config) throw new Error(`No hub at ${paths.root}`)
+  const unit = serviceName(paths)
+  const manager = await serviceManager()
+  const installed = manager === 'systemd' ? fs.existsSync(path.join(os.homedir(), `.config/systemd/user/${unit}.service`)) : manager === 'launchd' ? fs.existsSync(launchdFile(unit)) : manager === 'task' ? (await taskState(unit)) !== null : false
+  // No service: the hub runs as a background process (setup started it, or the @reboot line).
+  if (!installed || backgroundPid(paths)) {
+    await stopBackground(paths)
+    if (typeof (await hubLatency(config, paths)) === 'number') throw new Error('A hub is answering that vocorum did not start (no service, no hub.pid). Stop it where it runs, then: vocorum restart')
+    await startBackground(paths, repo)
+  } else if (manager === 'task') await restartTask(unit, config.port)
+  else {
+    const [cmd, args] = manager === 'launchd' ? ['launchctl', ['kickstart', '-k', `gui/${process.getuid?.()}/${launchdLabel(unit)}`]] : ['systemctl', ['--user', 'restart', unit]]
+    await new Promise<void>((resolve, reject) => execFile(cmd as string, args as string[], (error) => (error ? reject(new Error(`${cmd} failed: ${error.message}. Is the service installed? vocorum setup`)) : resolve())))
+  }
+  const started = Date.now()
+  let latency: number | null | 'other' = null
+  while (Date.now() - started < 30_000 && typeof latency !== 'number') {
+    await new Promise((r) => setTimeout(r, 300))
+    latency = await hubLatency(config, paths)
+  }
+  if (typeof latency !== 'number') throw new Error(`The hub did not come back within 30 s. ${installed && manager === 'systemd' ? `journalctl --user -u ${unit} -n 50` : `See the end of ${path.join(paths.root, 'hub.log')}`}`)
+  return { unit, seconds: (Date.now() - started) / 1000 }
 }
 
 export function rebootLine(paths: HubPaths, repo: string) {
@@ -184,7 +211,16 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
 
   // 1. preflight
   if (!nodeSupported()) throw new Error(`Vocorum needs Node.js ${NODE_MIN} or newer (this is ${process.versions.node}).`)
-  if (!fs.existsSync(path.join(options.repo, 'dist/hub.mjs')) || !fs.existsSync(path.join(options.repo, 'web/dist/index.html'))) throw new Error(`Not built yet. Run: cd ${options.repo} && pnpm install && pnpm build`)
+  // A fresh clone: setup builds it, so the first command is the only one.
+  const unbuilt = !fs.existsSync(path.join(options.repo, 'dist/hub.mjs')) || !fs.existsSync(path.join(options.repo, 'web/dist/index.html'))
+  if (unbuilt && !options.dryRun) {
+    if (!options.json) console.log('First run: building the app. This takes a moment.')
+    const { build, CommandError } = await import('./updates.ts')
+    await build(options.repo).catch((error: Error) => {
+      const tail = error instanceof CommandError ? `\n${error.output.trim().split('\n').slice(-8).join('\n')}\n` : ''
+      throw new Error(`The build did not finish: ${error.message}.${tail}\nRun it yourself to see more: cd ${options.repo} && pnpm install && pnpm build`)
+    })
+  }
   // Certificates are only for other devices: a hub that is open on this computer alone needs none.
   const localOnly = options.open === true && !options.address && !loadConfig(paths)?.privateListener
   if (!localOnly && !(await out(tool('openssl'), ['version']))) throw new Error(`openssl is missing. Install it first (the hub makes its own certificates with it)${WINDOWS ? ': Git for Windows includes it (https://git-scm.com/download/win)' : process.platform === 'darwin' ? '' : ': sudo apt install openssl'}.`)
@@ -218,11 +254,12 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
   const publicUrl = listener ? `https://${listener.names[0]}:${listener.port}` : null
 
   const plan = [
+    unbuilt ? 'build the app first (it has not been built in this folder yet)' : '',
     `state in ${paths.root}${existing ? ' (exists, kept)' : ''}, hub port ${hubPort}`,
     ...notes,
     listener ? `HTTPS for your devices on ${listener.address}:${listener.port} and a setup page on ${listener.address}:${listener.httpPort}, only from ${listener.allowedCidrs.join(', ')} (${['127.0.0.1', '::1'].includes(listener.address) ? 'this computer only' : kept ? 'as before' : network.kind}); never the internet` : localOnly ? '' : 'no private network found: the hub stays on this machine only (pass --address <private ip> to change that)',
     listener ? `app address ${publicUrl}` : '',
-    open ? `open on this computer: http://localhost:${hubPort} needs no code or passkey. Anyone and any program on this computer can read and post${listener ? '' : '; nothing off this computer can connect'}` : '',
+    open ? `open on this computer: http://localhost:${hubPort} needs no code or passkey. Anyone and any program on this computer can read and post${listener ? '' : '; nothing off this computer can connect'}. Do not forward this port to other machines` : '',
     better ? `kept your current names (${kept!.names.join(', ')}). ${better} would need no DNS step on devices, but switching means reinstalling the certificate and new passkeys on every device: vocorum setup --name ${better},${kept!.names.join(',')}` : '',
     (existing?.tailscaleLogin ?? network.login) ? `extra check: devices must be on the Tailscale account ${existing?.tailscaleLogin ?? network.login}` : '',
     options.service && (await serviceManager()) ? `service: ${process.platform === 'darwin' ? `launchd agent dev.${serviceName(paths)}` : WINDOWS ? `Task Scheduler task Vocorum\\${serviceName(paths)}, at logon` : `systemd user unit ${serviceName(paths)}.service`}` : `no service${options.service ? ' manager here' : ''}: the hub runs in the background and does not start after a reboot by itself`,

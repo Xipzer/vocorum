@@ -5,12 +5,20 @@
 import { useEffect, useRef, useState } from 'react'
 import { appInfo, invoke, native } from './native.ts'
 import { Group, Item, Page, Switch } from './SettingsKit.tsx'
+import { HubUpdateGroup } from './HubUpdate.tsx'
 import './update-check.css'
 
 export const desktopUpdates = native && !/iPhone|iPad|Android/.test(navigator.userAgent)
 const requestUpdateCheck = () => window.dispatchEvent(new Event('vocorum-settings-update-check'))
 
 type Found = { version: string; notes?: string }
+
+// Release notes are plain text. Lines that start with "- " become a list; nothing is run or linked.
+function Notes({ text }: { text: string }) {
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean)
+  const list = lines.every((l) => l.startsWith('- '))
+  return list ? <ul>{lines.map((l, i) => <li key={i}>{l.slice(2)}</li>)}</ul> : <p style={{ whiteSpace: 'pre-wrap' }}>{text}</p>
+}
 
 export function UpdateCheck() {
   const dialog = useRef<HTMLDialogElement>(null)
@@ -49,30 +57,33 @@ export function UpdateCheck() {
     invoke('install_app_update').catch((e) => { setInstalling(false); setFound(null); setStatus(String(e)) })
   }
   return desktopUpdates ? <dialog className="update-check" ref={dialog} aria-labelledby="update-check-heading" onCancel={(e) => { if (installing) e.preventDefault() }}>
+    <div className="update-panel">
     <header className="modal-header"><h2 id="update-check-heading">Vocorum updates</h2></header>
     <div className="modal-body">
     {installed && <p>Installed on this device: {installed}</p>}
     <p role="status">{status}</p>
-    {found && <section><h3>What changed</h3><p style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{found.notes?.trim() || 'No release notes were provided.'}</p></section>}
+    {found && <section className="update-notes"><h3>What changed</h3><Notes text={found.notes?.trim() || 'No release notes were provided.'} /></section>}
     </div>
     <form method="dialog" className="modal-footer">
       {found && !installing && <button className="button" autoFocus={false}>Later</button>}
       {found ? <button type="button" className="button primary" autoFocus disabled={installing} onClick={install}>Restart to update</button> : <button className="button primary" autoFocus>Done</button>}
     </form>
+    </div>
   </dialog> : null
 }
 
 export function UpdatesPage() {
   const [auto, setAuto] = useState<boolean | null>(null)
-  useEffect(() => { void invoke<boolean>('auto_update').then(setAuto).catch(() => setAuto(false)) }, [])
+  useEffect(() => { if (desktopUpdates) void invoke<boolean>('auto_update').then(setAuto).catch(() => setAuto(false)) }, [])
   return <Page title="Updates">
-    <Group title="This app">
+    <HubUpdateGroup />
+    {desktopUpdates && <Group title="This app">
       <Item label="Check for updates" note="Asks your hub for a newer version of this app and shows what changed.">
         <button className="settings-btn" onClick={requestUpdateCheck}>Check for Updates…</button>
       </Item>
       <Item label="Update automatically" note="Installs a new version while the window is closed. With the window open, you choose when to restart.">
         <Switch label="Update automatically" checked={auto === true} disabled={auto === null} onChange={(on) => void invoke<boolean>('auto_update', { enabled: on }).then(setAuto).catch(() => {})} />
       </Item>
-    </Group>
+    </Group>}
   </Page>
 }

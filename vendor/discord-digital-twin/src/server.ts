@@ -159,11 +159,20 @@ type GuildChannelCreateBody = RESTPostAPIGuildChannelJSONBody & {
 
 // Stores an uploaded file and returns the URL messages should carry. Default: a data: URI.
 // It may also give the image's size, which Discord sends as width and height.
-export type AttachmentStore = (file: { id: string; filename: string; contentType: string; data: Buffer }) => Promise<string | { url: string; width?: number | null; height?: number | null }>
+export type AttachmentStore = (file: { id: string; filename: string; contentType: string; data: Buffer }) => Promise<string | { url: string; size?: number; width?: number | null; height?: number | null }>
+
+export type ChannelMessageWrite = {
+  clientKey: string; authorId: string; channelId: string; messageId: string; edit: boolean
+  uploaded: APIAttachment[]; previous: APIAttachment[]; attachments: APIAttachment[]
+}
 
 // Serves HTTP paths outside /api (a hub's own routes) and WebSocket upgrades outside /gateway.
 export interface HttpExtension {
   privateReply?: PrivateEvent
+  // A local application may consume uploads on authenticated channel posts. The client
+  // key is the registered lookup key; no credential or client-supplied author is passed.
+  channelMessage?: (input: ChannelMessageWrite, write: () => Promise<APIMessage>) => Promise<APIMessage>
+  channelMessageDelete?: (input: Pick<ChannelMessageWrite, 'clientKey' | 'authorId' | 'channelId' | 'messageId'>, remove: () => Promise<Response>) => Promise<Response>
   handle(req: http.IncomingMessage, res: http.ServerResponse): void
   upgrade?: UpgradeFallback
   // Checked before anything else, for every request and upgrade (/api and
@@ -190,8 +199,8 @@ async function readMessageBody(request: Request, storeAttachment?: AttachmentSto
     const data = Buffer.from(await file.arrayBuffer())
     const contentType = file.type || 'application/octet-stream'
     const stored = storeAttachment ? await storeAttachment({ id, filename: file.name, contentType, data }) : `data:${contentType};base64,${data.toString('base64')}`
-    const { url: uri, width, height } = typeof stored === 'string' ? { url: stored, width: null, height: null } : stored
-    uploadedAttachments.push({ id, filename: file.name, size: file.size, content_type: file.type, url: uri, proxy_url: uri, ...(width != null && height != null && { width, height }) })
+    const { url: uri, width, height, size } = typeof stored === 'string' ? { url: stored, width: null, height: null, size: file.size } : stored
+    uploadedAttachments.push({ id, filename: file.name, size: size ?? file.size, content_type: file.type, url: uri, proxy_url: uri, ...(width != null && height != null && { width, height }) })
   }
   // Like Discord, components get the uploaded URL in place of each attachment://<filename>.
   // Discord also returns `attachments: []` for Components V2 messages; the twin keeps them for text().
@@ -368,6 +377,11 @@ export function createServer({
   // The bot user a REST request acts as: the shared bot, or the client's own user.
   const acting = new AsyncLocalStorage<string>()
   const actor = () => acting.getStore() ?? botUserId
+  const channelWrite = (request: Request, input: Omit<ChannelMessageWrite, 'clientKey' | 'authorId'>, write: () => Promise<APIMessage>) => {
+    const token = request.headers.get('authorization')?.replace(/^Bot\s+/i, '')
+    return gatewayProxy && tokenKey && token && extension?.channelMessage
+      ? extension.channelMessage({ ...input, clientKey: tokenKey(token), authorId: actor() }, write) : write()
+  }
   const state = { port: 0 }
   const typingEvents: TypingEventRecord[] = []
 
@@ -701,6 +715,7 @@ export function createServer({
           )
         }
         const messageId = generateSnowflake()
+        return channelWrite(request, { channelId: channel.id, messageId, edit: false, uploaded: body.uploadedAttachments, previous: [], attachments: body.uploadedAttachments }, async () => {
         await prisma.message.create({
           data: {
             id: messageId,
@@ -748,6 +763,7 @@ export function createServer({
         )
         gateway.broadcastMessageCreate(apiMessage, guildId ?? '')
         return apiMessage
+        })
       },
     })
     .route({
@@ -812,8 +828,6 @@ export function createServer({
       method: 'PATCH',
       path: '/channels/:channel_id/messages/:message_id',
       async handler({ params, request }): Promise<APIMessage> {
-        const body =
-          (await request.json()) as RESTPatchAPIChannelMessageJSONBody
         const channel = await prisma.channel.findUnique({
           where: { id: params.channel_id },
         })
@@ -838,11 +852,20 @@ export function createServer({
             { status: 404, headers: { 'Content-Type': 'application/json' } },
           )
         }
+        if (existing.authorId !== actor()) throw Response.json({ message: 'Cannot edit another author’s message' }, { status: 403 })
+        const body = await readMessageBody(request, storeAttachment)
+        const previous: APIAttachment[] = JSON.parse(existing.attachments)
+        // Only retain attachments already on THIS message, using their stored metadata.
+        const change = Array.isArray(body.attachments) || body.uploadedAttachments.length > 0
+        const kept = change ? previous.filter(a => body.attachments?.some(ref => String(ref.id) === a.id)) : previous
+        const attachments = [...kept, ...body.uploadedAttachments]
+        return channelWrite(request, { channelId: channel.id, messageId: existing.id, edit: true, uploaded: body.uploadedAttachments, previous, attachments }, async () => {
         await prisma.message.update({
           where: { id: params.message_id },
           data: {
             content: body.content ?? existing.content,
             editedTimestamp: new Date(),
+            ...(change && { attachments: JSON.stringify(attachments) }),
             ...(body.embeds ? { embeds: JSON.stringify(body.embeds) } : {}),
             ...(body.components
               ? { components: JSON.stringify(body.components) }
@@ -876,12 +899,13 @@ export function createServer({
           guild_id: guildId,
         })
         return apiMessage
+        })
       },
     })
     .route({
       method: 'DELETE',
       path: '/channels/:channel_id/messages/:message_id',
-      async handler({ params }): Promise<Response> {
+      async handler({ params, request }): Promise<Response> {
         const channel = await prisma.channel.findUnique({
           where: { id: params.channel_id },
         })
@@ -906,13 +930,18 @@ export function createServer({
             { status: 404, headers: { 'Content-Type': 'application/json' } },
           )
         }
-        await prisma.message.delete({ where: { id: params.message_id } })
-        gateway.broadcast(GatewayDispatchEvents.MessageDelete, {
-          id: params.message_id,
-          channel_id: params.channel_id,
-          guild_id: channel.guildId ?? undefined,
-        })
-        return new Response(null, { status: 204 })
+        const remove = async () => {
+          await prisma.message.delete({ where: { id: params.message_id } })
+          gateway.broadcast(GatewayDispatchEvents.MessageDelete, {
+            id: params.message_id,
+            channel_id: params.channel_id,
+            guild_id: channel.guildId ?? undefined,
+          })
+          return new Response(null, { status: 204 })
+        }
+        const token = request.headers.get('authorization')?.replace(/^Bot\s+/i, '')
+        return gatewayProxy && tokenKey && token && extension?.channelMessageDelete
+          ? extension.channelMessageDelete({ clientKey: tokenKey(token), authorId: actor(), channelId: channel.id, messageId: existing.id }, remove) : remove()
       },
     })
     .route({

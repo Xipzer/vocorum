@@ -42,6 +42,9 @@ export type HubConfig = {
   // 'open': a browser on this computer uses http://localhost:<port> with no code or passkey
   // (vocorum setup --open). Absent: every browser pairs. Never applies to another device.
   localAccess?: 'open' | null
+  // Hub updates (updates.ts). Absent: check every six hours and tell the owner. 'auto': also
+  // install when no agent is working. 'off': never contact the place this hub was cloned from.
+  updates?: 'off' | 'auto' | null
   // The owner's private Admin server (vocorum admin setup): only the owner and the admin bot.
   adminGuildId?: string | null
   adminBotReady?: boolean

@@ -173,16 +173,17 @@ export function findSecrets(m: Text): Array<{ kind: string; value: string }> {
 // Runs this same command again as its own service, so it survives the agent's
 // shell and machine restarts. systemd-run where there is systemd, else a
 // detached process with its output in a log file.
-export async function detach(paths: HubPaths, name: string, argv: string[]): Promise<string> {
+// unit: false keeps it a plain detached process. A job that starts the hub's own background
+// process must be one: systemd ends everything a transient unit started when the job exits.
+export async function detach(paths: HubPaths, name: string, argv: string[], { cli = path.resolve(import.meta.dirname, '../../bin/vocorum.js'), unit: ownUnit = true }: { cli?: string; unit?: boolean } = {}): Promise<string> {
   const { spawn, spawnSync } = await import('node:child_process')
   const log = path.join(paths.root, `${name}.log`)
   const node = process.execPath
-  const cli = path.resolve(import.meta.dirname, '../../bin/vocorum.js')
   const args = [cli, ...argv.filter((a) => a !== '--detach')]
   const unit = `vocorum-${name}-${Date.now().toString(36)}`
-  const hasSystemd = process.platform === 'linux' && (spawnSync('systemctl', ['--user', 'is-system-running'], { encoding: 'utf8' }).stdout ?? '').trim() !== ''
+  const hasSystemd = ownUnit && process.platform === 'linux' && (spawnSync('systemctl', ['--user', 'is-system-running'], { encoding: 'utf8' }).stdout ?? '').trim() !== ''
   if (hasSystemd) {
-    const result = spawnSync('systemd-run', ['--user', `--unit=${unit}`, '--collect', `--setenv=VOCORUM_DIR=${paths.root}`, ...(process.env['VOCORUM_DISCORD_API'] ? ['--setenv=VOCORUM_DISCORD_API'] : []), '-p', `StandardOutput=append:${log}`, '-p', `StandardError=append:${log}`, node, ...args], { encoding: 'utf8', env: process.env })
+    const result = spawnSync('systemd-run', ['--user', `--unit=${unit}`, '--collect', `--setenv=VOCORUM_DIR=${paths.root}`, `--setenv=PATH=${process.env['PATH'] ?? ''}`, ...(process.env['VOCORUM_DISCORD_API'] ? ['--setenv=VOCORUM_DISCORD_API'] : []), '-p', `StandardOutput=append:${log}`, '-p', `StandardError=append:${log}`, node, ...args], { encoding: 'utf8', env: process.env })
     if (result.status === 0) {
       recordJob(paths, { name, unit, pid: null, log, started: new Date().toISOString() })
       return `Running as ${unit}. Follow it with: vocorum discord status (log: ${log})`

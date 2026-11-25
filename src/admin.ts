@@ -221,7 +221,7 @@ export async function adminSetup(config: HubConfig, paths: HubPaths, options: Ad
     store.close()
   }
   await reloadHub(config, paths)
-  await fetch(`http://127.0.0.1:${config.port}/admin/mirror/guilds/${guildId}/icon`, { method: 'POST', headers: { authorization: `Bearer ${readSecret(paths.adminToken)}`, 'content-type': 'application/octet-stream' }, body: shieldPng(), signal: AbortSignal.timeout(5000) }).catch(() => null)
+  await fetch(`http://127.0.0.1:${config.port}/admin/mirror/guilds/${guildId}/icon`, { method: 'POST', headers: { authorization: `Bearer ${readSecret(paths.adminToken)}`, 'content-type': 'application/octet-stream' }, body: new Uint8Array(shieldPng()), signal: AbortSignal.timeout(5000) }).catch(() => null)
 
   // 3. the folder the agent works in, with its rules and its limits
   steps.push({ step: 'workspace', detail: `${p.workspace}${writeWorkspace(paths) ? '' : ' (unchanged)'}` })

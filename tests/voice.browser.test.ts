@@ -12,7 +12,7 @@ import { LOGIN, startTestHub } from './helpers.ts'
 import { startDemoBot } from './demo-bot.ts'
 import { Hub } from '../src/hub.ts'
 
-const webDir = path.resolve(import.meta.dirname, '../web/dist')
+const webDir = process.env['VOICE_TEST_WEB'] ?? path.resolve(import.meta.dirname, '../web/dist')
 const shots = process.env['HUB_SCREENSHOTS'] ?? path.join(os.tmpdir(), 'hub-screenshots')
 
 function findChromium(): string | undefined {
@@ -68,6 +68,80 @@ afterAll(async () => {
 
 const voiceNotes = (page: Page) => page.locator('.message .voice-message')
 
+test.skipIf(!ready)('a rejected voice upload survives a reload and retries the original audio', async () => {
+  const context = await browser.newContext({extraHTTPHeaders:{'tailscale-user-login':LOGIN},serviceWorkers:'block'})
+  try {
+    const p = await context.newPage(); await pair(p); await p.goto(`${origin}/#/c/${demo.website.id}`)
+    await p.route('**/client/uploads', r => r.fulfill({status:400,body:'Bad multipart body'}))
+    await p.getByRole('button',{name:'Record a voice message'}).click(); await p.locator('.recording-label').waitFor(); await p.waitForTimeout(1500); await p.keyboard.press('Enter')
+    await p.getByText('Unsent voice note',{exact:true}).waitFor(); await p.reload()
+    const local = p.getByRole('link',{name:'Save audio'}); await local.waitFor()
+    const download = p.waitForEvent('download'); await local.click()
+    expect(fs.statSync((await (await download).path())!).size).toBeGreaterThan(1024)
+    await p.unroute('**/client/uploads'); await p.getByRole('button',{name:'Retry',exact:true}).click()
+    await voiceNotes(p).last().waitFor(); await local.waitFor({state:'detached'}); await p.reload(); await voiceNotes(p).last().waitFor(); expect(await local.count()).toBe(0)
+  } finally { await context.close() }
+})
+
+test.skipIf(!ready)('identical words stay typed or spoken on both paths; only local recordings play', async () => {
+  const words = 'Meet beside the blue gate.'
+  const rows: Array<{ id: string }> = []
+  for (let i = 0; i < 6; i++) rows.push(await demo.website.send(words))
+  const bytes = fs.readFileSync(path.resolve(import.meta.dirname, '../vendor/discord-digital-twin/tests/fixtures/voice-hello.ogg'))
+  const saved = await hub.attachments.save({ id: rows[1]!.id, filename: 'clip.ogg', contentType: 'audio/ogg', data: bytes, uploadedBy: 'fixture' })
+  const u = new URL(saved.url), clip = { id: saved.id, filename: 'clip.ogg', size: bytes.length, url: u.pathname + u.search, content_type: 'audio/ogg' }
+  const context = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, serviceWorkers: 'block', deviceScaleFactor: 2 })
+  try {
+    const p = await context.newPage(); await pair(p)
+    await p.route(`**/client/channels/${demo.website.id}/messages?*`, async route => {
+      const response = await route.fetch(), body = await response.json()
+      for (const [i,r] of rows.entries()) {
+        const m = body.messages.find((x: {id:string}) => x.id === r.id)
+        Object.assign(m, { flags: i % 3 === 0 ? 0 : 8192, origin: i >= 3 ? 'discord' : undefined, voice_note: i === 4 ? { attachment_id: clip.id } : i === 5 ? {} : undefined, attachments: i % 3 === 1 ? [clip] : [] })
+      }
+      await route.fulfill({response,json:body})
+    })
+    await p.goto(`${origin}/#/c/${demo.website.id}`)
+    for (const width of [1280,390,320]) {
+      await p.setViewportSize({width,height:800})
+      for (const [i,r] of rows.entries()) {
+        const row = p.locator(`#m-${r.id}`); await row.getByText(words,{exact:true}).waitFor()
+        expect(await row.getByText('Voice note',{exact:true}).count()).toBe(i % 3 === 0 ? 0 : 1)
+        expect(await row.locator('.voice-transcript').count()).toBe(i % 3 === 0 ? 0 : 1)
+        const play = row.getByRole('button',{name:'Play voice note'})
+        expect(await row.locator('audio').count()).toBe(i % 3 === 1 ? 1 : 0)
+        if (width === 1280 && i % 3 === 1) { await play.click(); await expect.poll(() => row.locator('audio').evaluate((a:HTMLAudioElement) => a.currentTime)).toBeGreaterThan(0) }
+      }
+    }
+  } finally { await context.close() }
+})
+
+test.skipIf(!ready)('a mirrored voice message plays its own local bytes after reload; identical typed text stays plain', async () => {
+  const words = 'The pocket guide is ready.'
+  const ids = Array.from({length: 4}, (_, i) => String(((BigInt(Date.now()) - 1420070400000n) << 22n) + BigInt(8000 + i)))
+  const [typed, spoken, silent, file] = ids as [string,string,string,string]
+  const bytes = fs.readFileSync(path.resolve(import.meta.dirname, '../vendor/discord-digital-twin/tests/fixtures/voice-hello.ogg'))
+  const msg = { channel_id: demo.website.id, author: { id: '4005551234', username: 'reader' }, content: words }
+  // All inputs and bytes are local; there is no CDN URL to fetch.
+  await hub.mirror.message(null, { ...msg, id: typed })
+  await hub.mirror.message(null, { ...msg, id: spoken, flags: 8192, attachments: [{ id: file, filename: 'field.ogg', content_type: 'audio/ogg', size: bytes.length }] }, { files: new Map([[file, bytes]]) })
+  await hub.mirror.message(null, { ...msg, id: silent, flags: 8192 })
+  const context = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, serviceWorkers: 'block' })
+  try {
+    const p = await context.newPage(); await pair(p); await p.goto(`${origin}/#/c/${msg.channel_id}`); await p.reload()
+    for (const id of [typed, spoken, silent]) {
+      const row = p.locator(`#m-${id}`); await row.getByText(words, { exact: true }).waitFor()
+      expect(await row.locator('.voice-note-label').count()).toBe(id === typed ? 0 : 1)
+      expect(await row.locator('audio').count()).toBe(id === spoken ? 1 : 0)
+    }
+    const row = p.locator(`#m-${spoken}`), url = new URL((await row.locator('audio').getAttribute('src'))!, origin)
+    expect(url.origin).toBe(origin)
+    expect(await (await context.request.get(url.href)).body()).toEqual(bytes)
+    await row.getByRole('button', { name: 'Play voice note' }).click()
+    await expect.poll(() => row.locator('audio').evaluate((a: HTMLAudioElement) => a.currentTime)).toBeGreaterThan(0)
+  } finally { await context.close() }
+})
+
 test.skipIf(!ready)('desktop: click the mic, see the timer and level, Enter sends; Esc cancels', async () => {
   const context = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, viewport: { width: 1280, height: 800 }, serviceWorkers: 'block' })
   const page = await context.newPage()
@@ -81,6 +155,8 @@ test.skipIf(!ready)('desktop: click the mic, see the timer and level, Enter send
   await page.screenshot({ path: path.join(shots, 'voice-desktop-recording.png') })
   await page.keyboard.press('Enter')
   await expect.poll(() => voiceNotes(page).count(), { timeout: 10_000 }).toBe(before + 1)
+  await page.getByRole('button', { name: 'Play voice note' }).last().click()
+  await expect.poll(() => voiceNotes(page).last().locator('audio').evaluate((a: HTMLAudioElement) => a.currentTime)).toBeGreaterThan(0)
   await page.locator('.message', { hasText: 'Got it: your voice message' }).last().waitFor()
 
   // Cancel: nothing is sent.

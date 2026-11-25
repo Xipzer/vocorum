@@ -16,7 +16,7 @@ export type VoiceUi = {
   speaking: Record<string, boolean>
   noise: NoiseMode
   output: string
-  // The microphone could not be opened: listening only.
+  // The microphone or its capture pipeline is unavailable for this call.
   listenOnly: boolean
 }
 
@@ -54,6 +54,7 @@ type Session = {
   mix: GainNode
   player: HTMLAudioElement
   stream: MediaStream | null
+  source: MediaStreamAudioSourceNode | null
   capture: AudioWorkletNode | null
   encoder: AudioEncoder | null
   peers: Map<string, Peer>
@@ -62,6 +63,9 @@ type Session = {
   meId: string
 }
 let session: Session | null = null
+// A permission prompt can outlive a leave and rejoin, even to the same room.
+type Output = Pick<Session, 'ctx' | 'player'>
+let pending: Output | null = null
 // Why the hub ended the call.
 const CLOSED: Record<number, string> = {
   4000: 'You joined voice on another device or channel, so this one left.',
@@ -106,19 +110,47 @@ export async function outputs() {
   return (devices ?? []).filter((d) => d.kind === 'audiooutput')
 }
 
+function stopCapture(s: Session) {
+  s.stream?.getTracks().forEach((t) => t.stop())
+  s.stream = null
+  s.source?.disconnect()
+  s.source = null
+  if (s.capture) {
+    s.capture.onprocessorerror = null
+    s.capture.port.onmessage = null
+    s.capture.port.close()
+    s.capture.disconnect()
+    s.capture = null
+  }
+  if (s.encoder && s.encoder.state !== 'closed') s.encoder.close()
+  s.encoder = null
+}
+
+function captureFailed(s: Session) {
+  if (session !== s || !s.stream) return
+  stopCapture(s)
+  set({ listenOnly: true, error: 'Microphone capture is unavailable. You can still listen. Leave voice and join again to retry.', speaking: { ...ui.speaking, [s.meId]: false } })
+  sendState() // If still connecting, onopen sends the same effective mute.
+}
+
+function stopOutput({ player, ctx }: Output) {
+  player.pause()
+  player.srcObject = null
+  void ctx.close()
+}
+
 export function leave() {
+  if (pending) { stopOutput(pending); pending = null }
   const s = session
   session = null
   if (s) {
     s.ws.onclose = null
     s.ws.close()
-    s.stream?.getTracks().forEach((t) => t.stop())
-    s.encoder?.close()
+    stopCapture(s)
     for (const p of s.peers.values()) if (p.decoder?.state !== 'closed') p.decoder?.close()
-    s.player.pause()
-    void s.ctx.close()
+    stopOutput(s)
   }
-  set({ channelId: null, status: 'idle', speaking: {}, listenOnly: false })
+  set({ channelId: null, status: 'idle', error: null, speaking: {}, listenOnly: false })
 }
 
 export async function join(channelId: string, meId: string) {
@@ -136,25 +168,28 @@ export async function join(channelId: string, meId: string) {
   void player.play().catch(() => {})
   if (ui.output) void (player as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }).setSinkId?.(ui.output).catch(() => {})
 
+  const attempt: Output = { ctx, player }
+  pending = attempt
   let stream: MediaStream | null = null
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: { noiseSuppression: ui.noise === 'standard', echoCancellation: true, autoGainControl: true, channelCount: 1 } })
   } catch {
-    set({ listenOnly: true, error: 'No microphone access, so you can listen but not talk. Allow the microphone for this site, then join again.' })
+    if (pending === attempt) set({ listenOnly: true, error: 'No microphone access, so you can listen but not talk. Allow the microphone for this site, then join again.' })
   }
-  if (ui.channelId !== channelId) {
+  if (pending !== attempt) {
     stream?.getTracks().forEach((t) => t.stop())
-    void ctx.close()
     return
   }
+  pending = null
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
   const ws = new WebSocket(`${proto}//${location.host}/client/voice?channel=${encodeURIComponent(channelId)}${hasDecoder ? '' : '&format=pcm'}`)
   ws.binaryType = 'arraybuffer'
-  const s: Session = { ws, ctx, mix, player, stream, capture: null, encoder: null, peers: new Map(), timestamp: 0, quietFrames: 0, meId }
+  const s: Session = { ws, ctx, mix, player, stream, source: null, capture: null, encoder: null, peers: new Map(), timestamp: 0, quietFrames: 0, meId }
   session = s
 
   ws.onopen = () => {
+    if (session !== s) return
     set({ status: 'connected' })
     sendState()
   }
@@ -164,6 +199,7 @@ export async function join(channelId: string, meId: string) {
     set({ error: CLOSED[e.code] ?? (e.code === 1000 ? null : e.reason || 'Voice disconnected. Join again to reconnect.') })
   }
   ws.onmessage = (e) => {
+    if (session !== s) return
     if (typeof e.data === 'string') {
       const msg = JSON.parse(e.data) as { op: string; user_id?: string; speaking?: boolean; message?: string }
       if (msg.op === 'speaking' && msg.user_id) set({ speaking: { ...ui.speaking, [msg.user_id]: Boolean(msg.speaking) } })
@@ -173,19 +209,23 @@ export async function join(channelId: string, meId: string) {
     receive(s, new Uint8Array(e.data as ArrayBuffer))
   }
 
-  if (stream) await startCapture(s, stream)
+  if (stream) {
+    try { await startCapture(s, stream) } catch { captureFailed(s) }
+  }
 }
 
 async function startCapture(s: Session, stream: MediaStream) {
   await s.ctx.audioWorklet.addModule('/voice-worklet.js')
   if (session !== s) return
-  const source = s.ctx.createMediaStreamSource(stream)
+  s.source = s.ctx.createMediaStreamSource(stream)
   const capture = new AudioWorkletNode(s.ctx, 'voice-capture')
   s.capture = capture
-  source.connect(capture)
+  capture.onprocessorerror = () => captureFailed(s)
+  s.source.connect(capture)
   if (hasEncoder) {
     s.encoder = new AudioEncoder({
       output: (chunk) => {
+        if (session !== s || !s.capture) return
         const frame = new Uint8Array(chunk.byteLength + 1)
         chunk.copyTo(frame.subarray(1))
         if (s.ws.readyState === WebSocket.OPEN) s.ws.send(frame)
@@ -197,7 +237,7 @@ async function startCapture(s: Session, stream: MediaStream) {
     s.encoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1, bitrate: 32000, opus: { frameDuration: 20000 } } as AudioEncoderConfig)
   }
   capture.port.onmessage = (e: MessageEvent<{ pcm: Float32Array<ArrayBuffer>; level: number }>) => {
-    if (session !== s) return
+    if (session !== s || s.capture !== capture) return
     const talking = !ui.mute && !ui.listenOnly && e.data.level > SPEAKING_LEVEL
     s.quietFrames = talking ? 0 : s.quietFrames + 1
     // The ring stays on through short pauses between words (300 ms).

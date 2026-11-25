@@ -71,9 +71,10 @@ Sets up the hub on this machine in one go, and is safe to run again.
 
   --open        the quickest start, for trying it on this computer: the app opens at
                 http://localhost:47100 with no certificate, code or passkey, and no other device can
-                connect. Anyone and any program on this computer can read and post. Add your other
-                devices later with: vocorum setup. Ask for pairing here too with:
-                vocorum config set localAccess off
+                connect. Anyone and any program on this computer can read and post, so do not
+                forward this port to other machines (ssh -L or -R, socat): whoever reaches the
+                forward counts as this computer. Add your other devices later with: vocorum setup.
+                Ask for pairing here too with: vocorum config set localAccess off
   --dry-run     show what it would do, change nothing
   --yes         go ahead without asking (agents: only after the person said yes)
   --address IP  listen on this private address instead of the one found
@@ -101,7 +102,7 @@ vocorum config set KEY VALUE
 Keys you can set: ownerUsername, ownerDiscordIds (your Discord user ids, comma
 separated), botUsername, guildName, publicUrl (or none), tailscaleLogin (or none),
 localAccess (open: this computer uses http://localhost:<port> with no code or passkey;
-off: every browser pairs).
+off: every browser pairs), updates (notify, auto or off: see vocorum update --help).
 Restart the hub afterwards: vocorum restart`,
   admin: `vocorum admin setup [--kimaki PATH] [--model PROVIDER/MODEL] [--no-service] [--json]
 vocorum admin status [--json]
@@ -175,6 +176,16 @@ aside, never deleted). The hub must not be running. Checks the copy against the
 backup's manifest, then: vocorum setup. Devices keep trusting the hub when this
 machine has the old hub's address and name (same CA); with a new address the
 hub makes a new CA, and devices install it again from the setup page.`,
+  update: `vocorum update [--check] [--yes] [--json]
+
+Shows what is new where this hub was cloned from, with each version's notes, and
+installs it: a backup first, then the new code, its packages and a build, then a
+restart. If any step fails, the version you had is put back and started again.
+  --check   only say what is available; change nothing
+  --yes     install without asking
+The hub also checks by itself every six hours (one tiny request) and tells the
+owner in the app. vocorum config set updates auto installs new versions when no
+agent is working; updates off stops the checks.`,
   restart: `vocorum restart
 
 Restarts this hub's service (systemd or launchd) and waits until it answers.
@@ -234,7 +245,7 @@ function help(key: string) {
   console.log(HELP[key] ?? Object.values(HELP).map((h) => h.split('\n')[0]).join('\n'))
 }
 
-const BOOLEAN = new Set(['help', 'open', 'replace', 'delete-data', 'app', 'no-service', 'remove', 'json', 'yes', 'dry-run', 'no-service', 'detach', 'no-files', 'threads', 'kimaki-keep'])
+const BOOLEAN = new Set(['help', 'open', 'check', 'replace', 'delete-data', 'app', 'no-service', 'remove', 'json', 'yes', 'dry-run', 'no-service', 'detach', 'no-files', 'threads', 'kimaki-keep'])
 
 const str = (v: string | true | undefined) => (typeof v === 'string' ? v : undefined)
 
@@ -277,6 +288,10 @@ const CONFIG_KEYS: Record<string, (value: string) => unknown> = {
   guildName: (v) => v,
   publicUrl: (v) => (v === 'none' ? null : new URL(v).origin),
   tailscaleLogin: (v) => (v === 'none' ? null : v),
+  updates: (v) => {
+    if (v !== 'off' && v !== 'notify' && v !== 'auto') throw new Error('updates: notify (tell the owner, the default), auto (also install when no agent is working) or off (never check)')
+    return v === 'notify' ? null : v
+  },
   localAccess: (v) => {
     if (v !== 'open' && v !== 'off') throw new Error('localAccess: open (no code or passkey at http://localhost on this computer) or off (every browser pairs)')
     return v === 'open' ? 'open' : null
@@ -514,33 +529,56 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
     return true
   }
   if (command === 'restart') {
-    const config = requireConfig()
-    const { serviceName } = await import('./setup.ts')
-    const { hubLatency } = await import('./doctor.ts')
-    const { execFile } = await import('node:child_process')
-    const { serviceManager, backgroundPid, stopBackground, startBackground } = await import('./setup.ts')
-    const unit = serviceName(paths)
-    const manager = await serviceManager()
-    const { launchdFile, launchdLabel, restartTask, taskState } = await import('./platform.ts')
-    const installed = manager === 'systemd' ? fs.existsSync(path.join(os.homedir(), `.config/systemd/user/${unit}.service`)) : manager === 'launchd' ? fs.existsSync(launchdFile(unit)) : manager === 'task' ? (await taskState(unit)) !== null : false
-    // No service: the hub runs as a background process (setup started it, or the @reboot line).
-    if (!installed || backgroundPid(paths)) {
-      await stopBackground(paths)
-      if (typeof (await hubLatency(config, paths)) === 'number') throw new Error('A hub is answering that vocorum did not start (no service, no hub.pid). Stop it where it runs, then: vocorum restart')
-      await startBackground(paths, repo)
-    } else if (manager === 'task') await restartTask(unit, config.port)
-    else {
-      const [cmd, args] = manager === 'launchd' ? ['launchctl', ['kickstart', '-k', `gui/${process.getuid?.()}/${launchdLabel(unit)}`]] : ['systemctl', ['--user', 'restart', unit]]
-      await new Promise<void>((resolve, reject) => execFile(cmd as string, args as string[], (error) => (error ? reject(new Error(`${cmd} failed: ${error.message}. Is the service installed? vocorum setup`)) : resolve())))
+    requireConfig()
+    const { restartHub } = await import('./setup.ts')
+    const done = await restartHub(paths, repo)
+    await emit({ restarted: done.unit, seconds: done.seconds }, () => console.log(`Restarted ${done.unit}; answering after ${done.seconds.toFixed(1)} s.`))
+    return true
+  }
+  if (command === 'update') {
+    requireConfig()
+    const updates = await import('./updates.ts')
+    const when = (iso: string) => iso.slice(0, 10)
+    const show = (releases: Array<{ date: string; title: string; notes: string[] }>) => {
+      for (const r of releases) {
+        console.log(`\n${when(r.date)}  ${r.title}`)
+        for (const note of r.notes) console.log(`  - ${note}`)
+      }
     }
-    const started = Date.now()
-    let latency: number | null | 'other' = null
-    while (Date.now() - started < 30_000 && typeof latency !== 'number') {
-      await new Promise((r) => setTimeout(r, 300))
-      latency = await hubLatency(config, paths)
+    const checked = await updates.check(paths, repo)
+    if (!checked.supported) {
+      await emit(checked, () => console.log(checked.reason))
+      return true
     }
-    if (typeof latency !== 'number') throw new Error(`The hub did not come back within 30 s. ${installed && manager === 'systemd' ? `journalctl --user -u ${unit} -n 50` : `See the end of ${path.join(paths.root, 'hub.log')}`}`)
-    await emit({ restarted: unit, seconds: (Date.now() - started) / 1000 }, () => console.log(`Restarted ${unit}; answering after ${((Date.now() - started) / 1000).toFixed(1)} s.`))
+    if (flags['check'] === true || checked.available.length === 0 || checked.blocked) {
+      await emit(checked, () => {
+        if (checked.available.length === 0) return console.log(`Up to date: ${checked.current.title} (${when(checked.current.date)}).`)
+        console.log(`${checked.available.length === 1 ? 'A new version is' : `${checked.available.length} new versions are`} available. You have: ${checked.current.title} (${when(checked.current.date)}).`)
+        show(checked.available)
+        console.log(checked.blocked ? `\nNot installed: ${checked.blocked}` : '\nInstall with: vocorum update')
+      })
+      if (checked.blocked && flags['check'] !== true) process.exitCode = 1
+      return true
+    }
+    if (!json) {
+      console.log(`${checked.available.length === 1 ? 'A new version is' : `${checked.available.length} new versions are`} available.`)
+      show(checked.available)
+      console.log('\nUpdating backs up the hub, installs the new version and restarts it (people see "reconnecting" for a few seconds). If it fails, the version you have now is put back.')
+    }
+    if (flags['yes'] !== true) {
+      if (!process.stdin.isTTY) throw new Error('Run again with --yes to install it.')
+      const readline = await import('node:readline/promises')
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+      const answer = (await rl.question('Update now? [y/N] ')).trim().toLowerCase()
+      rl.close()
+      if (answer !== 'y' && answer !== 'yes') {
+        console.log('Nothing changed.')
+        return true
+      }
+    }
+    const result = await updates.apply(paths, repo, { log: json ? () => {} : (line) => console.log(line) })
+    await emit(result, () => {})
+    if (result?.status === 'failed') process.exitCode = 1
     return true
   }
   if (command === 'doctor') {

@@ -253,15 +253,18 @@ export function PinsPanel({ channelId, ctx, onClose, onJump }: { channelId: stri
 }
 
 // One mention or needs-you item as a row; shared by a server's Mentions page and the inbox.
-function useMentions(guildId?: string) {
+function useMentions(guildId?: string, channelId?: string) {
   const [mentions, setMentions] = useState<Mention[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const seen = useStore((d) => d.seen)
   useEffect(() => {
-    api.inbox().then((r) => setMentions(r.mentions), (e: Error) => setError(e.message))
-  }, [])
+    let live = true
+    setMentions(null); setError(null)
+    api.inbox(channelId ? { channelId } : guildId ? { guildId } : undefined).then(r => { if (live) setMentions(r.mentions) }, (e: Error) => { if (live) setError(e.message) })
+    return () => { live = false }
+  }, [guildId, channelId])
   const unread = (m: Mention) => !m.read && !(seen[m.channel.id] && (seen[m.channel.id]!.length > m.message.id.length || (seen[m.channel.id]!.length === m.message.id.length && seen[m.channel.id]! >= m.message.id)))
-  const list = guildId ? mentions?.filter((m) => store.guildOf(m.channel.id) === guildId) : mentions
+  const list = channelId ? mentions?.filter(m => m.channel.id === channelId) : guildId ? mentions?.filter((m) => store.guildOf(m.channel.id) === guildId) : mentions
   return { list, error, unread }
 }
 
@@ -284,9 +287,16 @@ function MentionRow({ m, unread, onJump, showServer }: { m: Mention; unread: boo
         </span>
         <span className="ov-age num">{when(m.message.timestamp)}</span>
       </span>
-      <span className="ov-line">{plain(m.message.content, name).slice(0, 200) || 'Attachment or components'}</span>
+      <span className="ov-line">{plain(m.message.content, name) || 'Attachment or components'}</span>
     </button>
   )
+}
+
+export function ChatMentions({ channelId, onClose, onJump }: { channelId: string; onClose: () => void; onJump: Jump }) {
+  const { list, error, unread } = useMentions(undefined, channelId)
+  return <Panel title="Mentions here" icon="at" count={list?.length} onClose={onClose}>
+    <div className="panel-body">{error ? <p className="error panel-pad">{error}</p> : !list ? <p className="ws-meta panel-pad" role="status">Loading mentions…</p> : !list.length ? <Empty icon="at" title="No mentions in this chat"/> : list.map(m => <MentionRow key={m.message.id} m={m} unread={unread(m)} onJump={onJump}/>)}</div>
+  </Panel>
 }
 
 // A server's Mentions page: mentions in this server's channels only.
@@ -412,7 +422,7 @@ export function InboxPanel({ onClose, onJump, onOpen }: { onClose: () => void; o
 }
 
 // A reminder: due ones lead with Done and Later; upcoming ones say when, and can go.
-function ReminderRow({ reminder: r, due, onJump, onOpen }: { reminder: Reminder; due: boolean; onJump: Jump; onOpen: (id: string) => void }) {
+function ReminderRow({ reminder: r, due, onJump, onOpen, fullText = false }: { reminder: Reminder; due: boolean; onJump: Jump; onOpen: (id: string) => void; fullText?: boolean }) {
   const [sheet, setSheet] = useState<SheetSpec | null>(null)
   const [error, setError] = useState<string | null>(null)
   const channel = store.channel(r.channel_id)
@@ -426,7 +436,7 @@ function ReminderRow({ reminder: r, due, onJump, onOpen }: { reminder: Reminder;
   return (
     <div className={`reminder-row${due ? ' due' : ''}`}>
       <button className="reminder-main" onClick={go}>
-        {text && <span className="reminder-text">{message?.author && !r.note ? <b>{displayName(message.author)}: </b> : null}{text.slice(0, 140)}</span>}
+        {text && <span className="reminder-text">{message?.author && !r.note ? <b>{displayName(message.author)}: </b> : null}{fullText ? text : text.slice(0, 140)}</span>}
         <span className="reminder-when num">
           <Icon name="bell" size={14} />
           <time dateTime={new Date(r.at).toISOString()}>{remindTime(r.at)}</time>
@@ -471,7 +481,7 @@ export function ScheduledPanel({ channelId, onClose, onOpen, onJump }: { channel
   const cancel = (id: string) => void api.forget(id).then(() => store.upsertScheduled({ ...all.find((s) => s.id === id)!, status: 'cancelled' }), (e: Error) => setError(e.message))
   return (
     <Panel title="Scheduled" icon="clock" count={list.length + reminders.length + routineCount} onClose={onClose}>
-      <div className="panel-body">
+      <div className="panel-body scheduled-list">
         {error && <div className="error panel-pad">{error}</div>}
         {list.length > 0 && (
           <div className="panel-section">
@@ -486,7 +496,7 @@ export function ScheduledPanel({ channelId, onClose, onOpen, onJump }: { channel
                 {s.status === 'failed' ? 'Not sent' : s.cron ? cronLabel(s.cron, s.next_at) : s.next_at ? remindTime(s.next_at) : ''}
                 {!channelId && <span className="reminder-where">{where(s.channel_id)}</span>}
               </span>
-              <span className="reminder-text">{plain(s.content).slice(0, 200)}</span>
+              <span className="reminder-text">{plain(s.content)}</span>
               {s.status === 'failed' && s.last_result && <span className="reminder-error">{s.last_result}</span>}
             </button>
             <button className="icon-button reminder-cancel" onClick={() => cancel(s.id)} aria-label="Cancel scheduled message" title="Cancel">
@@ -500,7 +510,7 @@ export function ScheduledPanel({ channelId, onClose, onOpen, onJump }: { channel
           </div>
         )}
         {reminders.map((r) => (
-          <ReminderRow key={r.id} reminder={r} due={false} onJump={onJump} onOpen={onOpen} />
+          <ReminderRow key={r.id} reminder={r} due={false} fullText onJump={onJump} onOpen={onOpen} />
         ))}
         {routines.map((m) => (
           <Fragment key={m.machine}>

@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react'
 import { api, reportFocus, type Channel, type HubState, type NotifyLevel } from './api.ts'
-import type { SheetAction, SheetAt, SheetSpec } from './Sheet.tsx'
+import { sessionActions, type SheetAction, type SheetAt, type SheetSpec } from './Sheet.tsx'
 import { store } from './store.ts'
 import { native, setNativeAlerts } from './native.ts'
 
@@ -133,6 +133,7 @@ export function bellSheet(state: HubState, channel: Channel, at: SheetAt, onDone
     title: 'Notifications',
     subtitle: `${LEVEL_TEXT[now.level]}${now.inherited ? ' (default)' : ''}`,
     groups: [
+      ...(channel.type !== -1 ? [[{ label: 'Mentions in this chat', icon: 'at' as const, run: () => sessionActions.mentions?.(channel.id) }]] : []),
       now.mutedUntil
         ? [{ label: 'Unmute', sub: `Muted ${until(now.mutedUntil)}`, run: () => set({ muted_until: null }) }]
         : [

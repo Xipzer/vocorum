@@ -21,7 +21,7 @@ if (typeof window !== 'undefined') {
 }
 
 // Rename lives in the chat header; a sheet elsewhere asks it to start.
-export const sessionActions: { rename?: (id: string) => void; pendingRename?: string; links?: (id: string) => void; services?: () => void; settings?: (section?: string) => void; channelSettings?: (channelId: string) => void; openThread?: (id: string) => void; inbox?: () => void; scheduled?: (channelId?: string) => void } = {}
+export const sessionActions: { rename?: (id: string) => void; pendingRename?: string; links?: (id: string) => void; services?: () => void; settings?: (section?: string) => void; channelSettings?: (channelId: string) => void; openThread?: (id: string) => void; inbox?: () => void; mentions?: (channelId: string) => void; scheduled?: (channelId?: string) => void } = {}
 
 const phone = () => window.matchMedia('(max-width: 767px)').matches
 

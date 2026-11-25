@@ -34,6 +34,11 @@ fn fallback_file(dir: &Path, account: &str) -> PathBuf {
 }
 
 pub fn put(dir: &Path, account: &str, secret: &[u8]) -> Result<(), String> {
+  // A preview build keeps its own device key in a 0600 file: it is rebuilt often and
+  // started while the screen is locked, when the keychain would stop and ask.
+  if crate::PREVIEW {
+    return write_private(&fallback_file(dir, account), secret);
+  }
   let native = native_store().and_then(|_| keyring_core::Entry::new(SERVICE, account).and_then(|e| e.set_secret(secret)).map_err(|e| e.to_string()));
   match native {
     Ok(()) => Ok(()),
@@ -46,6 +51,9 @@ pub fn put(dir: &Path, account: &str, secret: &[u8]) -> Result<(), String> {
 }
 
 pub fn get(dir: &Path, account: &str) -> Result<Vec<u8>, String> {
+  if crate::PREVIEW {
+    return std::fs::read(fallback_file(dir, account)).map_err(|_| "The preview's device key is missing. Pair it again.".to_string());
+  }
   let native = native_store().and_then(|_| keyring_core::Entry::new(SERVICE, account).and_then(|e| e.get_secret()).map_err(|e| e.to_string()));
   match native {
     Ok(secret) => Ok(secret),
@@ -60,7 +68,7 @@ pub fn get(dir: &Path, account: &str) -> Result<Vec<u8>, String> {
 }
 
 pub fn delete(dir: &Path, account: &str) {
-  if native_store().is_ok() {
+  if !crate::PREVIEW && native_store().is_ok() {
     if let Ok(entry) = keyring_core::Entry::new(SERVICE, account) {
       let _ = entry.delete_credential();
     }

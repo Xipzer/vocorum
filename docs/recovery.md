@@ -34,7 +34,7 @@ The backup holds the hub's keys: keep it as private as the hub itself.
    - Install Node.js 22.16 or newer, git and Tailscale. On Windows, also Git for Windows, which brings openssl.
    - Get the code:
      ```
-     git clone <vocorum repository> && cd vocorum && pnpm install && pnpm build
+     git clone <vocorum repository> && cd vocorum
      ```
 2. **Give it the old hub's network identity.** Do this before step 4. It is what keeps every device trusting the hub:
    - In the Tailscale admin console, remove the old computer.

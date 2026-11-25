@@ -3,7 +3,7 @@
 // bold/italic/underline/strike/spoiler, links, mentions, timestamps, emoji.
 
 import { highlight } from './highlight.tsx'
-import { useEffect, useState, type ReactNode } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { Icon } from './icons.tsx'
 import { usePress } from './Sheet.tsx'
 import { plain } from './text.ts'
@@ -14,6 +14,7 @@ export type MarkdownContext = {
   userName: (id: string) => string | null
   channelName: (id: string) => string | null
   openChannel?: (id: string) => void
+  openMessage?: (channelId: string, messageId: string) => void
   // The hub thread of a Kimaki session ID, when known.
   sessionThread?: (sessionId: string) => string | null
   isThread?: (id: string) => boolean
@@ -96,16 +97,17 @@ function Link({ url, ctx, title, children }: { url: string; ctx: MarkdownContext
 }
 
 // A link to a channel or thread on this hub, or a Kimaki session ID: shown by name, opens in place.
-function ChannelChip({ id, name, url, ctx, title, message }: { id: string; name: string; url: string; ctx: MarkdownContext; title?: string; message?: boolean }) {
+function ChannelChip({ id, name, url, ctx, title, message }: { id: string; name: string; url: string; ctx: MarkdownContext; title?: string; message?: string }) {
   const press = useLinkPress(ctx, { url, channelId: id })
   return (
     <a
-      href={`#/c/${id}`}
+      href={`#/c/${id}${message ? `/${message}` : ''}`}
       className="mention channel-chip"
       title={title ?? url}
       onClick={(e) => {
         e.preventDefault()
-        ctx.openChannel?.(id)
+        if (message && ctx.openMessage) ctx.openMessage(id, message)
+        else ctx.openChannel?.(id)
       }}
       {...press}
     >
@@ -173,7 +175,7 @@ export function inline(text: string, ctx: MarkdownContext, key = 'i'): ReactNode
     const internalName = internal ? ctx.channelName(internal) : null
     const sessionChannel = sessionId ? ctx.sessionThread?.(sessionId) : null
     if (ticks) out.push(<code key={k}>{code!.replace(/^ (.*) $/s, '$1')}</code>)
-    else if (internal && internalName) out.push(<ChannelChip key={k} id={internal} name={internalName} url={url!} ctx={ctx} message={Boolean(internalMatch?.[2])} />)
+    else if (internal && internalName) out.push(<ChannelChip key={k} id={internal} name={ctx.openMessage && linkText ? linkText : internalName} url={url!} ctx={ctx} message={internalMatch?.[2]} />)
     else if (sessionId) out.push(sessionChannel && ctx.channelName(sessionChannel) ? <ChannelChip key={k} id={sessionChannel} name={ctx.channelName(sessionChannel)!} url={`${location.origin}/#/c/${sessionChannel}`} ctx={ctx} title={sessionId} /> : <span key={k} className="sem-id">{sessionId}</span>)
     else if (url) out.push(<Link key={k} url={url} ctx={ctx} title={linkText ? url : undefined}>{linkText ? inline(linkText, ctx, k) : url}</Link>)
     else if (user) out.push(<span key={k} className="mention">@{ctx.userName(user) ?? 'unknown-user'}</span>)
@@ -472,17 +474,32 @@ export function keyValueBlock(text: string) {
   return all.length === 1 && all[0]!.kind === 'kv' ? all[0] : null
 }
 
-// A relayed prompt ("» routine #5: …") is context, not the message: one quiet line,
-// expandable to the full text.
+// Measure the preview after wrapping. A short line on a wide screen needs no toggle.
+const relayChecks = new WeakMap<Element, () => void>()
+let relaySizes: ResizeObserver | undefined
 function Relay({ lines, ctx, id }: { lines: string[]; ctx: MarkdownContext; id: string }) {
   const [open, setOpen] = useState(false)
-  const long = lines.length > 1 || lines[0]!.length > 90
+  const [clipped, setClipped] = useState(false)
+  const preview = useRef<HTMLDivElement>(null)
+  const first = lines[0]!
+  const moreLines = lines.length > 1
+  useLayoutEffect(() => {
+    const el = preview.current
+    if (open || moreLines || !el) return
+    const check = () => setClipped(el.scrollHeight > el.clientHeight + 1)
+    check()
+    relaySizes ??= new ResizeObserver(entries => { for (const e of entries) relayChecks.get(e.target)?.() })
+    relayChecks.set(el, check)
+    relaySizes.observe(el)
+    void document.fonts.ready.then(() => { if (relayChecks.get(el) === check) check() })
+    return () => { relaySizes?.unobserve(el); relayChecks.delete(el) }
+  }, [open, moreLines, first])
   return (
     <div className={`relay${open ? ' open' : ''}`}>
       <div className="relay-text">
-        {open ? <Markdown text={lines.join('\n')} ctx={ctx} /> : <div>{inline(lines[0]!, ctx, `${id}-0`)}</div>}
+        {open ? <Markdown text={lines.join('\n')} ctx={ctx} /> : <div ref={preview} className="relay-preview">{inline(first, ctx, `${id}-0`)}</div>}
       </div>
-      {long && (
+      {(moreLines || clipped || open) && (
         <button className="relay-toggle" aria-expanded={open} aria-label={open ? 'Show less' : 'Show all'} onClick={() => setOpen(!open)}>
           <Icon name="chevron" size={14} />
         </button>
@@ -524,7 +541,7 @@ function isJumbo(text: string) {
   return custom + unicode <= 30
 }
 
-export function Markdown({ text, ctx, runFooter = false }: { text: string; ctx: MarkdownContext; runFooter?: boolean }) {
+export const Markdown = memo(function Markdown({ text, ctx, runFooter = false }: { text: string; ctx: MarkdownContext; runFooter?: boolean }) {
   if (!text) return null
   if (!ctx.jumbo && isJumbo(text.trim())) ctx = { ...ctx, jumbo: true }
   return (
@@ -651,4 +668,4 @@ export function Markdown({ text, ctx, runFooter = false }: { text: string; ctx: 
       })}
     </div>
   )
-}
+})

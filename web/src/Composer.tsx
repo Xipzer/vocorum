@@ -5,8 +5,10 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { BOARD_CORRECT, correctedDraft, type BoardCorrection } from './board-document.ts'
 import { EmojiPicker, rememberEmoji } from './EmojiPicker.tsx'
 import { store, useStore } from './store.ts'
+import { loadVoice, saveVoice, type VoiceDraft } from './voiceDraft.ts'
 import { Sheet, usePress, type SheetAt, type SheetSpec } from './Sheet.tsx'
 import { cronLabel, remindTime, whenPicker } from './remind.ts'
 import { api, type Attachment, type Command, type CommandOption, type InteractionResult, type Message } from './api.ts'
@@ -397,6 +399,25 @@ function pickMime() {
   return ''
 }
 
+// A typed draft survives closing the window, a relaunch and an app update: it lives in
+// localStorage per chat and is removed once it is sent or emptied. A draft from before
+// this change (kept only for the session) is carried over once.
+function readDraft(key: string): string {
+  try {
+    const kept = localStorage.getItem(key)
+    if (kept !== null) return kept
+    const old = sessionStorage.getItem(key)
+    if (old) { localStorage.setItem(key, old); sessionStorage.removeItem(key) }
+    return old ?? ''
+  } catch { return '' }
+}
+function writeDraft(key: string, text: string) {
+  try {
+    if (text) localStorage.setItem(key, text)
+    else localStorage.removeItem(key)
+  } catch { /* storage full or unavailable: the draft stays in the field */ }
+}
+
 export function Composer({
   channelId,
   placeholder,
@@ -416,7 +437,8 @@ export function Composer({
   onResult: (result: InteractionResult, name: string) => void
   onError: (message: string) => void
 }) {
-  const [text, setText] = useState(() => sessionStorage.getItem(`draft:${channelId}`) ?? '')
+  const draftKey = `draft:${channelId}`
+  const [text, setText] = useState(() => readDraft(draftKey))
   const [uploads, setUploads] = useState<Upload[]>([])
   const [command, setCommand] = useState<Command | null>(null)
   const [pick, setPick] = useState(0)
@@ -426,6 +448,30 @@ export function Composer({
   const textarea = useRef<HTMLTextAreaElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const hub = useStore((d) => d.state)
+  const voiceKey = `${hub?.guild.id}:${hub?.me.id}:${channelId}`
+  const [draft, setDraft] = useState<VoiceDraft>(), [voiceBusy, setVoiceBusy] = useState(false)
+  const voiceSending = useRef(false)
+  useEffect(() => { let live = true; void loadVoice(voiceKey).then(d => { if (live) setDraft(d) }, () => {}); return () => { live = false } }, [voiceKey])
+  const retained = draft?.key === voiceKey ? draft : undefined
+  const [saveUrl, setSaveUrl] = useState('')
+  useEffect(() => { if (!retained) { setSaveUrl(''); return }; const url = URL.createObjectURL(retained.blob); setSaveUrl(url); return () => URL.revokeObjectURL(url) }, [retained])
+  const deliverVoice = async (d: VoiceDraft) => {
+    if (voiceSending.current) return
+    voiceSending.current = true; setVoiceBusy(true); setDraft(d)
+    let durable = false
+    try {
+      await saveVoice(d.key,d).then(() => { durable = true }, () => {})
+      if (!d.attachment) {
+        const meta = await analyse(d.blob).catch(() => ({ durationSecs: 0, waveform: '' }))
+        d.attachment = (await api.upload(d.blob,d.name,meta)).id
+        await saveVoice(d.key,d).catch(() => {})
+      }
+      const posted = await api.send(channelId,{ content:'', attachmentIds:[d.attachment], voice:true, ...(d.reply && {replyTo:d.reply}) })
+      store.confirmSent(posted)
+      await saveVoice(d.key).catch(() => {}); setDraft(undefined); onCancelReply()
+    } catch { onError(durable ? 'Voice note not confirmed. Your recording is saved on this device.' : 'Keep this window open. Save a copy of your recording before closing.') }
+    finally { voiceSending.current = false; setVoiceBusy(false) }
+  }
   const [caret, setCaret] = useState<{ start: number; end: number }>({ start: 0, end: 0 })
   const [suggestPick, setSuggestPick] = useState(0)
   const [dismissed, setDismissed] = useState<number | null>(null)
@@ -456,13 +502,25 @@ export function Composer({
   useEffect(() => () => drop(live.current), [])
 
   useEffect(() => {
-    setText(sessionStorage.getItem(`draft:${channelId}`) ?? '')
+    setText(readDraft(draftKey))
     drop(live.current)
     setUploads([])
     setEditing(null)
     setCommand(null)
-  }, [channelId])
-  useEffect(() => sessionStorage.setItem(`draft:${channelId}`, text), [channelId, text])
+  }, [draftKey])
+  useEffect(() => writeDraft(draftKey, text), [draftKey, text])
+  useEffect(() => {
+    const receive = (event: Event) => {
+      const e = event as CustomEvent<BoardCorrection>, el = textarea.current
+      if (e.defaultPrevented || e.detail?.thread !== channelId || !el || el.disabled || command || recording || editing || sending.current) return
+      const next = correctedDraft(el.value, e.detail)
+      if (!next) return
+      e.preventDefault(); setText(next); setCaret({ start: next.length, end: next.length })
+      requestAnimationFrame(() => { if (textarea.current === el && el.value === next) { el.focus(); el.setSelectionRange(next.length, next.length) } })
+    }
+    window.addEventListener(BOARD_CORRECT, receive)
+    return () => window.removeEventListener(BOARD_CORRECT, receive)
+  }, [channelId, command, recording, editing])
   useEffect(() => {
     const el = textarea.current
     if (!el) return
@@ -690,14 +748,14 @@ export function Composer({
         ids.push(attachment.id)
         if (u.description.trim()) descriptions[attachment.id] = u.description.trim()
       }
-      setText((t) => (t === content ? '' : t))
-      drop(files)
-      setUploads((list) => list.filter((x) => !files.some((u) => u.key === x.key)))
-      onCancelReply()
       try {
-        await api.send(channelId, { content: await expandEmoji(content, guildId), attachmentIds: ids, ...(Object.keys(descriptions).length && { descriptions }), ...(replyTo && { replyTo: replyTo.id }) })
+        const posted = await api.send(channelId, { content: await expandEmoji(content, guildId), attachmentIds: ids, ...(Object.keys(descriptions).length && { descriptions }), ...(replyTo && { replyTo: replyTo.id }) })
+        store.confirmSent(posted)
+        setText((t) => (t === content ? '' : t))
+        drop(files)
+        setUploads((list) => list.filter((x) => !files.some((u) => u.key === x.key)))
+        onCancelReply()
       } catch (e) {
-        setText(content)
         onError(e instanceof Error ? e.message : String(e))
       }
     } finally {
@@ -710,7 +768,7 @@ export function Composer({
   // sends, Cancel or Esc drops it. Works the same on desktop and phones.
   const startRecording = async (event: React.PointerEvent) => {
     event.preventDefault()
-    if (recorder.current) return
+    if (recorder.current || retained || voiceSending.current) return
     mic.current?.setPointerCapture(event.pointerId)
     pressed.current = true
     downAt.current = Date.now()
@@ -735,16 +793,8 @@ export function Composer({
         const blob = new Blob(state.chunks, { type: media.mimeType || mimeType || 'audio/webm' })
         // The recorder stopped before the microphone delivered sound: only container framing.
         if (blob.size < 1024) return onError('Nothing was recorded. Check the microphone and try again.')
-        try {
-          const meta = await analyse(blob).catch(() => ({ durationSecs: 0, waveform: '' }))
-          if (meta.durationSecs > 0 && meta.durationSecs < 0.5) return
-          const ext = blob.type.includes('mp4') ? 'm4a' : blob.type.includes('ogg') ? 'ogg' : 'webm'
-          const attachment = await api.upload(blob, `voice-message.${ext}`, meta)
-          await api.send(channelId, { content: '', attachmentIds: [attachment.id], voice: true, ...(replyTo && { replyTo: replyTo.id }) })
-          onCancelReply()
-        } catch (e) {
-          onError(e instanceof Error ? e.message : String(e))
-        }
+        const ext = blob.type.includes('mp4') ? 'm4a' : blob.type.includes('ogg') ? 'ogg' : 'webm'
+        await deliverVoice({key:voiceKey, blob, name:`voice-message.${ext}`, reply:replyTo?.id})
       }
       // A live level meter while recording.
       try {
@@ -825,6 +875,7 @@ export function Composer({
 
   return (
     <>
+      {retained && <div className="footer-line" role="group" aria-label="Voice recording"><span>{voiceBusy ? 'Sending voice note…' : 'Unsent voice note'}</span>{!voiceBusy && <><button className="button" onClick={() => void deliverVoice(retained)}>Retry</button>{saveUrl && <a className="button" href={saveUrl} download={retained.name}>Save audio</a>}<button onClick={() => { if (window.confirm('Discard this recording?')) void saveVoice(voiceKey).then(() => setDraft(undefined), () => onError('Could not discard the draft.')) }}>Discard</button></>}</div>}
       {replyTo && (
         <div className="footer-line">
           <span>

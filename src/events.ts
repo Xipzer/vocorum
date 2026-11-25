@@ -160,6 +160,8 @@ export class ClientEvents {
 
   private async dispatch(event: string, data: Data) {
     if (STRUCTURE.has(event) && !REMOVALS.has(event)) this.hub.access.invalidate()
+    if (event === 'MESSAGE_DELETE' && data.channel_id && data.id) await this.hub.boards.removed(data.channel_id, data.id)
+    if (event === 'THREAD_DELETE' && data.id) await this.hub.boards.removed(data.id)
     if (!CLIENT_EVENTS.has(event) || this.sockets.size === 0) {
       if (event === 'MESSAGE_CREATE' || event === 'MESSAGE_UPDATE') this.traceMessage(data, 0, false, event === 'MESSAGE_UPDATE')
       if (REMOVALS.has(event)) this.hub.access.invalidate()

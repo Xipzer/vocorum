@@ -7,7 +7,7 @@ private network.
 
 | Level | Who can get in | What it costs you | How |
 |---|---|---|---|
-| **1. Open on this computer** | Anyone and any program on this computer. No other device. | Nothing: no certificate, code or passkey. | `vocorum setup --open` |
+| **1. Open on this computer** | Anyone and any program on this computer. No other device, unless you forward the port yourself: do not. | Nothing: no certificate, code or passkey. | `vocorum setup --open` |
 | **2. Your devices, paired** | Devices you paired, over your private network (Tailscale, WireGuard or your own address). This computer too if it is still open. | Once per device: install the hub's certificate, enter a one-use code, make a passkey. | `vocorum setup` |
 | **3. Every browser pairs** | Only paired devices. Being at this computer is no longer enough. | This computer pairs like any other device. | `vocorum config set localAccess off` |
 | **4. Tied to your accounts** | Paired devices that are also on the right Tailscale account: yours for you, each friend's for them. | Devices must be signed in to Tailscale. | Automatic when setup finds Tailscale. Otherwise `vocorum config set tailscaleLogin <login>` |

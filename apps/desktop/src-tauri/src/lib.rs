@@ -617,6 +617,15 @@ pub fn run() {
       // `--pair <link>` from a terminal pairs without the card (scripted setups). Links
       // from browsers arrive as deep links instead and always wait for a click.
       let argv: Vec<String> = std::env::args().collect();
+      // A preview can be started on one conversation (`--open <channel id>`), to compare it
+      // with the real app on the same page. It travels the way an alert's conversation does.
+      if PREVIEW {
+        if let Some(channel) = argv.iter().position(|a| a == "--open").and_then(|i| argv.get(i + 1)).cloned() {
+          if let Ok(mut last) = app.state::<State>().last_alert.lock() {
+            *last = Some((channel, None, std::time::Instant::now()));
+          }
+        }
+      }
       // Ignored once paired: an update restarts the app with the same arguments.
       let paired = app.state::<State>().hub().is_some();
       if let Some(link) = argv.iter().position(|a| a == "--pair").and_then(|i| argv.get(i + 1)).cloned().filter(|_| !paired) {
