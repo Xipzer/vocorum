@@ -202,7 +202,9 @@ export async function call<T>(path: string, init: RequestInit & { json?: unknown
 }
 
 export const api = {
-  status: () => call<{ signedIn: boolean; device: { id: string; name: string } | null }>('/client/auth/status'),
+  status: () => call<{ signedIn: boolean; device: { id: string; name: string } | null; open?: boolean }>('/client/auth/status'),
+  // A hub set up as open on this computer: no code or passkey.
+  openSignIn: () => call('/client/auth/local', { method: 'POST', json: {} }),
   registerOptions: (code: string) => call<{ challengeId: string; options: any }>('/client/auth/register/options', { method: 'POST', json: { code } }),
   register: (challengeId: string, response: unknown) => call('/client/auth/register/verify', { method: 'POST', json: { challengeId, response } }),
   loginOptions: () => call<{ challengeId: string; options: any }>('/client/auth/login/options', { method: 'POST', json: {} }),

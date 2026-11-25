@@ -70,6 +70,27 @@ test('a machine mirrors its Discord server, channels and threads with their own 
   expect((await put(`/channels/940000000000000001`, { guild_id: GUILD, type: 0, name: 'x' }, 'nope:nope')).status).toBe(401)
 })
 
+test('old imported threads expose their Discord archive or reopen time across partial mirrors', async () => {
+  const guild_id = t.config.guildId
+  const parent = await t.hub.twin.prisma.channel.findFirstOrThrow({ where: { guildId: guild_id, type: 0 } })
+  const created = '2020-02-03T12:00:00.000Z'
+  const old = ((BigInt(Date.parse(created)) - 1420070400000n) << 22n).toString()
+  const legacy = String(BigInt(old) + 1n)
+  const archived = '2020-03-04T13:10:00.000Z'
+  const reopened = '2024-07-06T09:30:00.000Z'
+  const thread = { id: old, guild_id, parent_id: parent.id, type: 11, name: 'Old discussion' }
+  const meta = { auto_archive_duration: 60, archived: true }
+  const batch = async (rows: unknown[]) => expect((await fetch(`${t.hub.localUrl}/admin/mirror/channels`, { method: 'POST', headers: { authorization: `Bearer ${readFileSync(t.paths.adminToken, 'utf8').trim()}`, 'content-type': 'application/json' }, body: JSON.stringify(rows) })).status).toBe(200)
+  const metadata = async (id: string) => (await phone.json('/client/state')).threads.find((c: { id: string }) => c.id === id).thread_metadata
+  await batch([{ ...thread, thread_metadata: { ...meta, archive_timestamp: archived } }, { ...thread, id: legacy }])
+  expect(Date.parse((await metadata(legacy)).archive_timestamp)).toBe(Date.parse(created))
+  expect((await put(`/channels/${old}`, { ...thread, thread_metadata: meta })).status).toBe(200)
+  expect(Date.parse((await metadata(old)).archive_timestamp)).toBe(Date.parse(archived))
+  expect((await put(`/channels/${old}`, { ...thread, thread_metadata: { ...meta, archived: false, archive_timestamp: reopened } })).status).toBe(200)
+  await batch([{ ...thread, thread_metadata: { ...meta, archived: false } }])
+  expect(await metadata(old)).toMatchObject({ archived: false, auto_archive_duration: 60, archive_timestamp: reopened.replace('Z', '+00:00') })
+})
+
 test('messages: the owner\'s Discord account is the hub owner, bots are themselves, and hub bots never see them', async () => {
   const mine = await put('/messages/950000000000000001', { channel_id: THREAD, author: { id: OWNER_DISCORD, username: 'owner' }, content: `<@${OWNER_DISCORD}> note to self`, timestamp: '2026-11-24T10:00:00.000Z' })
   expect(await mine.json()).toEqual({ id: '950000000000000001', created: true })

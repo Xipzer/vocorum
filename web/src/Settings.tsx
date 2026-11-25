@@ -11,6 +11,7 @@ import { applyAccent } from './App.tsx'
 import { resetColumns, useColumns } from './columns.ts'
 import { Icon } from './icons.tsx'
 import { disablePush, effective, enablePush, pushSupported } from './notify.ts'
+import { desktopUpdates, UpdatesPage } from './UpdateCheck.tsx'
 import { sessionActions } from './Sheet.tsx'
 import { store, THREAD_TYPES, useStore } from './store.ts'
 import { plain } from './text.ts'
@@ -698,6 +699,7 @@ const USER_SECTIONS: NavItem[] = [
   { id: 'devices', label: 'Devices' },
   { id: 'notifications', label: 'Notifications' },
   { id: 'appearance', label: 'Appearance' },
+  ...(desktopUpdates ? [{ id: 'updates', label: 'Updates' }] : []),
   { id: 'privacy', label: 'Privacy' },
 ]
 const SERVER_SECTIONS: NavItem[] = [
@@ -733,6 +735,7 @@ export function Settings({ initial, onClose }: { initial?: string; onClose: () =
     : section === 'devices' ? <DevicesPage />
     : section === 'notifications' ? <NotificationsPage state={state} />
     : section === 'appearance' ? <AppearancePage />
+    : section === 'updates' ? <UpdatesPage />
     : section === 'privacy' ? <PrivacyPage state={state} />
     : section === 'server' ? <ServerPage state={state} />
     : section === 'channels' ? <ChannelsPage state={state} />

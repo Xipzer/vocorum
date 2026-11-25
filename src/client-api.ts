@@ -230,7 +230,8 @@ export class ClientApi {
     const auth = this.hub.auth
     if (method === 'GET' && pathname === '/client/auth/status') {
       const device = await auth.device(req)
-      return sendJson(res, 200, { signedIn: Boolean(device), device: device && { id: device.id, name: device.name }, userId: device ? this.hub.userOf(device) : null })
+      // open: this computer may sign in with no code or passkey (POST /client/auth/local).
+      return sendJson(res, 200, { signedIn: Boolean(device), device: device && { id: device.id, name: device.name }, userId: device ? this.hub.userOf(device) : null, ...(!device && this.hub.localOpen(req) && { open: true }) })
     }
     if (method !== 'POST') throw new HttpError(404, 'Not found')
     const peer = `${req.socket.remoteAddress ?? ''} ${this.hub.identityOf(req) ?? ''}`
@@ -277,6 +278,11 @@ export class ClientApi {
       case '/client/auth/register/verify': {
         const { device, cookie } = await auth.register(origin, body)
         await this.hub.bindFirstPairing(req, device)
+        return sendJson(res, 200, { device: { id: device.id, name: device.name } }, { 'set-cookie': cookie })
+      }
+      case '/client/auth/local': {
+        if (!this.hub.localOpen(req)) throw new HttpError(403, 'This hub asks every device to pair')
+        const { device, cookie } = await auth.localSession(this.hub.options.config.ownerUserId)
         return sendJson(res, 200, { device: { id: device.id, name: device.name } }, { 'set-cookie': cookie })
       }
       case '/client/auth/login/options':

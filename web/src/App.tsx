@@ -1420,7 +1420,11 @@ export function App() {
   const [error, setError] = useState('')
   const check = async () => {
     try {
-      const status = await api.status()
+      let status = await api.status()
+      if (!status.signedIn && status.open) {
+        await api.openSignIn()
+        status = await api.status()
+      }
       if (!status.signedIn) return setPhase('login')
       await store.loadState()
       setPhase('ready')

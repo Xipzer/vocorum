@@ -39,6 +39,9 @@ export type HubConfig = {
   // null: loopback human routes are rejected (fail closed).
   tailscaleLogin: string | null
   privateListener?: PrivateListenerConfig | null
+  // 'open': a browser on this computer uses http://localhost:<port> with no code or passkey
+  // (vocorum setup --open). Absent: every browser pairs. Never applies to another device.
+  localAccess?: 'open' | null
   // The owner's private Admin server (vocorum admin setup): only the owner and the admin bot.
   adminGuildId?: string | null
   adminBotReady?: boolean

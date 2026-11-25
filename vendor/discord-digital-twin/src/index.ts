@@ -499,7 +499,7 @@ export class DigitalDiscord {
     await this.prisma.guildMember.create({ data: { guildId, userId } })
   }
 
-  async mirrorChannel(channel: { id: string; guildId: string; type: number; name?: string | null; topic?: string | null; parentId?: string | null; position?: number; ownerId?: string | null; archived?: boolean; locked?: boolean; autoArchiveDuration?: number; lastMessageId?: string | null }): Promise<APIChannel> {
+  async mirrorChannel(channel: { id: string; guildId: string; type: number; name?: string | null; topic?: string | null; parentId?: string | null; position?: number; ownerId?: string | null; archived?: boolean; locked?: boolean; autoArchiveDuration?: number; archiveTimestamp?: Date; lastMessageId?: string | null }): Promise<APIChannel> {
     const existing = await this.prisma.channel.findUnique({ where: { id: channel.id } })
     const thread = isThreadType(channel.type)
     const data = {
@@ -513,6 +513,7 @@ export class DigitalDiscord {
       archived: channel.archived ?? false,
       locked: channel.locked ?? false,
       autoArchiveDuration: channel.autoArchiveDuration ?? 1440,
+      ...(thread && channel.archiveTimestamp && { archiveTimestamp: channel.archiveTimestamp }),
       // On Discord a thread started from a message has that message's id.
       ...(thread && { starterMessageId: channel.id }),
       ...(channel.lastMessageId !== undefined && { lastMessageId: channel.lastMessageId }),
@@ -542,6 +543,7 @@ export class DigitalDiscord {
           archived: channel.archived ?? false,
           locked: channel.locked ?? false,
           autoArchiveDuration: channel.autoArchiveDuration ?? 1440,
+          ...(thread && channel.archiveTimestamp && { archiveTimestamp: channel.archiveTimestamp }),
           ...(thread && { starterMessageId: channel.id }),
           ...(channel.lastMessageId !== undefined && { lastMessageId: channel.lastMessageId }),
         }

@@ -44,8 +44,9 @@ async fn check(app: &AppHandle, hub: &Arc<Hub>) -> Result<Option<Update>, String
     .map_err(|e| e.to_string())
 }
 
-// Checks shortly after start and then every six hours; a found update waits for
-// the person to choose "Restart to update" in the tray.
+// Checks shortly after start and then every hour: one small request to the paired
+// hub over the connection the app already has. A found update waits for the
+// person to choose "Restart to update", unless they turned automatic updates on.
 pub fn start(app: AppHandle) {
   if PUBKEY.is_none_or(str::is_empty) {
     return;
@@ -56,21 +57,74 @@ pub fn start(app: AppHandle) {
       let state = app.state::<State>();
       if let Some(hub) = state.hub().filter(|h| !h.config.signed_out) {
         match check(&app, &hub).await {
-          // VOCORUM_UPDATE_AUTO=1 installs at once, for machines nobody sits at.
-          Ok(Some(update)) if std::env::var("VOCORUM_UPDATE_AUTO").is_ok_and(|v| v == "1") => {
-            if let Ok(mut pending) = app.state::<State>().update.lock() {
-              *pending = Some(update);
-            }
-            install(&app);
+          Ok(Some(update)) => {
+            offer(&app, update);
+            install_if_automatic(&app);
           }
-          Ok(Some(update)) => offer(&app, update),
           Ok(None) => {}
           Err(error) => eprintln!("[vocorum] update check: {error}"),
         }
       }
-      tokio::time::sleep(Duration::from_secs(6 * 3600)).await;
+      tokio::time::sleep(Duration::from_secs(3600)).await;
     }
   });
+}
+
+// "Update automatically" in Settings is a marker file next to the hub record.
+fn automatic_file(app: &AppHandle) -> std::path::PathBuf {
+  app.state::<State>().dir.join("auto-update")
+}
+
+pub fn automatic(app: &AppHandle) -> bool {
+  automatic_file(app).exists()
+}
+
+pub fn set_automatic(app: &AppHandle, on: bool) -> Result<(), String> {
+  let file = automatic_file(app);
+  if on {
+    std::fs::write(&file, b"").map_err(|e| e.to_string())?;
+    install_if_automatic(app);
+  } else if file.exists() {
+    std::fs::remove_file(&file).map_err(|e| e.to_string())?;
+  }
+  Ok(())
+}
+
+// Installs a waiting update without asking: always with VOCORUM_UPDATE_AUTO=1 (machines
+// nobody sits at), and with the Settings switch only while the window is closed, so a
+// restart never takes a message someone is writing.
+pub fn install_if_automatic(app: &AppHandle) {
+  let unattended = std::env::var("VOCORUM_UPDATE_AUTO").is_ok_and(|v| v == "1");
+  let closed = app.get_webview_window(crate::MAIN).is_none();
+  if unattended || (automatic(app) && closed) {
+    // The app comes back the way it was: in the tray, without opening a window.
+    if closed {
+      std::env::set_var("VOCORUM_START_HIDDEN", "1");
+    }
+    install(app);
+  }
+}
+
+// A check only offers the build. Installation is a separate menu action.
+pub async fn report(app: &AppHandle) -> Result<serde_json::Value, String> {
+  if PUBKEY.is_none_or(str::is_empty) {
+    return Err("This build has no update key. Use an official build from your hub.".into());
+  }
+  let hub = app.state::<State>().hub().filter(|h| !h.config.signed_out)
+    .ok_or("Pair and sign in to your hub, then check again.")?;
+  let result = check(app, &hub).await.map_err(|_| "Couldn't check for updates. Connect to your hub and try again.")?;
+  if !app.state::<State>().hub().is_some_and(|h| Arc::ptr_eq(&h, &hub)) {
+    return Err("Your hub changed. Check again.".into());
+  }
+  if let Some(update) = result {
+    let result = serde_json::json!({"version":update.version,"notes":update.body});
+    offer(app, update);
+    Ok(result)
+  } else {
+    if let Ok(mut pending) = app.state::<State>().update.lock() { *pending = None; }
+    crate::set_update_item(app, None);
+    Ok(serde_json::Value::Null)
+  }
 }
 
 fn offer(app: &AppHandle, update: Update) {

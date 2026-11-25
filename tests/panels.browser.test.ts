@@ -1494,7 +1494,7 @@ test.skipIf(!ready)('sign-in: a bad pairing code shows in the field label, in pl
   await p.getByRole('button', { name: 'Pair this device' }).click()
   const label = p.locator('.login-label.bad')
   await label.waitFor()
-  expect(await label.textContent()).toContain('User settings > Devices > Pair another device')
+  expect(await label.textContent()).toBe('Pairing code · Expired, used or not found. Ask for a new one.')
   await ctx.close()
 }, 60_000)
 

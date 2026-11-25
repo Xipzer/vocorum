@@ -131,7 +131,9 @@ export async function detectNetwork(): Promise<Network> {
   return { kind: 'loopback', address: null, names: [], allow: [], login: null }
 }
 
-export type SetupOptions = { port?: number; address?: string; names?: string[]; allow?: string[]; service: boolean; yes: boolean; dryRun: boolean; json: boolean; repo: string }
+// open: this computer uses the hub at http://localhost with no code or passkey, and no other
+// device can connect unless an address is given as well.
+export type SetupOptions = { port?: number; address?: string; names?: string[]; allow?: string[]; open?: boolean; service: boolean; yes: boolean; dryRun: boolean; json: boolean; repo: string }
 type Step = { step: string; status: 'done' | 'already' | 'planned' | 'skipped' | 'failed'; detail: string; fix?: string }
 
 // Node flags that keep an idle hub small; they only work on the command line, not in NODE_OPTIONS.
@@ -171,7 +173,7 @@ function launchdPlist(paths: HubPaths, repo: string) {
 `
 }
 
-export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ steps: Step[]; checks: Check[]; network: Network; pairing: { code: string; ttlMinutes: number } | null }> {
+export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ steps: Step[]; checks: Check[]; network: Network; pairing: { code: string; ttlMinutes: number } | null; open: string | null }> {
   const steps: Step[] = []
   const log = (s: Step) => {
     steps.push(s)
@@ -183,15 +185,19 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
   // 1. preflight
   if (!nodeSupported()) throw new Error(`Vocorum needs Node.js ${NODE_MIN} or newer (this is ${process.versions.node}).`)
   if (!fs.existsSync(path.join(options.repo, 'dist/hub.mjs')) || !fs.existsSync(path.join(options.repo, 'web/dist/index.html'))) throw new Error(`Not built yet. Run: cd ${options.repo} && pnpm install && pnpm build`)
-  if (!(await out(tool('openssl'), ['version']))) throw new Error(`openssl is missing. Install it first (the hub makes its own certificates with it)${WINDOWS ? ': Git for Windows includes it (https://git-scm.com/download/win)' : process.platform === 'darwin' ? '' : ': sudo apt install openssl'}.`)
+  // Certificates are only for other devices: a hub that is open on this computer alone needs none.
+  const localOnly = options.open === true && !options.address && !loadConfig(paths)?.privateListener
+  if (!localOnly && !(await out(tool('openssl'), ['version']))) throw new Error(`openssl is missing. Install it first (the hub makes its own certificates with it)${WINDOWS ? ': Git for Windows includes it (https://git-scm.com/download/win)' : process.platform === 'darwin' ? '' : ': sudo apt install openssl'}.`)
 
   // 2. network and names
-  const detected = await detectNetwork()
+  // --open on its own never opens the hub to another device, whatever network this machine is on.
+  const detected: Network = localOnly ? { address: null, kind: 'loopback', names: [], allow: [], login: null } : await detectNetwork()
   const network: Network = { ...detected, ...(options.address && { address: options.address, kind: detected.address === options.address ? detected.kind : 'your address', login: detected.address === options.address ? detected.login : null }), ...(options.names && { names: options.names }), ...(options.allow && { allow: options.allow }) }
   if (options.address && !options.allow) network.allow = detected.address === options.address ? detected.allow : [`${options.address}/32`]
   // The Tailscale name points at the Tailscale address only.
   if (options.address && detected.address !== options.address && !options.names) network.names = ['hub.home.arpa']
   const existing = loadConfig(paths)
+  const open = options.open === true || existing?.localAccess === 'open'
   // A running hub keeps its listener unless told otherwise: a new first name means a new
   // certificate authority and new passkeys on every paired device.
   const kept = existing?.privateListener && !options.address && !options.names && !options.allow ? existing.privateListener : null
@@ -214,8 +220,9 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
   const plan = [
     `state in ${paths.root}${existing ? ' (exists, kept)' : ''}, hub port ${hubPort}`,
     ...notes,
-    listener ? `HTTPS for your devices on ${listener.address}:${listener.port} and a setup page on ${listener.address}:${listener.httpPort}, only from ${listener.allowedCidrs.join(', ')} (${['127.0.0.1', '::1'].includes(listener.address) ? 'this computer only' : kept ? 'as before' : network.kind}); never the internet` : 'no private network found: the hub stays on this machine only (pass --address <private ip> to change that)',
+    listener ? `HTTPS for your devices on ${listener.address}:${listener.port} and a setup page on ${listener.address}:${listener.httpPort}, only from ${listener.allowedCidrs.join(', ')} (${['127.0.0.1', '::1'].includes(listener.address) ? 'this computer only' : kept ? 'as before' : network.kind}); never the internet` : localOnly ? '' : 'no private network found: the hub stays on this machine only (pass --address <private ip> to change that)',
     listener ? `app address ${publicUrl}` : '',
+    open ? `open on this computer: http://localhost:${hubPort} needs no code or passkey. Anyone and any program on this computer can read and post${listener ? '' : '; nothing off this computer can connect'}` : '',
     better ? `kept your current names (${kept!.names.join(', ')}). ${better} would need no DNS step on devices, but switching means reinstalling the certificate and new passkeys on every device: vocorum setup --name ${better},${kept!.names.join(',')}` : '',
     (existing?.tailscaleLogin ?? network.login) ? `extra check: devices must be on the Tailscale account ${existing?.tailscaleLogin ?? network.login}` : '',
     options.service && (await serviceManager()) ? `service: ${process.platform === 'darwin' ? `launchd agent dev.${serviceName(paths)}` : WINDOWS ? `Task Scheduler task Vocorum\\${serviceName(paths)}, at logon` : `systemd user unit ${serviceName(paths)}.service`}` : `no service${options.service ? ' manager here' : ''}: the hub runs in the background and does not start after a reboot by itself`,
@@ -224,7 +231,7 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
     console.log('Vocorum setup will:')
     for (const line of plan) console.log(`  - ${line}`)
   }
-  if (options.dryRun) return { steps: plan.map((detail) => ({ step: 'plan', status: 'planned', detail })), checks: [], network, pairing: null }
+  if (options.dryRun) return { steps: plan.map((detail) => ({ step: 'plan', status: 'planned', detail })), checks: [], network, pairing: null, open: null }
   // Opening a listener to other devices needs the person's yes, not just an agent's.
   if (listener && !options.yes && !(existing?.privateListener?.address === listener.address)) {
     if (!process.stdin.isTTY) throw new Error('This opens the hub to your own devices on your private network. Ask the person, then run again with --yes.')
@@ -241,21 +248,23 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
     if (busy) throw new Error(`Port ${port} is already in use on this machine (another hub?). Run again with --port <free port>.`)
   }
   const config = initHub(paths, {
-    ...(!existing && { port: hubPort }), ...(network.login && !existing?.tailscaleLogin && { tailscaleLogin: network.login }), ...(publicUrl && !existing?.publicUrl && { publicUrl }) })
+    ...(!existing && { port: hubPort }), ...(options.open && { localAccess: 'open' as const }), ...(network.login && !existing?.tailscaleLogin && { tailscaleLogin: network.login }), ...(publicUrl && !existing?.publicUrl && { publicUrl }) })
   log({ step: 'state', status: existing ? 'already' : 'done', detail: `${paths.root} (owner ${config.ownerUsername}, port ${config.port})` })
 
   // 4. private listener (same as `vocorum private setup`)
-  let listenerChanged = false
+  // A running hub reads its settings at start: turning open access on restarts it like a new listener does.
+  let listenerChanged = options.open === true && existing !== null && existing.localAccess !== 'open'
   if (listener) {
     const same = JSON.stringify(existing?.privateListener ?? null) === JSON.stringify(listener)
     const { PrivateListener } = await import('./private-listener.ts')
     const prepared = new PrivateListener(listener, paths.ca, { attach: () => {}, tailscaleLogins: () => new Map() })
     const ca = await prepared.prepare({ reissueBroad: true })
     if (!same) initHub(paths, { privateListener: listener })
-    listenerChanged = !same || ca.reissued
+    listenerChanged ||= !same || ca.reissued
     const { fingerprint } = await import('./ca.ts')
     log({ step: 'private listener', status: same ? 'already' : 'done', detail: `https://${listener.names[0]}:${listener.port}, CA ${fingerprint(prepared.files.caCert).slice(0, 23)}…${ca.reissued ? ' (new CA: reinstall it on every device)' : ''}` })
-  } else log({ step: 'private listener', status: 'skipped', detail: 'no private network' })
+  } else log({ step: 'private listener', status: 'skipped', detail: localOnly ? 'not asked for: this computer only' : 'no private network' })
+  if (open) log({ step: 'open access', status: existing?.localAccess === 'open' ? 'already' : 'done', detail: `http://localhost:${config.port} on this computer, no code or passkey` })
 
   // 5. service, or a background process where there is no service manager
   const manager = options.service ? await serviceManager() : null
@@ -305,9 +314,11 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
     let latency = await hubLatency(config, paths)
     if (latency === 'other') throw new Error(`Port ${config.port} is held by something else. Give this hub its own port: vocorum init --port <free port>`)
     const running = typeof latency === 'number'
+    // Whether the running hub is one this setup started: asked before stopping it, which forgets its pid.
+    const ours = backgroundPid(paths) !== null
     if (running && listenerChanged) await stopBackground(paths)
     if (!running || listenerChanged) {
-      if (running && !backgroundPid(paths) && listenerChanged) log({ step: 'start', status: 'skipped', detail: 'a hub I did not start is running; restart it to apply the listener' })
+      if (running && !ours && listenerChanged) log({ step: 'start', status: 'skipped', detail: 'a hub I did not start is running; restart it to apply the listener' })
       else {
         await startBackground(paths, options.repo)
         latency = null
@@ -352,9 +363,10 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
   const store = new HubStore(`file:${paths.hubDb}`)
   await store.migrate()
   try {
-    if ((await store.listDevices()).filter((d) => !d.revokedAt).length === 0) pairing = { code: await store.createPairing('first device', { ttlMs: 30 * 60_000 }), ttlMinutes: 30 }
+    // A first code only where a device can use one.
+    if (listener && (await store.listDevices()).filter((d) => !d.revokedAt && d.name !== 'This computer').length === 0) pairing = { code: await store.createPairing('first device', { ttlMs: 30 * 60_000 }), ttlMinutes: 30 }
   } finally {
     store.close()
   }
-  return { steps, checks, network, pairing }
+  return { steps, checks, network, pairing, open: open ? `http://localhost:${config.port}` : null }
 }

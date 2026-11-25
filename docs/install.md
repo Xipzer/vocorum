@@ -2,6 +2,10 @@
 
 This sets up the hub on one computer and signs in your first device.
 
+Just want to look first? [Try it on this computer](try-it.md) in three commands, with no certificate,
+code or passkey. Come back here when you want your phone or other devices.
+[Security levels](security-levels.md) explains what each step protects.
+
 ## What you need
 
 - A computer that stays on, running Linux, macOS or Windows. This is the hub.

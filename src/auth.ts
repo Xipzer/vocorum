@@ -17,6 +17,9 @@ import type { DeviceRow, HubStore } from './store.ts'
 
 // __Host-: only ever sent back to this exact host, over HTTPS, for path /.
 export const SESSION_COOKIE = '__Host-hub_session'
+// Open access on this computer runs over plain http://localhost, where Safari takes no Secure
+// (and so no __Host-) cookie. This one is only ever read on such a request (Hub.localOpen).
+export const LOCAL_COOKIE = 'hub_local_session'
 
 const SESSION_TTL_MS = 30 * 24 * 3600_000
 const CHALLENGE_TTL_MS = 5 * 60_000
@@ -92,6 +95,7 @@ export class HubAuth {
     private readonly options: {
       tailscaleLogins: () => Map<string, string>
       allowedOrigins: () => string[]
+      localOpen?: (req: http.IncomingMessage) => boolean
       rpName: string
     },
   ) {}
@@ -129,9 +133,15 @@ export class HubAuth {
     if (!this.usesBearer(req)) this.checkOrigin(req)
   }
 
+  private cookieToken(req: http.IncomingMessage): string | undefined {
+    const cookies = parseCookies(req.headers.cookie)
+    // Only the __Host- cookie: an unprefixed one can be planted from another port.
+    return cookies[SESSION_COOKIE] ?? (this.options.localOpen?.(req) ? cookies[LOCAL_COOKIE] : undefined)
+  }
+
   // The session a request carries (for connections that must end with it).
   session(req: http.IncomingMessage): { token: string; kind: 'bearer' | 'cookie' } | null {
-    const token = this.usesBearer(req) ? this.bearerToken(req) : parseCookies(req.headers.cookie)[SESSION_COOKIE]
+    const token = this.usesBearer(req) ? this.bearerToken(req) : this.cookieToken(req)
     return token ? { token, kind: this.usesBearer(req) ? 'bearer' : 'cookie' } : null
   }
 
@@ -140,8 +150,7 @@ export class HubAuth {
       const token = this.bearerToken(req)
       return token ? this.store.sessionDevice(token, 'bearer') : null
     }
-    // Only the __Host- cookie: an unprefixed one can be planted from another port.
-    const token = parseCookies(req.headers.cookie)[SESSION_COOKIE]
+    const token = this.cookieToken(req)
     return token ? this.store.sessionDevice(token, 'cookie') : null
   }
 
@@ -274,8 +283,17 @@ export class HubAuth {
     return { device, cookie: this.sessionCookie(session.token) }
   }
 
+  // Open access on this computer (Hub.localOpen): one device row stands for its browsers.
+  async localSession(ownerUserId: string) {
+    const name = 'This computer'
+    const devices = await this.store.listDevices()
+    const device = devices.find((d) => !d.revokedAt && d.kind === 'web' && d.name === name && (d.userId ?? ownerUserId) === ownerUserId) ?? (await this.store.createDevice(name, ownerUserId))
+    const session = await this.store.createSession(device.id, SESSION_TTL_MS)
+    return { device, cookie: `${LOCAL_COOKIE}=${session.token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_TTL_MS / 1000}` }
+  }
+
   async logout(req: http.IncomingMessage) {
-    const token = this.usesBearer(req) ? this.bearerToken(req) : parseCookies(req.headers.cookie)[SESSION_COOKIE]
+    const token = this.usesBearer(req) ? this.bearerToken(req) : this.cookieToken(req)
     if (token) await this.store.deleteSession(token)
   }
 

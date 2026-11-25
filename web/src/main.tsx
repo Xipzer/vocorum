@@ -5,6 +5,7 @@ import { installEmojiCopy } from './emoji.tsx'
 import { installKeyboardDock } from './keyboard.ts'
 import { native } from './native.ts'
 import { TitleBar } from './TitleBar.tsx'
+import { UpdateCheck } from './UpdateCheck.tsx'
 import './styles.css'
 import './media.css'
 import './composer.css'
@@ -17,6 +18,7 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <TitleBar />
     <App />
+    <UpdateCheck />
   </StrictMode>,
 )
 

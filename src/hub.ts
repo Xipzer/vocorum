@@ -110,6 +110,7 @@ export class Hub {
     this.auth = new HubAuth(this.store, {
       tailscaleLogins: () => this.logins,
       allowedOrigins: () => this.allowedOrigins,
+      localOpen: (req) => this.localOpen(req),
       rpName: 'Vocorum',
     })
     const webDir = options.webDir ?? path.resolve(import.meta.dirname, '../web/dist')
@@ -512,6 +513,16 @@ export class Hub {
     }
   }
 
+  // Open access on this computer (config.localAccess): a browser on localhost needs no code or
+  // passkey. Only for a request that came straight to the hub's own port under its loopback
+  // name, carrying nothing a proxy or tunnel adds. Anything else keeps every check.
+  localOpen(req: http.IncomingMessage) {
+    if (this.options.config.localAccess !== 'open' || this.privateListener?.owns(req)) return false
+    if ((req.headers.host ?? '').toLowerCase() !== `localhost:${this.port}`) return false
+    if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '')) return false
+    return !Object.keys(req.headers).some((name) => /^(tailscale-|x-forwarded-|x-real-ip$|forwarded$|via$|cf-|true-client-ip$)/.test(name))
+  }
+
   // First gate on human routes. On loopback the proxy's identity header must
   // name an allowed login; on the private listener the peer must pass the
   // optional Tailscale check. Either way a passkey session is required after
@@ -532,6 +543,7 @@ export class Hub {
       if (login) this.identities.set(req, login)
       return
     }
+    if (this.localOpen(req)) return
     this.identities.set(req, this.auth.checkTailscale(req))
   }
 

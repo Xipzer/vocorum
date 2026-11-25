@@ -19,7 +19,17 @@ use tauri::{AppHandle, Manager, RunEvent, Url, WebviewUrl, WebviewWindowBuilder,
 use hub::{Hub, HubConfig};
 
 pub const SCHEME: &str = "hub";
-const MAIN: &str = "main";
+pub(crate) const MAIN: &str = "main";
+// A preview build (VOCORUM_PREVIEW at build time) is installed beside the real app under
+// its own name and identifier: its own pairing, storage and windows. It stays quiet (no
+// system notifications, the real app shows those) and says when it was built.
+pub(crate) const PREVIEW: bool = option_env!("VOCORUM_PREVIEW").is_some();
+const BUILD_STAMP: Option<&str> = option_env!("VOCORUM_BUILD_STAMP");
+
+// "Vocorum", or the name the build was given (a preview is "Vocorum Preview").
+fn app_name(app: &AppHandle) -> String {
+  app.config().product_name.clone().unwrap_or_else(|| "Vocorum".into())
+}
 
 pub struct State {
   dir: PathBuf,
@@ -29,6 +39,7 @@ pub struct State {
   last_alert: Mutex<Option<(String, Option<String>, std::time::Instant)>>,
   #[cfg(desktop)]
   update: Mutex<Option<tauri_plugin_updater::Update>>,
+  show_update_check: std::sync::atomic::AtomicBool,
 }
 
 impl State {
@@ -164,7 +175,7 @@ fn build_main(app: &AppHandle) -> tauri::Result<()> {
   let handle = app.clone();
   let opener = app.clone();
   let builder = WebviewWindowBuilder::new(app, MAIN, WebviewUrl::CustomProtocol(url))
-    .title("Vocorum")
+    .title(app_name(app))
     .use_https_scheme(true)
     .on_navigation(move |url| {
       if own_origin(url) {
@@ -183,6 +194,19 @@ fn build_main(app: &AppHandle) -> tauri::Result<()> {
     });
   let builder = match data_dir() {
     Some(dir) => builder.data_directory(dir.join("webview")),
+    None => builder,
+  };
+  // Apple's web view ignores that folder, so there a test profile gets its own web
+  // store by identifier. Without it a test run shares the person's drafts and sign-in.
+  #[cfg(any(target_os = "macos", target_os = "ios"))]
+  let builder = match data_dir() {
+    Some(dir) => {
+      use sha2::{Digest, Sha256};
+      let hash = Sha256::digest(dir.to_string_lossy().as_bytes());
+      let mut id = [0u8; 16];
+      id.copy_from_slice(&hash[..16]);
+      builder.data_store_identifier(id)
+    }
     None => builder,
   };
   #[cfg(desktop)]
@@ -384,59 +408,123 @@ async fn set_alerts(app: AppHandle, state: tauri::State<'_, State>, on: bool) ->
 }
 
 #[cfg(desktop)]
-fn tray_menu(app: &AppHandle, update: Option<&str>) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+fn tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
   use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
   use tauri_plugin_autostart::ManagerExt;
-  let open = MenuItem::with_id(app, "open", "Open Vocorum", true, None::<&str>)?;
+  let name = app_name(app);
+  let open = MenuItem::with_id(app, "open", format!("Open {name}"), true, None::<&str>)?;
   let login = CheckMenuItem::with_id(app, "autostart", "Open at login", true, app.autolaunch().is_enabled().unwrap_or(false), None::<&str>)?;
-  let quit = MenuItem::with_id(app, "quit", "Quit Vocorum", true, None::<&str>)?;
+  let quit = MenuItem::with_id(app, "quit", format!("Quit {name}"), true, None::<&str>)?;
   let separator = PredefinedMenuItem::separator(app)?;
-  let menu = Menu::with_items(app, &[&open, &login, &separator, &quit])?;
-  if let Some(version) = update {
-    menu.insert(&MenuItem::with_id(app, "update", format!("Restart to update ({version})"), true, None::<&str>)?, 2)?;
-  }
+  let built = BUILD_STAMP.map(|stamp| format!(" · {stamp}")).unwrap_or_default();
+  let version = MenuItem::with_id(app, "version", format!("{name} {}{built}", app.package_info().version), false, None::<&str>)?;
+  let check = MenuItem::with_id(app, "check", "Check for Updates…", true, None::<&str>)?;
+  let restart = MenuItem::with_id(app, "update", "Restart to update", false, None::<&str>)?;
+  let menu = Menu::with_items(app, &[&version, &open, &check, &restart, &login, &separator, &quit])?;
+  app.manage(UpdateMenu { restart });
   Ok(menu)
 }
 
-// Shows or hides "Restart to update" in the tray menu.
+#[cfg(desktop)]
+struct UpdateMenu {
+  restart: tauri::menu::MenuItem<tauri::Wry>,
+}
+
+#[cfg(desktop)]
 pub fn set_update_item(app: &AppHandle, version: Option<&str>) {
-  #[cfg(desktop)]
-  if let (Some(tray), Ok(menu)) = (app.tray_by_id("tray"), tray_menu(app, version)) {
-    let _ = tray.set_menu(Some(menu));
+  if let Some(menu) = app.try_state::<UpdateMenu>() {
+    let label = version.map_or_else(|| "Restart to update".into(), |v| format!("Restart to update ({v})"));
+    let _ = menu.restart.set_text(label);
+    let _ = menu.restart.set_enabled(version.is_some());
   }
-  #[cfg(mobile)]
-  let _ = (app, version);
 }
 
 #[cfg(desktop)]
 fn tray(app: &AppHandle) -> tauri::Result<()> {
   use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
   use tauri_plugin_autostart::ManagerExt;
+  #[cfg(target_os = "macos")]
+  let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray-template.png"))?;
+  #[cfg(target_os = "windows")]
+  let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray-windows.png"))?;
+  #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+  let icon = app.default_window_icon().cloned().ok_or(tauri::Error::InvalidIcon(std::io::Error::other("no icon")))?;
   TrayIconBuilder::with_id("tray")
-    .icon(app.default_window_icon().cloned().ok_or(tauri::Error::InvalidIcon(std::io::Error::other("no icon")))?)
-    .tooltip("Vocorum")
-    .menu(&tray_menu(app, None)?)
-    .show_menu_on_left_click(false)
+    .icon(icon)
+    .icon_as_template(cfg!(target_os = "macos"))
+    .tooltip(app_name(app))
+    .menu(&tray_menu(app)?)
+    .show_menu_on_left_click(cfg!(target_os = "macos"))
     .on_menu_event(move |app, event| match event.id().as_ref() {
       "open" => show_main(app),
       "autostart" => {
         let launcher = app.autolaunch();
         let on = !launcher.is_enabled().unwrap_or(false);
         let _ = if on { launcher.enable() } else { launcher.disable() };
-        let pending = app.state::<State>().update.lock().ok().and_then(|u| u.as_ref().map(|u| u.version.clone()));
-        set_update_item(app, pending.as_deref());
       }
+      "check" => open_update_check(app),
       "update" => updates::install(app),
       "quit" => app.exit(0),
       _ => {}
     })
     .on_tray_icon_event(|tray, event| {
-      if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+      if !cfg!(target_os = "macos") && matches!(event, TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. }) {
         show_main(tray.app_handle());
       }
     })
     .build(app)?;
   Ok(())
+}
+
+#[cfg(desktop)]
+fn open_update_check(app: &AppHandle) {
+  app.state::<State>().show_update_check.store(true, std::sync::atomic::Ordering::Release);
+  show_main(app);
+  if let Some(w) = app.get_webview_window(MAIN) {
+    let _ = w.eval("window.dispatchEvent(new Event('vocorum-update-check'))");
+  }
+}
+
+#[tauri::command]
+fn take_update_check(state: tauri::State<'_, State>) -> bool {
+  state.show_update_check.swap(false, std::sync::atomic::Ordering::AcqRel)
+}
+
+#[tauri::command]
+async fn check_app_update(app: AppHandle) -> Result<Value, String> {
+  #[cfg(desktop)]
+  return updates::report(&app).await;
+  #[cfg(mobile)]
+  { let _ = app; Err("Check for updates in the App Store.".into()) }
+}
+
+// "Restart to update" in the update dialog: the same action as the tray item.
+#[tauri::command]
+fn install_app_update(app: AppHandle, state: tauri::State<'_, State>) -> Result<(), String> {
+  #[cfg(desktop)]
+  {
+    if state.update.lock().map_err(|_| "Check again.")?.is_none() {
+      return Err("No update is waiting. Check again.".into());
+    }
+    updates::install(&app);
+    Ok(())
+  }
+  #[cfg(mobile)]
+  { let _ = (app, state); Err("Update Vocorum in the App Store.".into()) }
+}
+
+// Reads the "Update automatically" switch, or sets it when given a value.
+#[tauri::command]
+fn auto_update(app: AppHandle, enabled: Option<bool>) -> Result<bool, String> {
+  #[cfg(desktop)]
+  {
+    if let Some(on) = enabled {
+      updates::set_automatic(&app, on)?;
+    }
+    Ok(updates::automatic(&app))
+  }
+  #[cfg(mobile)]
+  { let _ = (app, enabled); Ok(false) }
 }
 
 fn take_link(app: &AppHandle, urls: impl IntoIterator<Item = Url>) {
@@ -465,6 +553,19 @@ pub fn run() {
   let _ = rustls::crypto::ring::default_provider().install_default();
   #[cfg_attr(mobile, allow(unused_mut))]
   let mut builder = tauri::Builder::default();
+  #[cfg(target_os = "macos")]
+  {
+    builder = builder.menu(|app| {
+      use tauri::menu::{Menu, MenuItem, MenuItemKind};
+      let menu = Menu::default(app)?;
+      if let Some(MenuItemKind::Submenu(application)) = menu.items()?.first() {
+        application.insert(&MenuItem::with_id(app, "app-check-updates", "Check for Updates…", true, None::<&str>)?, 1)?;
+      }
+      Ok(menu)
+    }).on_menu_event(|app, event| {
+      if event.id().as_ref() == "app-check-updates" { open_update_check(app); }
+    });
+  }
   #[cfg(desktop)]
   {
     // A test profile (see data_dir) runs beside the person's own app, not into it.
@@ -483,7 +584,7 @@ pub fn run() {
     .plugin(tauri_plugin_notification::init())
     .plugin(tauri_plugin_opener::init())
     .register_asynchronous_uri_scheme_protocol(SCHEME, |ctx, request, responder| protocol::handle(ctx.app_handle(), request, responder))
-    .invoke_handler(tauri::generate_handler![pair, sign_in, approve_request, forget_hub, events_subscribe, events_unsubscribe, set_focus, set_alerts, window_control, window_maximized, window_title])
+    .invoke_handler(tauri::generate_handler![pair, sign_in, approve_request, forget_hub, events_subscribe, events_unsubscribe, set_focus, set_alerts, window_control, window_maximized, window_title, take_update_check, check_app_update, install_app_update, auto_update])
     .setup(|app| {
       let dir = match data_dir() {
         Some(dir) => dir.join("config"),
@@ -492,13 +593,18 @@ pub fn run() {
       std::fs::create_dir_all(&dir)?;
       let state = State { dir: dir.clone(), hub: RwLock::new(None), events: Default::default(), pending_link: Mutex::new(None),
         last_alert: Mutex::new(None),
+        show_update_check: Default::default(),
         #[cfg(desktop)]
         update: Mutex::new(None),
       };
       app.manage(state);
       let handle = app.handle().clone();
+      // A saved hub that cannot be used (damaged record) must not stop the app from
+      // opening: it starts unpaired and shows the pairing screen. The record stays on disk.
       if let Some(config) = HubConfig::load(&dir) {
-        tauri::async_runtime::block_on(async { app.state::<State>().install(&handle, config).await }).map_err(std::io::Error::other)?;
+        if let Err(error) = tauri::async_runtime::block_on(async { app.state::<State>().install(&handle, config).await }) {
+          eprintln!("[vocorum] the saved hub could not be loaded: {error}");
+        }
       }
       {
         use tauri_plugin_deep_link::DeepLinkExt;
@@ -540,7 +646,10 @@ pub fn run() {
         tray(&handle)?;
         updates::start(handle.clone());
       }
-      let hidden = std::env::args().any(|a| a == "--hidden");
+      // Set by an automatic update that ran while the window was closed.
+      let after_update = std::env::var("VOCORUM_START_HIDDEN").is_ok_and(|v| v == "1");
+      std::env::remove_var("VOCORUM_START_HIDDEN");
+      let hidden = after_update || std::env::args().any(|a| a == "--hidden");
       if !hidden {
         show_main(&handle);
       }
@@ -553,6 +662,9 @@ pub fn run() {
       RunEvent::WindowEvent { label, event: WindowEvent::Destroyed, .. } if label == MAIN => {
         let events = app.state::<State>().events.clone();
         tauri::async_runtime::spawn(async move { events.set_hidden(true).await });
+        // With "Update automatically" on, a waiting update installs now that nothing is open.
+        #[cfg(desktop)]
+        updates::install_if_automatic(app);
       }
       RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
       #[cfg(target_os = "macos")]

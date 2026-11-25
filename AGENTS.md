@@ -32,6 +32,12 @@ Every command is safe to run twice.
   `vocorum discord status`. A job in your shell dies when your session ends.
 - **Run `vocorum doctor --json` after every step.** It names each problem and
   the command that fixes it.
+- **Trying it on one computer.** To let someone try Vocorum on one computer, use
+  `vocorum setup --open` and first tell them: only this computer can reach it, and
+  anyone or any program on this computer can read and post. Never add `--address`
+  or `--yes` to make an open hub reachable from other devices; adding devices is
+  `vocorum setup` with the person's yes. To re-run setup on an open hub without
+  offering other devices, use `vocorum setup --open`. See docs/try-it.md.
 - **Ask everything at the start**, with a default for each answer, then work
   without stopping.
 

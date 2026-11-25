@@ -44,7 +44,9 @@ or any other company.
 
 ## Get started
 
+- [Try it on this computer](docs/try-it.md): the quickest start, with no certificate, code or passkey.
 - [Install](docs/install.md): set up the hub and your first device.
+- [Security levels](docs/security-levels.md): start open and add protection when you need it.
 - [Move from Discord](docs/migrate-from-discord.md): bring your bots and history over.
 - [Daily use](docs/daily-use.md): sessions, notifications, people and machines.
 - [Back up and recover](docs/recovery.md): keep a copy and bring the hub back.

@@ -57,7 +57,7 @@ function keepCopies(stored: string, incoming: string) {
 }
 
 const passthrough = (m: DiscordMessage) => Object.fromEntries(PASSTHROUGH.filter((k) => m[k] !== undefined && m[k] !== null).map((k) => [k, m[k]]))
-export type DiscordChannel = { id: string; guild_id?: string; type: number; name?: string | null; topic?: string | null; parent_id?: string | null; position?: number; owner_id?: string | null; last_message_id?: string | null; thread_metadata?: { archived?: boolean; locked?: boolean; auto_archive_duration?: number } }
+export type DiscordChannel = { id: string; guild_id?: string; type: number; name?: string | null; topic?: string | null; parent_id?: string | null; position?: number; owner_id?: string | null; last_message_id?: string | null; thread_metadata?: { archived?: boolean; locked?: boolean; auto_archive_duration?: number; archive_timestamp?: string | null } }
 
 export class Mirror {
   constructor(private readonly hub: Hub) {}
@@ -158,6 +158,7 @@ export class Mirror {
     const existing = await this.prisma.channel.findUnique({ where: { id: channel.id } })
     if (existing && existing.guildId !== guildId) throw new HttpError(409, 'That id belongs to another guild')
     const meta = channel.thread_metadata
+    const archiveTime = typeof meta?.archive_timestamp === 'string' ? Date.parse(meta.archive_timestamp) : NaN
     return {
       id: channel.id,
       guildId: guildId!,
@@ -170,6 +171,7 @@ export class Mirror {
       archived: meta?.archived ?? false,
       locked: meta?.locked ?? false,
       autoArchiveDuration: meta?.auto_archive_duration ?? 1440,
+      ...(Number.isFinite(archiveTime) && { archiveTimestamp: new Date(archiveTime) }),
     }
   }
 

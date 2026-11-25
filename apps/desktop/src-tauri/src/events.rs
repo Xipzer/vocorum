@@ -192,6 +192,10 @@ fn send_focus(inner: &Inner) {
 
 fn notify(app: &AppHandle, d: Value) {
   use tauri_plugin_notification::NotificationExt;
+  // A preview runs beside the real app, which already shows this alert.
+  if crate::PREVIEW {
+    return;
+  }
   let text = |key: &str| d.get(key).and_then(Value::as_str).unwrap_or_default().chars().take(400).collect::<String>();
   let title = text("title");
   let title = if title.is_empty() { "Vocorum".to_string() } else { title };

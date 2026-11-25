@@ -12,6 +12,7 @@
 // For enum bitfield "zero" values (no flags set), we use a small helper
 // that keeps the cast localized to one place.
 
+import { snowflakeDate } from './snowflake.ts'
 import {
   GuildMemberFlags,
   GuildSystemChannelFlags,
@@ -111,8 +112,9 @@ export function channelToAPI(channel: Channel): APIChannel {
           thread_metadata: {
             archived: channel.archived,
             auto_archive_duration: channel.autoArchiveDuration,
+            // Older imports have no archive time. Their row creation date is the import day.
             archive_timestamp: (
-              channel.archiveTimestamp ?? channel.createdAt
+              channel.archiveTimestamp ?? snowflakeDate(channel.id)
             ).toISOString().replace('Z', '+00:00'),
             locked: channel.locked,
           },

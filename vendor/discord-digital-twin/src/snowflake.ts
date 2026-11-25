@@ -6,6 +6,10 @@
 const DISCORD_EPOCH = 1420070400000n
 let increment = 0n
 
+export function snowflakeDate(id: string): Date {
+  return new Date(Number((BigInt(id) >> 22n) + DISCORD_EPOCH))
+}
+
 export function generateSnowflake(): string {
   const timestamp = BigInt(Date.now()) - DISCORD_EPOCH
   const id = (timestamp << 22n) | (0n << 17n) | (0n << 12n) | increment

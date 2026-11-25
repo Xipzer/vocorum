@@ -104,18 +104,20 @@ export async function doctor(paths: HubPaths, { repo = path.resolve(import.meta.
   const unit = serviceName(paths)
   const manager = await serviceManager()
   const background = backgroundPid(paths)
-  if (background) add('service', 'warn', `no service: the hub runs in the background (pid ${background}) and does not start after a reboot by itself`, manager ? 'vocorum setup (installs a service)' : rebootLine(paths, repo))
+  // On a hub that is open on this computer alone, plain `vocorum setup` would offer to add devices as well.
+  const again = config.localAccess === 'open' && !config.privateListener ? 'vocorum setup --open' : 'vocorum setup'
+  if (background) add('service', 'warn', `no service: the hub runs in the background (pid ${background}) and does not start after a reboot by itself`, manager ? `${again} (installs a service)` : rebootLine(paths, repo))
   else if (process.platform === 'linux' && !manager) add('service', 'warn', 'no service manager here (no systemd user session)', 'vocorum setup starts the hub in the background')
   else if (process.platform === 'linux') {
     // is-active exits non-zero when the unit is not active, so read its output either way.
     const state = await run('systemctl', ['--user', 'is-active', unit], { timeout: 5000 }).then((r) => r.stdout.trim(), (e: { stdout?: string }) => (e.stdout ?? '').trim() || 'not installed')
-    add('service', state === 'active' ? 'ok' : 'warn', `${unit}.service is ${state}`, state === 'active' ? undefined : `vocorum setup (installs and starts it), or systemctl --user start ${unit}`)
+    add('service', state === 'active' ? 'ok' : 'warn', `${unit}.service is ${state}`, state === 'active' ? undefined : `${again} (installs and starts it), or systemctl --user start ${unit}`)
   } else if (process.platform === 'darwin') {
     const state = await launchdState(unit)
-    add('service', state === 'running' ? 'ok' : 'warn', state ? `launchd agent ${launchdLabel(unit)} is ${state}` : `no launchd agent ${launchdLabel(unit)}`, state === 'running' ? undefined : 'vocorum setup (installs and starts it), or vocorum restart')
+    add('service', state === 'running' ? 'ok' : 'warn', state ? `launchd agent ${launchdLabel(unit)} is ${state}` : `no launchd agent ${launchdLabel(unit)}`, state === 'running' ? undefined : `${again} (installs and starts it), or vocorum restart`)
   } else if (WINDOWS) {
     const state = await taskState(unit)
-    add('service', state === 'Running' ? 'ok' : 'warn', state ? `Task Scheduler task ${taskName(unit)} is ${state.toLowerCase()}` : `no Task Scheduler task ${taskName(unit)}`, state === 'Running' ? undefined : 'vocorum setup (installs and starts it), or vocorum restart')
+    add('service', state === 'Running' ? 'ok' : 'warn', state ? `Task Scheduler task ${taskName(unit)} is ${state.toLowerCase()}` : `no Task Scheduler task ${taskName(unit)}`, state === 'Running' ? undefined : `${again} (installs and starts it), or vocorum restart`)
   }
   const latency = await hubLatency(config, paths)
   if (latency === null) add('hub', 'fail', 'the hub does not answer on loopback', manager === 'systemd' ? `vocorum restart; then journalctl --user -u ${unit} -n 50` : `vocorum restart; then ${WINDOWS ? 'read the end of' : 'tail -50'} ${path.join(paths.root, 'hub.log')}`)
@@ -129,8 +131,11 @@ export async function doctor(paths: HubPaths, { repo = path.resolve(import.meta.
     }
   }
 
+  if (config.localAccess === 'open') add('local-access', 'ok', `open: http://localhost:${config.port} on this computer needs no code or passkey (ask for pairing here too: vocorum config set localAccess off)`)
   const listener = config.privateListener
-  if (!listener) add('private-listener', 'warn', 'off: only this machine can reach the hub', 'vocorum setup (or: vocorum private setup --address <private ip>)')
+  // Open on this computer alone is a choice, not a fault.
+  if (!listener && config.localAccess === 'open') add('private-listener', 'ok', 'off: no other device can connect (add your phone or another computer: vocorum setup)')
+  else if (!listener) add('private-listener', 'warn', 'off: only this machine can reach the hub', 'vocorum setup (or: vocorum private setup --address <private ip>)')
   else {
     const caFile = path.join(paths.ca, 'ca.crt')
     const certFile = path.join(paths.ca, 'server.crt')
@@ -171,8 +176,10 @@ export async function doctor(paths: HubPaths, { repo = path.resolve(import.meta.
     try {
       const bots = (await hubDb.execute('SELECT machine FROM bots WHERE revoked_at IS NULL').catch(() => ({ rows: [] }))).rows.map((r) => String(r['machine']))
       add('bots', bots.length ? 'ok' : 'warn', bots.length ? `active: ${bots.join(', ')}` : 'no bots yet', bots.length ? undefined : 'vocorum kimaki setup <machine> (a Kimaki on this machine), or vocorum bots add <machine> --out <file> for another bot')
-      const devices = Number((await hubDb.execute('SELECT count(*) AS n FROM devices WHERE revoked_at IS NULL').catch(() => ({ rows: [{ n: 0 }] }))).rows[0]?.['n'] ?? 0)
-      add('devices', devices ? 'ok' : 'warn', `${devices} paired`, devices ? undefined : 'vocorum pair phone')
+      // The browsers of an open computer share one device row; it is not a paired device.
+      const devices = Number((await hubDb.execute(`SELECT count(*) AS n FROM devices WHERE revoked_at IS NULL${config.localAccess === 'open' ? " AND name != 'This computer'" : ''}`).catch(() => ({ rows: [{ n: 0 }] }))).rows[0]?.['n'] ?? 0)
+      if (!listener && config.localAccess === 'open') add('devices', 'ok', 'this computer needs no pairing')
+      else add('devices', devices ? 'ok' : 'warn', `${devices} paired`, devices ? undefined : 'vocorum pair phone')
       if (twin) {
         // Who can drive agents (and so gets a shell on the machines): Kimaki role, Administrator, Manage Server.
         const roles = new Map((await twin.execute('SELECT id, name, permissions FROM Role')).rows.map((r) => [String(r['id']), { name: String(r['name']), perms: BigInt(String(r['permissions'] ?? '0')) }]))

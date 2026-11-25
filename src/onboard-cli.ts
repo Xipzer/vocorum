@@ -59,7 +59,7 @@ the DISCORD_BOT_TOKEN environment variable, or --kimaki (this machine's Kimaki b
 The token is never printed or written anywhere.`
 
 export const HELP: Record<string, string> = {
-  setup: `vocorum setup [--port N] [--address IP] [--name NAME,...] [--allow CIDR,...] [--no-service] [--dry-run] [--yes] [--json]
+  setup: `vocorum setup [--open] [--port N] [--address IP] [--name NAME,...] [--allow CIDR,...] [--no-service] [--dry-run] [--yes] [--json]
 
 Sets up the hub on this machine in one go, and is safe to run again.
   - Checks Node 22+, the build and openssl.
@@ -69,6 +69,11 @@ Sets up the hub on this machine in one go, and is safe to run again.
   - Creates ~/.vocorum, turns on HTTPS for your own devices, installs and starts the service,
     adds a vocorum command to ~/.local/bin, checks everything, and prints a pairing link and QR code.
 
+  --open        the quickest start, for trying it on this computer: the app opens at
+                http://localhost:47100 with no certificate, code or passkey, and no other device can
+                connect. Anyone and any program on this computer can read and post. Add your other
+                devices later with: vocorum setup. Ask for pairing here too with:
+                vocorum config set localAccess off
   --dry-run     show what it would do, change nothing
   --yes         go ahead without asking (agents: only after the person said yes)
   --address IP  listen on this private address instead of the one found
@@ -94,7 +99,9 @@ shows what to install for that device and then opens the app with the code fille
 vocorum config set KEY VALUE
 
 Keys you can set: ownerUsername, ownerDiscordIds (your Discord user ids, comma
-separated), botUsername, guildName, publicUrl (or none), tailscaleLogin (or none).
+separated), botUsername, guildName, publicUrl (or none), tailscaleLogin (or none),
+localAccess (open: this computer uses http://localhost:<port> with no code or passkey;
+off: every browser pairs).
 Restart the hub afterwards: vocorum restart`,
   admin: `vocorum admin setup [--kimaki PATH] [--model PROVIDER/MODEL] [--no-service] [--json]
 vocorum admin status [--json]
@@ -227,7 +234,7 @@ function help(key: string) {
   console.log(HELP[key] ?? Object.values(HELP).map((h) => h.split('\n')[0]).join('\n'))
 }
 
-const BOOLEAN = new Set(['help', 'replace', 'delete-data', 'app', 'no-service', 'remove', 'json', 'yes', 'dry-run', 'no-service', 'detach', 'no-files', 'threads', 'kimaki-keep'])
+const BOOLEAN = new Set(['help', 'open', 'replace', 'delete-data', 'app', 'no-service', 'remove', 'json', 'yes', 'dry-run', 'no-service', 'detach', 'no-files', 'threads', 'kimaki-keep'])
 
 const str = (v: string | true | undefined) => (typeof v === 'string' ? v : undefined)
 
@@ -270,6 +277,10 @@ const CONFIG_KEYS: Record<string, (value: string) => unknown> = {
   guildName: (v) => v,
   publicUrl: (v) => (v === 'none' ? null : new URL(v).origin),
   tailscaleLogin: (v) => (v === 'none' ? null : v),
+  localAccess: (v) => {
+    if (v !== 'open' && v !== 'off') throw new Error('localAccess: open (no code or passkey at http://localhost on this computer) or off (every browser pairs)')
+    return v === 'open' ? 'open' : null
+  },
 }
 
 async function discordRest(flags: Record<string, string | true>) {
@@ -309,6 +320,7 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
       address: str(flags['address']),
       names: str(flags['name'])?.split(','),
       allow: str(flags['allow'])?.split(','),
+      open: flags['open'] === true,
       service: flags['no-service'] !== true,
       yes: flags['yes'] === true,
       dryRun: flags['dry-run'] === true,
@@ -322,6 +334,7 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
       const { printChecks } = await import('./doctor.ts')
       console.log('')
       printChecks(result.checks)
+      if (result.open) console.log(`\nOpen ${result.open} in a browser on this computer. No code or passkey is needed.${result.pairing ? '' : '\nTo add your phone or another computer later: vocorum setup'}`)
       if (links && result.pairing) await printPairing(links, result.pairing.code, result.pairing.ttlMinutes)
     })
     return true
@@ -578,10 +591,12 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
       return true
     }
     if (sub === 'set') {
-      requireConfig()
+      const current = requireConfig()
       const [key, ...value] = rest
       const parseValue = key ? CONFIG_KEYS[key] : undefined
       if (!key || !parseValue || value.length === 0) throw new Error(`usage: config set <key> <value>. Keys: ${Object.keys(CONFIG_KEYS).join(', ')}`)
+      // Without a device listener, localhost is the only way a browser reaches this hub.
+      if (key === 'localAccess' && value.join(' ') === 'off' && current.localAccess === 'open' && !current.privateListener) throw new Error('Nothing changed: with local access off, no browser could reach this hub. Add your devices first (vocorum setup), then run this again.')
       const updated = initHub(paths, { [key]: parseValue(value.join(' ')) } as Partial<HubConfig>)
       await emit({ [key]: (updated as Record<string, unknown>)[key], restart: true }, () => console.log(`${key} set. Restart the hub to apply: vocorum restart`))
       return true

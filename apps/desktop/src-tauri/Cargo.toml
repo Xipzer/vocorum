@@ -1,6 +1,6 @@
 [package]
 name = "vocorum-app"
-version = "0.2.4"
+version = "0.2.13"
 description = "Vocorum desktop and iPhone app"
 authors = ["Xipz"]
 license-file = "../../../LICENSE"

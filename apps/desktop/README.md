@@ -33,7 +33,7 @@ hub serves, so every screen looks the same as in the browser.
   shows them as system notifications.
 - **Native bits:** system notifications, the microphone for voice notes (asked
   for only while recording), the system file picker, a tray icon, and an
-  optional "Start when I log in" in the tray menu.
+  optional "Open at login" in the tray menu.
 
 ## Pairing
 
@@ -96,6 +96,11 @@ XWIN_ACCEPT_LICENSE=1 cargo tauri build --runner cargo-xwin --target x86_64-pc-w
   too, but asks for your password, because installing a package needs root.
 
 ## Releases
+
+Click the V in the Mac menu bar, or open the tray menu on Windows or Linux.
+The first line shows the running version. Choose **Check for Updates** to ask
+your hub now. If a signed update is available, choose **Restart to update**
+when you're ready to install it.
 
 `apps/desktop/scripts/release.sh linux|windows|macos [out-dir]` builds the
 installers and writes `SHA256SUMS`. Builds are repeatable: the Rust version is
