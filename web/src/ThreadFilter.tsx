@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { SessionSummary } from './api.ts'
 import './thread-filter.css'
 
-const choices = ['Working', 'Waiting for you', 'Failed', 'Unread', 'Quiet'] as const
+export const choices = ['Working', 'Waiting for you', 'Failed', 'Unread', 'Quiet'] as const
 export const ALL_MARKS = (1 << choices.length) - 1
 export function markBit(state: SessionSummary['state'] | undefined, unread: boolean) {
   return 1 << (state === 'busy' ? 0 : state === 'waiting' ? 1 : state === 'failed' ? 2 : unread ? 3 : 4)

@@ -79,9 +79,9 @@ test.skipIf(!ready)('Ctrl+P, Ctrl+U and Ctrl+I open and close their panels', asy
   await page.keyboard.press(`${mod}+p`)
   await panel('Pinned messages').waitFor({ state: 'detached' })
   await page.keyboard.press(`${mod}+u`)
-  await panel('Members').waitFor()
+  await page.locator('.members-panel').waitFor()
   await page.keyboard.press(`${mod}+u`)
-  await panel('Members').waitFor({ state: 'detached' })
+  await page.locator('.members-panel').waitFor({ state: 'detached' })
   await page.keyboard.press(`${mod}+i`)
   await page.locator('.side-panel').waitFor()
   await page.keyboard.press(`${mod}+i`)
@@ -90,7 +90,7 @@ test.skipIf(!ready)('Ctrl+P, Ctrl+U and Ctrl+I open and close their panels', asy
   await page.locator('.composer textarea').focus()
   await page.keyboard.press(`${mod}+u`)
   await page.waitForTimeout(200)
-  expect(await panel('Members').count()).toBe(0)
+  expect(await page.locator('.members-panel').count()).toBe(0)
 })
 
 test.skipIf(!ready)('arrows pick messages, Esc returns to the message box, R replies', async () => {
@@ -108,6 +108,26 @@ test.skipIf(!ready)('arrows pick messages, Esc returns to the message box, R rep
   await page.keyboard.press('ArrowUp')
   await page.keyboard.press('r')
   await page.getByText('Replying to').waitFor()
+})
+
+test.skipIf(!ready)("Esc closes a message's menu and the arrows move through it, though the message keeps focus", async () => {
+  await open()
+  const row = page.locator('.messages .message', { hasText: 'keys line 3' })
+  await row.click({ button: 'right', position: { x: 200, y: 8 } })
+  const sheet = page.locator('.sheet')
+  await sheet.getByRole('menuitem').first().waitFor()
+  // The right-clicked row has focus and its own Esc and arrow keys.
+  await expect(page.evaluate(() => document.activeElement?.classList.contains('message'))).resolves.toBe(true)
+  await page.keyboard.press('ArrowDown')
+  await expect.poll(() => page.evaluate(() => document.activeElement?.classList.contains('sheet-item'))).toBe(true)
+  await page.keyboard.press('Escape')
+  await sheet.waitFor({ state: 'detached' })
+  // Again with nothing but Esc: the menu closes and the row under it is left alone.
+  await row.click({ button: 'right', position: { x: 200, y: 8 } })
+  await sheet.getByRole('menuitem').first().waitFor()
+  await page.keyboard.press('Escape')
+  await sheet.waitFor({ state: 'detached' })
+  await expect(page.evaluate(() => document.activeElement?.tagName)).resolves.not.toBe('TEXTAREA')
 })
 
 test.skipIf(!ready)('typing anywhere goes to the message box', async () => {

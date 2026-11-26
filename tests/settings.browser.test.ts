@@ -81,6 +81,16 @@ const openSettings = async (p: Page) => {
   await p.getByRole('button', { name: 'User settings' }).click()
   await dialog(p).waitFor()
 }
+// Server settings are their own full-screen layer, opened from the server menu.
+const openServerSettings = async (p: Page) => {
+  if (await dialog(p).count()) {
+    await p.keyboard.press('Escape')
+    await dialog(p).waitFor({ state: 'detached' })
+  }
+  await p.locator('.side-title').click()
+  await p.locator('.sheet-item', { hasText: 'Server settings' }).click()
+  await dialog(p, 'Server settings').waitFor()
+}
 const notificationsState = (p: Page) => p.evaluate(() => fetch('/client/notifications').then((r) => r.json()))
 
 test.skipIf(!ready)('settings: server notification default, Esc closes', async () => {
@@ -98,6 +108,48 @@ test.skipIf(!ready)('settings: server notification default, Esc closes', async (
   expect(await page.evaluate(() => document.getElementById('root')?.hasAttribute('inert'))).toBe(false)
 })
 
+test.skipIf(!ready)('settings: the OG theme gives the chat Discord’s colour, survives a reload, and Vocorum comes back', async () => {
+  await page.locator('.sidebar .channel', { hasText: 'kimaki' }).first().click()
+  await page.locator('section.chat .chat-header').waitFor()
+  const chat = () => page.locator('section.chat:has(.chat-header)').first().evaluate((e) => getComputedStyle(e).backgroundColor)
+  const vocorum = 'rgb(13, 13, 16)'
+  await expect.poll(chat).toBe(vocorum)
+  await openSettings(page)
+  await dialog(page).getByRole('button', { name: 'Appearance', exact: true }).click()
+  const themes = dialog(page).getByRole('radiogroup', { name: 'Theme' })
+  await expect.poll(() => themes.getByRole('radio', { name: 'Vocorum' }).isChecked()).toBe(true)
+  await themes.getByText('OG', { exact: true }).click()
+  await expect.poll(() => themes.getByRole('radio', { name: 'OG' }).isChecked()).toBe(true)
+  // The accent choice belongs to the Vocorum theme.
+  await expect(dialog(page).getByRole('radiogroup', { name: 'Accent colour' }).count()).resolves.toBe(0)
+  await page.keyboard.press('Escape')
+  await dialog(page).waitFor({ state: 'detached' })
+  await expect.poll(chat).toBe('rgb(26, 26, 30)')
+
+  await page.reload()
+  await page.locator('section.chat .chat-header').waitFor()
+  expect(await page.evaluate(() => document.documentElement.dataset['theme'])).toBe('og')
+  await expect.poll(chat).toBe('rgb(26, 26, 30)')
+  // Applied before any app script runs: with the bundle blocked, the page is already OG.
+  const bare = await context.newPage()
+  await bare.route('**/assets/*.js', (r) => r.abort())
+  await bare.goto(origin)
+  expect(await bare.evaluate(() => [document.documentElement.dataset['theme'], getComputedStyle(document.getElementById('root')!).backgroundColor])).toEqual(['og', 'rgb(18, 18, 20)'])
+  await bare.close()
+
+  await openSettings(page)
+  await dialog(page).getByRole('button', { name: 'Appearance', exact: true }).click()
+  await dialog(page).getByRole('radiogroup', { name: 'Theme' }).getByText('Vocorum', { exact: true }).click()
+  await dialog(page).getByRole('radiogroup', { name: 'Accent colour' }).waitFor()
+  await page.keyboard.press('Escape')
+  await dialog(page).waitFor({ state: 'detached' })
+  expect(await page.evaluate(() => document.documentElement.dataset['theme'])).toBeUndefined()
+  await expect.poll(chat).toBe(vocorum)
+  await page.reload()
+  await page.locator('section.chat .chat-header').waitFor()
+  await expect.poll(chat).toBe(vocorum)
+})
+
 test.skipIf(!ready)('settings: display name, then a channel created, edited and deleted', async () => {
   await openSettings(page)
   await dialog(page).getByRole('textbox', { name: 'Display name' }).fill('Captain')
@@ -105,6 +157,7 @@ test.skipIf(!ready)('settings: display name, then a channel created, edited and 
   await page.locator('.user-panel-name', { hasText: 'Captain' }).waitFor()
   await dialog(page).locator('.settings-profile-name', { hasText: 'Captain' }).waitFor()
 
+  await openServerSettings(page)
   await dialog(page).getByRole('button', { name: 'Channels', exact: true }).click()
   await dialog(page).getByRole('button', { name: 'Create channel' }).click()
   await dialog(page).getByRole('textbox', { name: 'Channel name' }).fill('Release Notes')
@@ -132,6 +185,38 @@ test.skipIf(!ready)('settings: display name, then a channel created, edited and 
   expect((await state(page)).channels.some((c: { name: string }) => c.name === 'release-notes')).toBe(false)
 })
 
+test.skipIf(!ready)('settings: user settings are a centred dialog, server settings stay full-screen', async () => {
+  const box = (sel: string) => page.locator(sel).first().evaluate((e) => { const r = e.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map(Math.round) })
+  await openSettings(page)
+  const user = dialog(page, 'User settings')
+  await user.waitFor()
+  // 40px clear of the window at 1280x800, a 252px nav and a 48px header naming the page.
+  await expect.poll(() => box('.settings-layer')).toEqual([40, 40, 1200, 720])
+  expect(await box('.settings-side')).toEqual([41, 41, 252, 718])
+  expect(await box('.settings-head')).toEqual([293, 41, 946, 49])
+  await user.locator('.settings-head').getByRole('heading', { name: 'My account' }).waitFor()
+  // Only the user's sections; the server's live in their own layer.
+  await expect(user.getByRole('button', { name: 'Channels', exact: true }).count()).resolves.toBe(0)
+  await user.getByRole('button', { name: 'Appearance', exact: true }).click()
+  await user.locator('.settings-head').getByRole('heading', { name: 'Appearance' }).waitFor()
+  // A click on the dimmed app closes it, after its closing fade.
+  await page.evaluate(() => {
+    const scrim = document.querySelector('.settings-scrim')!
+    new MutationObserver(() => { if (scrim.hasAttribute('data-leaving')) (window as unknown as { faded: boolean }).faded = true }).observe(scrim, { attributes: true })
+  })
+  await page.mouse.click(10, 400)
+  await expect.poll(() => page.evaluate(() => (window as unknown as { faded?: boolean }).faded === true)).toBe(true)
+  await user.waitFor({ state: 'detached' })
+  expect(await page.evaluate(() => document.getElementById('root')?.hasAttribute('inert'))).toBe(false)
+
+  await openServerSettings(page)
+  await expect.poll(() => box('.settings-layer')).toEqual([0, 0, 1280, 800])
+  await expect(page.locator('.settings-scrim').count()).resolves.toBe(0)
+  await expect(dialog(page, 'Server settings').getByRole('button', { name: 'My account', exact: true }).count()).resolves.toBe(0)
+  await page.keyboard.press('Escape')
+  await dialog(page, 'Server settings').waitFor({ state: 'detached' })
+})
+
 // Verify persisted state in the same signed-in context. Only the application's reloads
 // should pass through the 800 ms delay above; test assertions should not create stale reloads.
 const state = async (p: Page) => {
@@ -141,7 +226,7 @@ const state = async (p: Page) => {
 }
 
 test.skipIf(!ready)('people: a role with a permission, a private channel, an invite with a code', async () => {
-  await openSettings(page)
+  await openServerSettings(page)
   const guildId = t.config.guildId
 
   // A role, then one of its permissions switched on.
@@ -174,7 +259,7 @@ test.skipIf(!ready)('people: a role with a permission, a private channel, an inv
   await channel.waitFor({ state: 'detached' })
 
   // An invite: a new person with a pairing code.
-  await openSettings(page)
+  await openServerSettings(page)
   await dialog(page).getByRole('button', { name: 'Members', exact: true }).click()
   await dialog(page).getByRole('button', { name: 'Invite a person' }).click()
   await dialog(page).getByRole('textbox', { name: 'Username' }).fill('sam')
@@ -194,6 +279,7 @@ test.skipIf(!ready)('settings: screenshots of every section, desktop 2x and phon
   await openSettings(p)
   const sections = ['My account', 'Devices', 'Notifications', 'Appearance', 'Privacy', 'Overview', 'Channels', 'Notification settings', 'Privacy settings', 'Roles', 'Members', 'Permissions']
   for (const [i, name] of sections.entries()) {
+    if (name === 'Overview') await openServerSettings(p)
     await dialog(p).getByRole('button', { name, exact: true }).click()
     if (name === 'Devices') await dialog(p).getByText('This device', { exact: true }).waitFor()
     await p.waitForTimeout(250)
@@ -204,6 +290,9 @@ test.skipIf(!ready)('settings: screenshots of every section, desktop 2x and phon
   await dialog(p).getByRole('button', { name: 'Edit new role' }).click()
   await p.waitForTimeout(250)
   await p.screenshot({ path: path.join(shots, 'settings-role-editor.png') })
+  await p.keyboard.press('Escape')
+  await dialog(p).waitFor({ state: 'detached' })
+  await openSettings(p)
   await dialog(p).getByRole('button', { name: 'Devices', exact: true }).click()
   await dialog(p).getByRole('button', { name: 'Pair another device' }).click()
   await dialog(p).getByRole('button', { name: 'Get a code' }).click()
@@ -211,6 +300,7 @@ test.skipIf(!ready)('settings: screenshots of every section, desktop 2x and phon
   await expect(dialog(p).getByRole('img', { name: 'Pairing QR code' }).isVisible()).resolves.toBe(true)
   await p.screenshot({ path: path.join(shots, 'settings-devices-pair.png') })
   // A project channel's own settings, from Channels.
+  await openServerSettings(p)
   await dialog(p).getByRole('button', { name: 'Channels', exact: true }).click()
   await dialog(p).getByRole('button', { name: 'Edit kimaki' }).click()
   const channel = dialog(p, 'Channel settings')

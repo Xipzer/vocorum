@@ -193,7 +193,9 @@ export async function doctor(paths: HubPaths, { repo = path.resolve(import.meta.
       const bots = (await hubDb.execute('SELECT machine FROM bots WHERE revoked_at IS NULL').catch(() => ({ rows: [] }))).rows.map((r) => String(r['machine']))
       add('bots', bots.length ? 'ok' : 'warn', bots.length ? `active: ${bots.join(', ')}` : 'no bots yet', bots.length ? undefined : 'vocorum kimaki setup <machine> (a Kimaki on this machine), or vocorum bots add <machine> --out <file> for another bot')
       // The browsers of an open computer share one device row; it is not a paired device.
-      const devices = Number((await hubDb.execute(`SELECT count(*) AS n FROM devices WHERE revoked_at IS NULL${config.localAccess === 'open' ? " AND name != 'This computer'" : ''}`).catch(() => ({ rows: [{ n: 0 }] }))).rows[0]?.['n'] ?? 0)
+      // A hub not yet started on this version has no mark: that row was found by its name.
+      const count = (open: string) => hubDb.execute(`SELECT count(*) AS n FROM devices WHERE revoked_at IS NULL${config.localAccess === 'open' ? open : ''}`)
+      const devices = Number((await count(' AND local = 0').catch(() => count(" AND name != 'This computer'")).catch(() => ({ rows: [{ n: 0 }] }))).rows[0]?.['n'] ?? 0)
       if (!listener && config.localAccess === 'open') add('devices', 'ok', 'this computer needs no pairing')
       else add('devices', devices ? 'ok' : 'warn', `${devices} paired`, devices ? undefined : 'vocorum pair phone')
       if (twin) {

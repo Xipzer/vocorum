@@ -137,12 +137,13 @@ test.skipIf(!ready)('history stays quiet on open and preserves the reader when o
     await p.mouse.move(box.x + 120, box.y + 140)
     await p.mouse.wheel(0, -10)
     await expect.poll(() => older).toBe(1)
-    await p.getByText('Loading earlier messages…').waitFor()
-    // The user moves a little more while the request is outstanding.
+    await p.getByRole('status', { name: 'Loading earlier messages' }).waitFor()
+    // The user moves a little more while the request is outstanding. Not the oldest row:
+    // its author header goes when the page above joins its group, and its text holds instead.
     const anchor = await log.evaluate((el) => {
       el.scrollTop = 41
       const top = el.getBoundingClientRect().top
-      const row = [...el.querySelectorAll('.message[id]')].find((n) => n.getBoundingClientRect().top >= top)!
+      const row = [...el.querySelectorAll('.message[id]')].slice(1).find((n) => n.getBoundingClientRect().top >= top)!
       return { id: row.id, y: row.getBoundingClientRect().top }
     })
     release()
@@ -151,6 +152,38 @@ test.skipIf(!ready)('history stays quiet on open and preserves the reader when o
     expect(older).toBe(1)
     await expect.poll(() => log.getAttribute('data-scrolling')).toBeNull()
   } finally { release(); await p.close() }
+})
+
+test.skipIf(!ready)('older history is asked for a screen or more before the top, and never while the scroll bar is held', async () => {
+  const p = await page.context().newPage()
+  let older = 0
+  try {
+    await p.route('**/client/channels/*/messages?**', async (r) => {
+      if (new URL(r.request().url()).searchParams.has('before')) older++
+      await r.continue()
+    })
+    await p.goto(`${origin}/#/c/${demo.kimaki.id}`)
+    await p.getByText('history line 259').waitFor()
+    const log = p.locator('.chat-history')
+    const box = (await log.boundingBox())!
+    // Held on the scroll bar and dragged to the very top: the list stays as it is.
+    await log.evaluate((el) => { el.scrollTop = el.clientHeight * 1.5 })
+    await p.mouse.move(box.x + box.width - 4, box.y + 200)
+    await p.mouse.down()
+    await log.evaluate((el) => { el.scrollTop = 0 })
+    await p.waitForTimeout(300)
+    expect(older).toBe(0)
+    expect(await log.locator('.message[id]').count()).toBe(50)
+    // Let go near the top: now the page comes in.
+    await p.mouse.up()
+    await expect.poll(() => older).toBe(1)
+    await expect.poll(() => log.locator('.message[id]').count()).toBe(100)
+    // A wheel turn upward a screen and a half below the top already asks for the next page.
+    await log.evaluate((el) => { el.scrollTop = el.clientHeight * 1.5 })
+    await p.mouse.move(box.x + 120, box.y + 140)
+    await p.mouse.wheel(0, -10)
+    await expect.poll(() => older).toBe(2)
+  } finally { await p.close() }
 })
 
 test.skipIf(!ready)('history read far back is let go when the channel is left', async () => {

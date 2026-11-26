@@ -1,6 +1,6 @@
 // App shell cache only. API, events and attachments always go to the network.
-const CACHE = 'vocorum-shell-v5'
-const SHELL = ['/', '/manifest.webmanifest', '/icon.svg', '/icon-192.png', '/fonts/inter-latin-wght.woff2']
+const CACHE = 'vocorum-shell-v6'
+const SHELL = ['/', '/theme.js', '/manifest.webmanifest', '/icon.svg', '/icon-192.png', '/fonts/inter-latin-wght.woff2']
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()))
@@ -26,6 +26,19 @@ self.addEventListener('fetch', (event) => {
           return response
         })
         .catch(() => caches.match('/')),
+    )
+    return
+  }
+  // The theme script runs before the first paint: fresh when online, cached when not.
+  if (url.pathname === '/theme.js') {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          const copy = response.clone()
+          if (response.ok) caches.open(CACHE).then((cache) => cache.put('/theme.js', copy))
+          return response
+        })
+        .catch(() => caches.match('/theme.js')),
     )
     return
   }

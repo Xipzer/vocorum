@@ -1,10 +1,11 @@
 // A modal a bot opened (interaction response type 9): text inputs, file
 // uploads and text displays, submitted back as a modal interaction.
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { api, type Component } from './api.ts'
 import { Markdown, type MarkdownContext } from './markdown.tsx'
 import { Icon } from './icons.tsx'
+import { leave } from './text.ts'
 
 export type OpenModal = { channelId: string; messageId?: string; data: { custom_id: string; title: string; components: Component[] } }
 
@@ -30,6 +31,8 @@ export function ModalDialog({ modal, ctx, onClose, onResult }: { modal: OpenModa
   const [files, setFiles] = useState<Record<string, File[]>>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const overlay = useRef<HTMLDivElement>(null)
+  const close = () => leave(overlay.current, onClose)
 
   const submit = async () => {
     setBusy(true)
@@ -62,7 +65,7 @@ export function ModalDialog({ modal, ctx, onClose, onResult }: { modal: OpenModa
   const invalid = list.some((f) => (f.kind === 'text' ? f.required && !values[f.customId]?.trim() : f.kind === 'file' ? f.required && !(files[f.customId]?.length ?? 0) : false))
 
   return (
-    <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div ref={overlay} className="overlay" onMouseDown={(e) => e.target === e.currentTarget && close()}>
       <form
         className="modal"
         onSubmit={(e) => {
@@ -73,7 +76,7 @@ export function ModalDialog({ modal, ctx, onClose, onResult }: { modal: OpenModa
         <div className="grab" />
         <div className="modal-header">
           <h2>{modal.data.title}</h2>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Close">
+          <button type="button" className="icon-button" onClick={close} aria-label="Close">
             <Icon name="close" size={18} />
           </button>
         </div>
@@ -109,10 +112,10 @@ export function ModalDialog({ modal, ctx, onClose, onResult }: { modal: OpenModa
           {error && <div className="error">{error}</div>}
         </div>
         <div className="modal-footer">
-          <button type="button" className="button" onClick={onClose}>
+          <button type="button" className="button medium" onClick={close}>
             Cancel
           </button>
-          <button type="submit" className="button primary" disabled={busy || invalid}>
+          <button type="submit" className="button medium primary" disabled={busy || invalid}>
             {busy ? 'Submitting…' : 'Submit'}
           </button>
         </div>

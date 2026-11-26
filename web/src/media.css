@@ -3,8 +3,8 @@
    Discord's geometry, our colours. */
 
 .message-body {
-  --card-bg: color-mix(in srgb, var(--backdrop, var(--bg-2)), #fff 4%);
-  --card-line: color-mix(in srgb, var(--backdrop, var(--bg-2)), #fff 8%);
+  --card-bg: var(--card-surface, color-mix(in srgb, var(--backdrop, var(--bg-2)), #fff 4%));
+  --card-line: var(--card-surface-line, color-mix(in srgb, var(--backdrop, var(--bg-2)), #fff 8%));
 }
 
 /* --- attachments */
@@ -13,7 +13,7 @@
   flex-direction: column;
   align-items: flex-start;
   flex-wrap: nowrap;
-  gap: 4px;
+  gap: 8px;
   margin-top: 4px;
   max-width: 550px;
 }
@@ -130,6 +130,11 @@
 .mosaic .media-cell {
   border-radius: 2px;
 }
+/* A picture smaller than its cell sits centred at its own size (its size is its cap). */
+.mosaic .media-open {
+  display: grid;
+  place-items: center;
+}
 .mosaic-row {
   display: grid;
   gap: 4px;
@@ -214,10 +219,11 @@
 }
 
 /* Files: Discord's card, 432 wide, with a download button. */
+/* 17px: Discord's 16 plus the 1px rule it draws as a border; ours is an inner ring. */
 .file-box {
   width: 432px;
   max-width: 100%;
-  padding: 16px;
+  padding: 17px;
   border-radius: var(--r-control);
   background: var(--card-bg);
   box-shadow: inset 0 0 0 1px var(--card-line);
@@ -290,7 +296,8 @@
 
 /* Text files: the first lines as code, expand in place. */
 .text-file {
-  width: 550px;
+  width: fit-content;
+  min-width: min(432px, 100%);
   max-width: 100%;
   border-radius: var(--r-control);
   overflow: hidden;
@@ -299,9 +306,9 @@
 }
 .text-file-body {
   margin: 0;
-  padding: 8px 12px;
+  padding: 16px;
   background: #050507;
-  font: 400 13px/18px var(--mono);
+  font: 400 12px/16px var(--mono);
   font-variant-ligatures: none;
   white-space: pre;
   overflow-x: auto;
@@ -314,17 +321,27 @@
 .text-file-foot {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 6px 4px 12px;
+  gap: 2px;
+  min-height: 65px;
+  padding: 12px 10px 12px 12px;
   border-top: 1px solid var(--card-line);
   min-width: 0;
 }
 .text-file-foot .icon-button {
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
+  color: var(--text);
 }
-.text-file-toggle {
-  margin-left: -6px;
+.text-file-foot .text-file-toggle {
+  width: 40px;
+  height: 40px;
+  margin-right: 6px;
+  background: var(--fill-hover);
+}
+@media (hover: hover) {
+  .text-file-foot .text-file-toggle:hover {
+    background: var(--fill-control-hover);
+  }
 }
 .text-file-toggle svg {
   transition: rotate var(--t-fast);
@@ -332,18 +349,26 @@
 .text-file.open .text-file-toggle svg {
   rotate: 180deg;
 }
+.text-file-meta {
+  flex: 1;
+  min-width: 0;
+  margin-right: 6px;
+  display: flex;
+  flex-direction: column;
+}
 .text-file-name {
   font: 500 14px/18px var(--font);
-  color: var(--text-strong);
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
 }
 .text-file-foot .file-bytes {
-  flex: 1;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  margin-left: 4px;
 }
 
 /* --- lightbox */
@@ -351,7 +376,7 @@
   position: fixed;
   inset: 0;
   z-index: 200;
-  background: rgb(0 0 0 / 0.9);
+  background: rgb(0 0 0 / 0.92);
   animation: lightbox-in var(--move) var(--ease-out);
 }
 @keyframes lightbox-in {
@@ -366,12 +391,12 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 0 12px 0 20px;
+  padding: 0 24px 0 20px;
   z-index: 2;
   background: linear-gradient(rgb(0 0 0 / 0.6), transparent);
 }
 .lightbox-name {
-  font: 600 14px/18px var(--font);
+  font: 500 16px/20px var(--font);
   color: var(--text-strong);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -401,7 +426,6 @@
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
-  border-radius: var(--r-inline);
 }
 .lightbox-stage img {
   cursor: zoom-in;
@@ -581,7 +605,14 @@
   align-items: center;
   gap: 8px;
   font: 500 12px/16px var(--font);
-  color: var(--text-muted);
+  color: var(--text);
+}
+/* A footer keeps its own line breaks, and a card that is only a footer sits tighter. */
+.embed-footer > span {
+  white-space: pre-wrap;
+}
+.embed-card > .embed-footer:first-child {
+  margin-top: 2px;
 }
 .embed-footer img {
   width: 20px;
@@ -670,6 +701,14 @@
   border-left-width: 2px;
   border-top-width: 2px;
   border-top-left-radius: 6px;
+}
+/* Desktop: the spine is centred on the 40px avatar and stops 4px above it, as in Discord. */
+@media (min-width: 768px) {
+  .message .reply-preview .reply-spine {
+    left: calc(-1 * var(--gutter, 72px) + 35px);
+    width: calc(var(--gutter, 72px) - 35px - 4px);
+    height: 10px;
+  }
 }
 .reply-avatar {
   display: inline-grid;
@@ -1032,18 +1071,49 @@
   min-height: 0;
 }
 
-/* Discord's geometry for the two jump bars: the new-messages strip is 24px with 8px
-   corners under the header; "older messages" is a floating centred pill with a solid
-   button, not a full-width strip. */
+/* Discord's geometry for the two jump bars: the new-messages strip hangs from the header,
+   34px with 8px lower corners and semibold 14px, "Mark As Read" at its right (desktop
+   capture at 1x); "older messages" is a floating centred pill with a solid button, not a
+   full-width strip. */
 .new-bar {
   left: 8px;
   right: 8px;
-  height: 24px;
+  height: 34px;
   border-radius: 0 0 8px 8px;
-  font: 500 14px/18px var(--font);
+  font: 600 14px/18px var(--font);
 }
-.new-bar-read {
-  font-weight: 600;
+.new-bar .new-bar-jump {
+  padding-left: 22px;
+}
+.new-bar .new-bar-read {
+  padding-right: 22px;
+}
+.new-bar-close {
+  display: none;
+}
+/* Touch: Discord iPad's bar (his crop at 2x), edge to edge under the header, 57.5pt tall,
+   semibold 16 at 21.5pt in, and a 14pt X of 2.5 strokes centred 27pt from the right. */
+@media (pointer: coarse) {
+  .new-bar {
+    left: 0;
+    right: 0;
+    height: 58px;
+    border-radius: 0;
+    box-shadow: none;
+    font: 600 16px/20px var(--font);
+  }
+  .new-bar .new-bar-read {
+    display: none;
+  }
+  .new-bar .new-bar-close {
+    display: grid;
+    place-items: center;
+    width: 54px;
+    padding: 0;
+  }
+  .new-bar-close svg {
+    stroke-width: 2.5;
+  }
 }
 .present-bar {
   left: 50%;
@@ -1089,6 +1159,44 @@
 }
 .present-bar span {
   flex: none;
+}
+
+/* Touch: Discord iOS's square jump button, in the composer's fill and line, its right edge on
+   the composer's and 8px above it. Measured from his iOS crop at 52pt to the composer:
+   36 square, 7 corners, a 1.75 arrow about 13 tall. */
+.present-button {
+  display: none;
+}
+@media (pointer: coarse) {
+  .present-bar {
+    display: none;
+  }
+  .present-button {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    display: grid;
+    place-items: center;
+    width: 36px;
+    height: 36px;
+    border: 1px solid var(--line-strong);
+    border-radius: 7px;
+    background: var(--bg-3);
+    color: var(--text-muted);
+    box-shadow: 0 2px 8px rgb(0 0 0 / 0.35);
+    animation: present-fade var(--move) var(--ease-out);
+  }
+}
+@media (pointer: coarse) and (min-width: 768px) {
+  .present-button {
+    background: color-mix(in srgb, var(--backdrop), #fff 5%);
+    border-color: color-mix(in srgb, var(--backdrop), #fff 9%);
+  }
+}
+@keyframes present-fade {
+  from {
+    opacity: 0;
+  }
 }
 
 /* Embeds the same way: the rule runs all round, the colour bar sits inside it. */

@@ -405,7 +405,7 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
   await store.migrate()
   try {
     // A first code only where a device can use one.
-    if (listener && (await store.listDevices()).filter((d) => !d.revokedAt && d.name !== 'This computer').length === 0) pairing = { code: await store.createPairing('first device', { ttlMs: 30 * 60_000 }), ttlMinutes: 30 }
+    if (listener && (await store.listDevices()).filter((d) => !d.revokedAt && !d.local).length === 0) pairing = { code: await store.createPairing('first device', { ttlMs: 30 * 60_000 }), ttlMinutes: 30 }
   } finally {
     store.close()
   }

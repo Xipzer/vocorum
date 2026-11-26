@@ -20,6 +20,9 @@ export const SESSION_COOKIE = '__Host-hub_session'
 // Open access on this computer runs over plain http://localhost, where Safari takes no Secure
 // (and so no __Host-) cookie. This one is only ever read on such a request (Hub.localOpen).
 export const LOCAL_COOKIE = 'hub_local_session'
+// The device row open access signs this computer's browsers in as: marked when it is made,
+// never by its name (a paired browser may be called "This computer" too).
+export const isLocalDevice = (d: DeviceRow, ownerUserId: string) => !d.revokedAt && d.local && (d.userId ?? ownerUserId) === ownerUserId
 
 const SESSION_TTL_MS = 30 * 24 * 3600_000
 const CHALLENGE_TTL_MS = 5 * 60_000
@@ -285,11 +288,17 @@ export class HubAuth {
 
   // Open access on this computer (Hub.localOpen): one device row stands for its browsers.
   async localSession(ownerUserId: string) {
-    const name = 'This computer'
     const devices = await this.store.listDevices()
-    const device = devices.find((d) => !d.revokedAt && d.kind === 'web' && d.name === name && (d.userId ?? ownerUserId) === ownerUserId) ?? (await this.store.createDevice(name, ownerUserId))
+    const device = devices.find((d) => isLocalDevice(d, ownerUserId)) ?? (await this.store.createDevice('This computer', ownerUserId, 'web', true))
     const session = await this.store.createSession(device.id, SESSION_TTL_MS)
     return { device, cookie: `${LOCAL_COOKIE}=${session.token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_TTL_MS / 1000}` }
+  }
+
+  // Signed in by open access, not a pairing: there is no session to end, it opens again.
+  isLocal(req: http.IncomingMessage) {
+    if (this.usesBearer(req)) return false
+    const cookies = parseCookies(req.headers.cookie)
+    return !cookies[SESSION_COOKIE] && Boolean(cookies[LOCAL_COOKIE]) && Boolean(this.options.localOpen?.(req))
   }
 
   async logout(req: http.IncomingMessage) {

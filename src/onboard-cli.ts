@@ -642,7 +642,7 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
         const { createClient } = await import('@libsql/client')
         const db = createClient({ url: `file:${paths.hubDb}` })
         const paired = await db
-          .execute({ sql: "SELECT count(*) AS n FROM devices d WHERE d.revoked_at IS NULL AND d.name != 'This computer' AND (d.user_id IS NULL OR d.user_id = ?) AND (d.kind = 'app' OR EXISTS (SELECT 1 FROM credentials c WHERE c.device_id = d.id))", args: [current.ownerUserId] })
+          .execute({ sql: "SELECT count(*) AS n FROM devices d WHERE d.revoked_at IS NULL AND (d.user_id IS NULL OR d.user_id = ?) AND (d.kind = 'app' OR EXISTS (SELECT 1 FROM credentials c WHERE c.device_id = d.id))", args: [current.ownerUserId] })
           .then((r) => Number(r.rows[0]?.['n'] ?? 0), () => 0)
           .finally(() => db.close())
         if (paired === 0) throw new Error('Nothing changed: none of your devices has finished pairing yet, so no browser could get in. Pair one first (vocorum pair <device>, then open the link on it and make the passkey), then run this again.')

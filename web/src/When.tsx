@@ -97,10 +97,10 @@ function WhenDialog({ spec, onClose }: { spec: WhenSpec; onClose: () => void }) 
           {error && <div className="error">{error}</div>}
         </div>
         <div className="modal-footer">
-          <button type="button" className="button" onClick={onClose}>
+          <button type="button" className="button medium" onClick={onClose}>
             Cancel
           </button>
-          <button type="submit" className="button primary" disabled={busy}>
+          <button type="submit" className="button medium primary" disabled={busy}>
             {spec.action}
           </button>
         </div>

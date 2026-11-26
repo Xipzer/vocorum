@@ -170,6 +170,51 @@ test.skipIf(!ready)('desktop: click the mic, see the timer and level, Enter send
   await context.close()
 })
 
+test.skipIf(!ready)('desktop: + opens a menu to upload, schedule or record; keys open, move and close it', async () => {
+  const context = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, viewport: { width: 1280, height: 800 }, serviceWorkers: 'block' })
+  const page = await context.newPage()
+  await pair(page)
+  await page.goto(`${origin}/#/c/${demo.thread.id}`)
+  const plus = page.getByRole('button', { name: 'Add to message' })
+  const menu = page.getByRole('menu')
+  await plus.focus()
+  await page.keyboard.press('Enter')
+  await expect(menu.getByRole('menuitem').allTextContents()).resolves.toEqual(['Upload a file', 'Schedule message', 'Record voice message'])
+  // Above the button, its left edge on the button's.
+  const [b, m] = [(await plus.boundingBox())!, (await menu.boundingBox())!]
+  expect(m.y + m.height).toBeLessThanOrEqual(b.y)
+  expect(Math.round(m.x)).toBe(Math.round(b.x))
+  await expect.poll(() => page.evaluate(() => document.activeElement?.textContent)).toBe('Upload a file')
+  await page.keyboard.press('ArrowDown')
+  await expect.poll(() => page.evaluate(() => document.activeElement?.textContent)).toBe('Schedule message')
+  await page.keyboard.press('Escape')
+  await menu.waitFor({ state: 'detached' })
+  await expect.poll(() => page.evaluate(() => document.activeElement?.getAttribute('aria-label'))).toBe('Add to message')
+
+  await page.keyboard.press(' ')
+  const chooser = page.waitForEvent('filechooser')
+  await menu.getByRole('menuitem', { name: 'Upload a file' }).click()
+  await chooser
+
+  await page.locator('.composer textarea').fill('Later, please')
+  await plus.click()
+  await menu.getByRole('menuitem', { name: 'Schedule message' }).click()
+  await page.getByRole('menuitem', { name: /In 1 hour/ }).waitFor()
+  await page.keyboard.press('Escape')
+  await page.getByRole('menu').waitFor({ state: 'detached' })
+
+  // Recording from the menu keeps the typed text and sends only the voice note.
+  const before = await voiceNotes(page).count()
+  await plus.click()
+  await menu.getByRole('menuitem', { name: 'Record voice message' }).click()
+  await page.locator('.recording-label').waitFor()
+  await page.waitForTimeout(1200)
+  await page.getByRole('button', { name: 'Send voice message' }).click()
+  await expect.poll(() => voiceNotes(page).count(), { timeout: 10_000 }).toBe(before + 1)
+  await expect(page.locator('.composer textarea').inputValue()).resolves.toBe('Later, please')
+  await context.close()
+})
+
 test.skipIf(!ready)('phone: hold the mic to record, release to send', async () => {
   const context = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, serviceWorkers: 'block' })
   const page = await context.newPage()

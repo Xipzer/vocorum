@@ -7,11 +7,13 @@ import { Icon, type IconName } from './icons.tsx'
 export type SheetAction = { label: string; icon?: IconName; run: () => void; red?: boolean; radio?: boolean; checked?: boolean; sub?: string }
 /** Where a menu opens: at a point (right-click, long press) or dropped from a control,
  *  8px below it and aligned to its start or end edge, like Discord's. */
-export type SheetAt = { x: number; y: number } | { rect: DOMRect; align: 'start' | 'end' }
-export type SheetSpec = { title: string; subtitle?: string; badge?: ReactNode; groups: SheetAction[][]; at?: SheetAt; plain?: boolean; /** A question before an action: the title stays on desktop too. */ confirm?: boolean }
+export type SheetAt = { x: number; y: number } | { rect: DOMRect; align: 'start' | 'end' } | { rect: DOMRect; side: 'left' | 'right' }
+export type SheetSpec = { title: string; subtitle?: string; badge?: ReactNode; groups: SheetAction[][]; at?: SheetAt; plain?: boolean; /** A question before an action: the title stays on desktop too. */ confirm?: boolean; /** A card (a profile) in place of the title and actions. */ card?: (finish: (run: () => void) => void) => ReactNode }
 
 /** A menu that drops from the clicked control. */
 export const below = (el: Element, align: 'start' | 'end' = 'end'): SheetAt => ({ rect: el.getBoundingClientRect(), align })
+/** A popout beside the clicked control, its top level with the control's. */
+export const beside = (el: Element, side: 'left' | 'right'): SheetAt => ({ rect: el.getBoundingClientRect(), side })
 
 // Whether the last input was a key or a pointer, to decide where focus goes when a menu opens.
 let lastInput: 'key' | 'pointer' = 'pointer'
@@ -56,9 +58,12 @@ export function Sheet({ spec, onClose, picker }: { spec: SheetSpec; onClose: () 
       after.current = null
       if (run) window.setTimeout(run, 0)
     }
+    // An open menu owns Esc and the arrows, so it hears them first (capture) and keeps them.
+    // A right-clicked message stays focused under its menu and takes the same keys for itself:
+    // left to bubble, they never reached the menu.
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { e.preventDefault(); close(); return }
-      if (picker && e.key === 'Tab') {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); return }
+      if ((picker || spec.card) && e.key === 'Tab') {
         const buttons = [...(panel.current?.querySelectorAll<HTMLElement>('button:not(:disabled)') ?? [])]
         if (!buttons.length) return
         if (e.shiftKey && document.activeElement === buttons[0]) { e.preventDefault(); buttons.at(-1)!.focus() }
@@ -69,14 +74,15 @@ export function Sheet({ spec, onClose, picker }: { spec: SheetSpec; onClose: () 
       const items = [...(panel.current?.querySelectorAll<HTMLElement>('.sheet-item:not(:disabled)') ?? [])]
       if (!items.length) return
       e.preventDefault()
+      e.stopPropagation()
       const i = items.indexOf(document.activeElement as HTMLElement)
       items[i < 0 ? 0 : (i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]!.focus()
     }
     window.addEventListener('popstate', onPop)
-    window.addEventListener('keydown', onKey)
+    window.addEventListener('keydown', onKey, true)
     return () => {
       window.removeEventListener('popstate', onPop)
-      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keydown', onKey, true)
       // A live edit may remove an open selector. Also tolerate the dev mount/unmount probe.
       if (picker) queueMicrotask(() => { if (!panel.current && history.state?.sheet === sheetId && location.href === url) history.back() })
     }
@@ -84,13 +90,21 @@ export function Sheet({ spec, onClose, picker }: { spec: SheetSpec; onClose: () 
   }, [])
 
   // Start on the current choice. On an action menu only move focus for keyboard input.
+  // Once placed: a desktop menu is hidden until then, and hidden buttons take no focus.
+  const placed = isPhone || pos !== null
+  const focused = useRef(false)
   useEffect(() => {
-    if (!picker && lastInput !== 'key') return
+    if (!placed || focused.current) return
+    focused.current = true
+    if (!picker && (spec.card || lastInput !== 'key')) {
+      if (spec.card) panel.current?.focus({ preventScroll: true })
+      return
+    }
     const current = panel.current?.querySelector<HTMLElement>('[aria-selected=true]')
     const first = panel.current?.querySelector<HTMLElement>('.sheet-item:not(:disabled), .choice-cancel')
     ;(current ?? first ?? panel.current)?.focus({ preventScroll: true })
     current?.scrollIntoView({ block: 'nearest' })
-  }, [])
+  }, [placed])
 
   // Desktop: open at the pointer, kept inside the window.
   const trigger = picker?.trigger
@@ -123,7 +137,10 @@ export function Sheet({ spec, onClose, picker }: { spec: SheetSpec; onClose: () 
     const { width, height } = el.getBoundingClientRect()
     const at = spec.at ?? { x: window.innerWidth / 2 - width / 2, y: window.innerHeight / 3 }
     const clampX = (x: number) => Math.min(Math.max(8, x), window.innerWidth - width - 8)
-    if ('rect' in at) {
+    if ('side' in at) {
+      const { rect, side } = at
+      setPos({ left: clampX(side === 'left' ? rect.left - 8 - width : rect.right + 8), top: Math.min(Math.max(8, rect.top), window.innerHeight - height - 8) })
+    } else if ('rect' in at) {
       // Below the control (above it if there's no room), its edge lined up with the control's.
       const { rect, align } = at
       const top = rect.bottom + 8 + height <= window.innerHeight - 8 ? rect.bottom + 8 : Math.max(8, rect.top - 8 - height)
@@ -148,8 +165,8 @@ export function Sheet({ spec, onClose, picker }: { spec: SheetSpec; onClose: () 
     <div className={`sheet-layer${isPhone ? ' phone' : ''}`} onPointerDown={(e) => e.target === e.currentTarget && close()} onContextMenu={(e) => e.preventDefault()}>
       <div
         ref={panel}
-        className={`sheet${spec.plain && !isPhone ? ' plain' : ''}${spec.confirm ? ' confirm' : ''}${picker ? ' choice-sheet' : ''}`}
-        role={picker ? 'dialog' : 'menu'} aria-modal={picker ? true : undefined} aria-label={picker ? spec.title : undefined} tabIndex={picker ? -1 : undefined}
+        className={`sheet${spec.plain && !isPhone ? ' plain' : ''}${spec.confirm ? ' confirm' : ''}${picker ? ' choice-sheet' : ''}${spec.card ? ' profile-sheet' : ''}`}
+        role={picker || spec.card ? 'dialog' : 'menu'} aria-modal={picker || spec.card ? true : undefined} aria-label={picker || spec.card ? spec.title : undefined} tabIndex={picker || spec.card ? -1 : undefined}
         style={isPhone ? { transform: offset ? `translateY(${offset}px)` : undefined, transition: drag.current ? 'none' : undefined } : (pos ?? { visibility: 'hidden' })}
         onPointerDown={(e) => {
           if (!isPhone || (e.target as HTMLElement).closest('button')) return
@@ -173,7 +190,8 @@ export function Sheet({ spec, onClose, picker }: { spec: SheetSpec; onClose: () 
         onPointerCancel={() => { drag.current = null; setOffset(0) }}
       >
         {isPhone && <div className="grab" />}
-        <div className="sheet-head" hidden={spec.plain && !isPhone}>
+        {spec.card?.(finish)}
+        <div className="sheet-head" hidden={(spec.plain && !isPhone) || Boolean(spec.card)}>
           {spec.badge && <div className="sheet-badge">{spec.badge}</div>}
           <div className="sheet-titles">
             <div className="sheet-title">{spec.title}</div>

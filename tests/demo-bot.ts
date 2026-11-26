@@ -129,7 +129,9 @@ export async function startDemoBot(hub: Hub) {
     if (message.author.bot || message.channel.id !== thread.id) return
     await thread.sendTyping()
     await new Promise((resolve) => setTimeout(resolve, 300))
-    await thread.send(`Got it: ${message.content || 'your voice message'}\n-# *kimaki ⋅ main ⋅ <1s ⋅ 12% ⋅ claude-opus-5-5*`)
+    // A test may end and stop the bot during that pause; a reply then has nowhere to go.
+    if (!bot.isReady()) return
+    await thread.send(`Got it: ${message.content || 'your voice message'}\n-# *kimaki ⋅ main ⋅ <1s ⋅ 12% ⋅ claude-opus-5-5*`).catch(() => {})
   })
 
   return { bot, kimaki, website, thread, stop: () => bot.destroy() }

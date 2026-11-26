@@ -1,20 +1,21 @@
-// Settings like Discord's: a full-screen layer with grouped sections on the left
-// and one section on the right (Esc or the close button leaves). On phones it is
-// a list that pushes a section, like Discord on iOS. Two layers share the shell:
-// user and server settings, and one channel's settings (Discord's Edit Channel).
+// Settings like Discord's: grouped sections on the left and one section on the right
+// (Esc or the close button leaves). User settings are a centred dialog, server and
+// channel settings a full-screen layer. On phones it is a list that pushes a section,
+// like Discord on iOS. Two layers share the shell: user and server settings, and one
+// channel's settings (Discord's Edit Channel).
 
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { LoadingMark } from './components.tsx'
 import { createPortal } from 'react-dom'
-import { api, type Channel, type DeviceInfo, type HubState, type NotifyLevel, type User } from './api.ts'
-import { applyAccent } from './App.tsx'
+import { api, signedIn, type Channel, type DeviceInfo, type HubState, type NotifyLevel, type User } from './api.ts'
+import { applyAccent, applyTheme, savedTheme, type Theme } from './App.tsx'
 import { resetColumns, useColumns } from './columns.ts'
-import { Icon } from './icons.tsx'
+import { Icon, type IconName } from './icons.tsx'
 import { disablePush, effective, enablePush, pushSupported } from './notify.ts'
 import { desktopUpdates, UpdatesPage } from './UpdateCheck.tsx'
 import { sessionActions } from './Sheet.tsx'
 import { store, THREAD_TYPES, useStore } from './store.ts'
-import { plain } from './text.ts'
+import { leave, plain } from './text.ts'
 import { ago, Confirm, currentGuild, Feedback, Group, hex, ImagePicker, Item, message, mutedText, Page, Pending, Radios, Switch, TextSetting, useFeedback } from './SettingsKit.tsx'
 import { ChannelPermissionsPage, MembersPage, PairDevice, RolesPage, ServerPermissionsPage } from './SettingsPeople.tsx'
 import { can, P } from './perms.ts'
@@ -36,7 +37,7 @@ const CHANNEL_TYPES: Array<{ id: 0 | 2 | 5 | 15; label: string }> = [
   { id: 15, label: 'Forum' },
 ]
 
-type NavItem = { id: string; label: string; red?: boolean; run?: () => void }
+type NavItem = { id: string; label: string; icon?: IconName; red?: boolean; run?: () => void }
 type NavGroup = { heading?: string; items: NavItem[] }
 
 const PHONE = '(max-width: 767px)'
@@ -53,14 +54,21 @@ function usePhone() {
 
 // --- the shell
 
-function Shell({ label, groups, section, onSection, title, onClose, children }: { label: string; groups: NavGroup[]; section: string | null; onSection: (id: string | null) => void; title: string; onClose: () => void; children: ReactNode }) {
+function Shell({ label, groups, section, onSection, title, onClose, dialog, children }: { label: string; groups: NavGroup[]; section: string | null; onSection: (id: string | null) => void; title: string; onClose: () => void; dialog?: boolean; children: ReactNode }) {
   const phone = usePhone()
   const layer = useRef<HTMLDivElement>(null)
   const closeRef = useRef(onClose)
   closeRef.current = onClose
+  // The user settings dialog fades with its scrim; the full-screen layer on its own.
+  const scrim = useRef<HTMLDivElement>(null)
+  // The app behind is usable again as soon as the layer starts to fade.
+  const shut = () => {
+    document.getElementById('root')?.removeAttribute('inert')
+    leave(scrim.current ?? layer.current, () => closeRef.current())
+  }
   const close = () => {
     if (history.state?.settings) history.back()
-    else closeRef.current()
+    else shut()
   }
 
   // Modal: the app behind is inert, phone Back and Esc leave, focus comes back after.
@@ -69,7 +77,7 @@ function Shell({ label, groups, section, onSection, title, onClose, children }: 
     const before = document.activeElement as HTMLElement | null
     root?.setAttribute('inert', '')
     history.pushState({ settings: true }, '')
-    const onPop = () => closeRef.current()
+    const onPop = shut
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       e.preventDefault()
@@ -143,29 +151,56 @@ function Shell({ label, groups, section, onSection, title, onClose, children }: 
       document.body,
     )
 
+  const side = (
+    <div className="settings-side">
+      <nav className="settings-nav" aria-label={`${label} sections`}>
+        {groups.map((group, i) => (
+          <div key={i} className="settings-nav-group">
+            {group.heading && <div className="settings-nav-head">{group.heading}</div>}
+            {group.items.map((item) => (
+              <button key={item.id} className={`settings-nav-item${item.red ? ' red' : ''}`} aria-current={item.id === section ? 'page' : undefined} onClick={() => pick(item)}>
+                {item.icon && <Icon name={item.icon} size={20} />}
+                <span>{item.label}</span>
+              </button>
+            ))}
+          </div>
+        ))}
+      </nav>
+    </div>
+  )
+
+  // User settings on desktop: Discord's centred dialog over the dimmed app; a click outside closes it.
+  if (dialog)
+    return createPortal(
+      <div ref={scrim} className="settings-scrim" onClick={(e) => e.target === e.currentTarget && close()}>
+        <div ref={layer} className="settings-layer dialog" role="dialog" aria-modal="true" aria-label={label}>
+          {side}
+          <div className="settings-main">
+            <header className="settings-head">
+              <h2>{items.find((i) => i.id === section)?.label ?? title}</h2>
+              <button className="icon-button" onClick={close} aria-label={`Close ${label.toLowerCase()}`} title="Close (Esc)">
+                <Icon name="close" size={24} />
+              </button>
+            </header>
+            <div className="settings-body" key={section}>
+              <div className="settings-content">{children}</div>
+            </div>
+          </div>
+        </div>
+      </div>,
+      document.body,
+    )
+
   return createPortal(
     <div ref={layer} className="settings-layer" role="dialog" aria-modal="true" aria-label={label}>
-      <div className="settings-side">
-        <nav className="settings-nav" aria-label={`${label} sections`}>
-          {groups.map((group, i) => (
-            <div key={i} className="settings-nav-group">
-              {group.heading && <div className="settings-nav-head">{group.heading}</div>}
-              {group.items.map((item) => (
-                <button key={item.id} className={`settings-nav-item${item.red ? ' red' : ''}`} aria-current={item.id === section ? 'page' : undefined} onClick={() => pick(item)}>
-                  {item.label}
-                </button>
-              ))}
-            </div>
-          ))}
-        </nav>
-      </div>
+      {side}
       <div className="settings-main">
         <div className="settings-content" key={section}>
           {children}
         </div>
         <div className="settings-tools">
           <button className="settings-close" onClick={close} aria-label={`Close ${label.toLowerCase()}`} title="Close (Esc)">
-            <Icon name="close" size={18} />
+            <Icon name="close" size={22} />
           </button>
           <span aria-hidden="true">Esc</span>
         </div>
@@ -208,7 +243,7 @@ function AccountPage({ state }: { state: HubState }) {
         <Item label="Avatar" note="PNG, JPEG, GIF or WebP, up to 4 MB.">
           <div className="settings-actions">
             {me?.avatar && (
-              <button className="button" onClick={() => void avatar.run(() => api.setAvatar(null).then(applyUser), 'Avatar removed.')}>
+              <button className="button medium" onClick={() => void avatar.run(() => api.setAvatar(null).then(applyUser), 'Avatar removed.')}>
                 Remove
               </button>
             )}
@@ -220,12 +255,12 @@ function AccountPage({ state }: { state: HubState }) {
           <div className="settings-actions">
             <input className="settings-color" type="color" value={color ?? current ?? '#e3e3e9'} aria-label="Name colour" onChange={(e) => setColor(e.target.value)} />
             {color !== null && color !== current && (
-              <button className="button primary" onClick={() => void colour.run(() => api.patchMe({ color: parseInt(color.slice(1), 16) }).then(applyUser).then(() => setColor(null)))}>
+              <button className="button medium primary" onClick={() => void colour.run(() => api.patchMe({ color: parseInt(color.slice(1), 16) }).then(applyUser).then(() => setColor(null)))}>
                 Save colour
               </button>
             )}
             {current && (
-              <button className="button" onClick={() => void colour.run(() => api.patchMe({ color: null }).then(applyUser).then(() => setColor(null)))}>
+              <button className="button medium" onClick={() => void colour.run(() => api.patchMe({ color: null }).then(applyUser).then(() => setColor(null)))}>
                 Reset
               </button>
             )}
@@ -279,7 +314,7 @@ function DevicesPage() {
                       if (d.current) void store.loadState()
                     }}
                   />
-                  <button className="button" onClick={() => setRenaming(null)}>
+                  <button className="button medium" onClick={() => setRenaming(null)}>
                     Cancel
                   </button>
                 </div>
@@ -294,17 +329,20 @@ function DevicesPage() {
                       {d.current && <span className="settings-tag">This device</span>}
                     </div>
                     <div className="settings-item-note">
-                      {d.online ? 'Online now' : `Last seen ${ago(d.last_seen_at)}`} · {d.push ? 'Notifications on' : 'Notifications off'} · Added {ago(d.created_at)}
+                      {d.open ? 'No sign-in needed: any browser on this computer opens the hub' : d.online ? 'Online now' : `Last seen ${ago(d.last_seen_at)}`} · {d.push ? 'Notifications on' : 'Notifications off'}{!d.open && ` · Added ${ago(d.created_at)}`}
                     </div>
                   </div>
-                  <div className="settings-actions">
-                    <button className="button" onClick={() => setRenaming(d.id)}>
-                      Rename
-                    </button>
-                    <button className="button danger" onClick={() => setRevoking(d.id)}>
-                      Sign out
-                    </button>
-                  </div>
+                  {/* Open access signs in again at once, and finds this row by its name. */}
+                  {!d.open && (
+                    <div className="settings-actions">
+                      <button className="button small" onClick={() => setRenaming(d.id)}>
+                        Rename
+                      </button>
+                      <button className="button small soft-danger" onClick={() => setRevoking(d.id)}>
+                        Sign out
+                      </button>
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -360,7 +398,7 @@ function Overrides({ state, guildId }: { state: HubState; guildId?: string }) {
                   <div className="settings-label">{scope.name}</div>
                   <div className="settings-item-note">{[scope.where, s.level ? LEVEL_TEXT[s.level] : null, mutedText(s.muted_until)].filter(Boolean).join(' · ')}</div>
                 </div>
-                <button className="button" onClick={() => void store.setNotification(id, { level: null, muted_until: null })} aria-label={`Reset ${scope.name}`}>
+                <button className="button small" onClick={() => void store.setNotification(id, { level: null, muted_until: null })} aria-label={`Reset ${scope.name}`}>
                   Reset
                 </button>
               </div>
@@ -394,7 +432,7 @@ function PushGroup({ state }: { state: HubState }) {
       </Item>
       {on && (
         <Item label="Test" note="Sends a notification to this device now.">
-          <button className="button" onClick={() => void feedback.run(async () => {
+          <button className="button medium" onClick={() => void feedback.run(async () => {
             const r = await api.pushTest()
             if (!r.sent) throw new Error('The test could not be delivered.')
           }, 'Test sent to this device.')}>
@@ -418,7 +456,34 @@ function NotificationsPage({ state }: { state: HubState }) {
   )
 }
 
+// Each tile previews its theme: the frame colour on the left, the chat on the right, the accent as a dot.
+const THEMES: Array<{ id: Theme; label: string; frame: string; chat: string; accent: string }> = [
+  { id: 'vocorum', label: 'Vocorum', frame: '#060608', chat: '#0d0d10', accent: 'var(--vocorum-accent)' },
+  { id: 'og', label: 'OG', frame: '#121214', chat: '#1a1a1e', accent: '#5865f2' },
+]
+
+function ThemeTiles({ value, onChange }: { value: Theme; onChange: (theme: Theme) => void }) {
+  return (
+    <div className="settings-themes" role="radiogroup" aria-label="Theme">
+      {THEMES.map((t) => (
+        <label key={t.id} className={`settings-theme${value === t.id ? ' on' : ''}`}>
+          <input type="radio" name="theme" value={t.id} checked={value === t.id} onChange={() => onChange(t.id)} />
+          <span className="settings-theme-tile" aria-hidden="true" style={{ '--tile-frame': t.frame, '--tile-chat': t.chat, '--tile-accent': t.accent } as CSSProperties}>
+            {value === t.id && (
+              <svg className="settings-theme-check" viewBox="0 0 24 24">
+                <path d="M6 12.5l4 4L18 8" />
+              </svg>
+            )}
+          </span>
+          <span className="settings-theme-label">{t.label}</span>
+        </label>
+      ))}
+    </div>
+  )
+}
+
 function AppearancePage() {
+  const [theme, setTheme] = useState(savedTheme)
   const [accent, setAccent] = useState(localStorage.getItem('accent') === 'pink' ? 'pink' : 'cyan')
   const columns = useColumns()
   const [reduced, setReduced] = useState(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches)
@@ -433,24 +498,35 @@ function AppearancePage() {
     localStorage.setItem('accent', value)
     applyAccent(value)
   }
+  const pickTheme = (value: Theme) => {
+    setTheme(value)
+    if (value === 'og') localStorage.setItem('theme', 'og')
+    else localStorage.removeItem('theme')
+    applyTheme(value)
+  }
   const side = columns.side
   return (
     <Page title="Appearance">
-      <Group title="Accent colour" note="Used for the selection, focus and primary buttons. Saved on this device.">
-        <Radios
-          name="accent"
-          label="Accent colour"
-          value={accent}
-          onChange={(v) => pick(v as 'cyan' | 'pink')}
-          options={[
-            { id: 'cyan', label: 'Cyber cyan', swatch: 'var(--cyan)' },
-            { id: 'pink', label: 'Hyper pink', swatch: 'var(--pink)' },
-          ]}
-        />
+      <Group title="Themes" note="Vocorum is the default look. OG is Discord’s dark colour scheme. Saved on this device.">
+        <ThemeTiles value={theme} onChange={pickTheme} />
       </Group>
+      {theme === 'vocorum' && (
+        <Group title="Accent colour" note="Used for the selection, focus and primary buttons in the Vocorum theme. Saved on this device.">
+          <Radios
+            name="accent"
+            label="Accent colour"
+            value={accent}
+            onChange={(v) => pick(v as 'cyan' | 'pink')}
+            options={[
+              { id: 'cyan', label: 'Cyber cyan', swatch: 'var(--cyan)' },
+              { id: 'pink', label: 'Hyper pink', swatch: 'var(--pink)' },
+            ]}
+          />
+        </Group>
+      )}
       <Group title="Layout">
         <Item label="Column widths" note={`Channel list ${side.collapsed ? 'folded' : `${side.width} px`}, server list ${columns.rail.collapsed ? 'folded' : 'open'}. Reset puts both back open at their default widths.`}>
-          <button className="button" onClick={resetColumns}>
+          <button className="button medium" onClick={resetColumns}>
             Reset
           </button>
         </Item>
@@ -499,9 +575,9 @@ function ServerPage({ state }: { state: HubState }) {
             <div className="settings-label">Server icon</div>
             <div className="settings-item-note">PNG, JPEG, GIF or WebP, up to 4 MB. Square works best.</div>
             <div className="settings-actions">
-              <ImagePicker label={guild.icon ? 'Change icon' : 'Upload icon'} onPick={upload} disabled={!allowed} />
+              <ImagePicker label={guild.icon ? 'Change icon' : 'Upload icon'} onPick={upload} disabled={!allowed} size="small" />
               {guild.icon && allowed && (
-                <button className="button" onClick={() => void icon.run(() => api.setGuildIcon(guild.id, null).then(applyGuild), 'Icon removed.')}>
+                <button className="button small soft-danger" onClick={() => void icon.run(() => api.setGuildIcon(guild.id, null).then(applyGuild), 'Icon removed.')}>
                   Remove
                 </button>
               )}
@@ -575,10 +651,10 @@ function CreateChannel({ guildId, categories, category, onDone }: { guildId: str
       </Item>
       <Feedback text={feedback.text} />
       <div className="settings-actions">
-        <button type="button" className="button" onClick={onDone}>
+        <button type="button" className="button medium" onClick={onDone}>
           Cancel
         </button>
-        <button type="submit" className="button primary" disabled={!name.trim()}>
+        <button type="submit" className="button medium primary" disabled={!name.trim()}>
           Create
         </button>
       </div>
@@ -630,10 +706,10 @@ function ChannelsPage({ state }: { state: HubState }) {
           <CreateChannel guildId={guild.id} categories={categories} category={creating === 'category'} onDone={() => setCreating(null)} />
         ) : (
           <div className="settings-actions">
-            <button className="button primary" onClick={() => setCreating('channel')}>
+            <button className="button medium primary" onClick={() => setCreating('channel')}>
               Create channel
             </button>
-            <button className="button" onClick={() => setCreating('category')}>
+            <button className="button medium" onClick={() => setCreating('category')}>
               Create category
             </button>
           </div>
@@ -675,7 +751,7 @@ function MuteControl({ scopeId, muted, label }: { scopeId: string; muted: string
     <>
       <Item label={muted ?? 'Not muted'}>
         {muted ? (
-          <button className="button" onClick={() => set(null)}>
+          <button className="button medium" onClick={() => set(null)}>
             Unmute
           </button>
         ) : (
@@ -695,21 +771,21 @@ function MuteControl({ scopeId, muted, label }: { scopeId: string; muted: string
 }
 
 const USER_SECTIONS: NavItem[] = [
-  { id: 'account', label: 'My account' },
-  { id: 'devices', label: 'Devices' },
-  { id: 'notifications', label: 'Notifications' },
-  { id: 'appearance', label: 'Appearance' },
-  { id: 'updates', label: 'Updates' },
-  { id: 'privacy', label: 'Privacy' },
+  { id: 'account', label: 'My account', icon: 'user' },
+  { id: 'devices', label: 'Devices', icon: 'phone' },
+  { id: 'notifications', label: 'Notifications', icon: 'bell' },
+  { id: 'appearance', label: 'Appearance', icon: 'palette' },
+  { id: 'updates', label: 'Updates', icon: 'download' },
+  { id: 'privacy', label: 'Privacy', icon: 'eye' },
 ]
 const SERVER_SECTIONS: NavItem[] = [
-  { id: 'server', label: 'Overview' },
-  { id: 'channels', label: 'Channels' },
-  { id: 'server-notifications', label: 'Notification settings' },
-  { id: 'server-privacy', label: 'Privacy settings' },
-  { id: 'roles', label: 'Roles' },
-  { id: 'members', label: 'Members' },
-  { id: 'permissions', label: 'Permissions' },
+  { id: 'server', label: 'Overview', icon: 'server' },
+  { id: 'channels', label: 'Channels', icon: 'hash' },
+  { id: 'server-notifications', label: 'Notification settings', icon: 'bell' },
+  { id: 'server-privacy', label: 'Privacy settings', icon: 'eye' },
+  { id: 'roles', label: 'Roles', icon: 'shield' },
+  { id: 'members', label: 'Members', icon: 'members' },
+  { id: 'permissions', label: 'Permissions', icon: 'key' },
 ]
 const ALIASES: Record<string, string> = { overview: 'server', profile: 'account', 'my-account': 'account' }
 const toSection = (id?: string) => {
@@ -724,13 +800,17 @@ export function Settings({ initial, onClose }: { initial?: string; onClose: () =
   if (!state) return null
   const section = picked ?? (phone ? null : 'account')
   const guild = currentGuild(state)
-  const groups: NavGroup[] = [
+  const user: NavGroup[] = [
     // Updates: this app's on desktop, the hub's own for its owner.
     { heading: 'User settings', items: USER_SECTIONS.filter((i) => i.id !== 'updates' || desktopUpdates || state.hub_owner === true) },
-    // Channels, roles and permissions only for people who may manage them, like Discord.
-    { heading: guild.name, items: SERVER_SECTIONS.filter((i) => (i.id === 'channels' ? can(P.MANAGE_CHANNELS, null, guild.id) : i.id === 'roles' || i.id === 'permissions' ? can(P.MANAGE_ROLES, null, guild.id) : true)) },
-    { items: [{ id: 'signout', label: 'Sign out', red: true, run: () => void api.logout().then(() => location.reload()) }] },
+    ...(signedIn.local ? [] : [{ items: [{ id: 'signout', label: 'Sign out', icon: 'signout' as const, red: true, run: () => void api.logout().then(() => location.reload()) }] }]),
   ]
+  // Channels, roles and permissions only for people who may manage them, like Discord.
+  const server: NavGroup = { heading: guild.name, items: SERVER_SECTIONS.filter((i) => (i.id === 'channels' ? can(P.MANAGE_CHANNELS, null, guild.id) : i.id === 'roles' || i.id === 'permissions' ? can(P.MANAGE_ROLES, null, guild.id) : true)) }
+  // Desktop splits them as Discord does: user settings in a dialog, server settings full-screen
+  // (opened from the server menu). Phones keep one list with both.
+  const serverSection = SERVER_SECTIONS.some((i) => i.id === section)
+  const groups: NavGroup[] = phone ? [user[0]!, server, ...user.slice(1)] : serverSection ? [server] : user
   const page =
     section === 'account' ? <AccountPage state={state} />
     : section === 'devices' ? <DevicesPage />
@@ -747,7 +827,7 @@ export function Settings({ initial, onClose }: { initial?: string; onClose: () =
     : section === 'permissions' ? <ServerPermissionsPage state={state} />
     : null
   return (
-    <Shell label="Settings" groups={groups} section={section} onSection={setPicked} title="Settings" onClose={onClose}>
+    <Shell label={phone ? 'Settings' : serverSection ? 'Server settings' : 'User settings'} groups={groups} section={section} onSection={setPicked} title="Settings" onClose={onClose} dialog={!phone && !serverSection}>
       {page}
     </Shell>
   )
@@ -884,7 +964,7 @@ function ArchivePage({ channel }: { channel: Channel }) {
     <Page title="Archive">
       <Group title="This thread" note="Archived threads leave the channel list and come back when someone posts.">
         <Item label={archived ? 'Archived' : 'Active'}>
-          <button className="button" onClick={() => void feedback.run(() => api.patchThread(channel.id, { archived: !archived }).then((c) => store.apply('THREAD_UPDATE', c)))}>
+          <button className="button medium" onClick={() => void feedback.run(() => api.patchThread(channel.id, { archived: !archived }).then((c) => store.apply('THREAD_UPDATE', c)))}>
             {archived ? 'Unarchive' : 'Archive now'}
           </button>
         </Item>
@@ -941,7 +1021,7 @@ function DeletePage({ state, channel }: { state: HubState; channel: Channel }) {
         </label>
         <Feedback text={feedback.text} />
         <div className="settings-actions">
-          <button className="button danger-fill" disabled={typed !== name} onClick={remove}>
+          <button className="button medium danger-fill" disabled={typed !== name} onClick={remove}>
             Delete {kind}
           </button>
         </div>
@@ -970,15 +1050,15 @@ export function ChannelSettings({ channelId, initial, onClose }: { channelId: st
   const section = picked ?? (phone ? null : 'overview')
   const name = thread ? plain(channel.name ?? '') || 'untitled' : category ? (channel.name ?? '') : `#${channel.name}`
   const items: NavItem[] = [
-    { id: 'overview', label: 'Overview' },
-    { id: 'notifications', label: 'Notifications' },
-    ...(category ? [] : [{ id: 'output', label: 'Output view' }]),
+    { id: 'overview', label: 'Overview', icon: 'info' },
+    { id: 'notifications', label: 'Notifications', icon: 'bell' },
+    ...(category ? [] : [{ id: 'output', label: 'Output view', icon: 'feed' as const }]),
     // Overrides are for people who can change them (Discord shows the page to them only).
-    ...(can(P.MANAGE_ROLES, channel) ? [{ id: 'permissions', label: 'Permissions' }] : []),
-    ...(thread ? [{ id: 'archive', label: 'Archive' }] : []),
+    ...(can(P.MANAGE_ROLES, channel) ? [{ id: 'permissions', label: 'Permissions', icon: 'key' as const }] : []),
+    ...(thread ? [{ id: 'archive', label: 'Archive', icon: 'archive' as const }] : []),
   ]
   const manage = can(thread ? P.MANAGE_THREADS : P.MANAGE_CHANNELS, channel)
-  const groups: NavGroup[] = [{ heading: name, items }, ...(manage ? [{ items: [{ id: 'delete', label: `Delete ${thread ? 'thread' : category ? 'category' : 'channel'}`, red: true }] }] : [])]
+  const groups: NavGroup[] = [{ heading: name, items }, ...(manage ? [{ items: [{ id: 'delete', label: `Delete ${thread ? 'thread' : category ? 'category' : 'channel'}`, icon: 'trash' as const, red: true }] }] : [])]
   const page =
     section === 'overview' ? <ChannelOverview state={state} channel={channel} />
     : section === 'notifications' ? <ChannelNotifications state={state} channel={channel} />
@@ -1006,6 +1086,7 @@ export function SettingsHost() {
     }
   }, [])
   if (!open) return null
-  const close = () => setOpen(null)
+  // Only this layer: a closing fade that ends after another layer opened leaves that one alone.
+  const close = () => setOpen((now) => (now?.n === open.n ? null : now))
   return open.kind === 'user' ? <Settings key={open.n} initial={open.section} onClose={close} /> : <ChannelSettings key={open.n} channelId={open.id} onClose={close} />
 }

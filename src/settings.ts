@@ -6,7 +6,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import type http from 'node:http'
 import path from 'node:path'
-import { HttpError } from './auth.ts'
+import { HttpError, isLocalDevice } from './auth.ts'
 import { match, readBody, readJson } from './http.ts'
 import type { Hub } from './hub.ts'
 import { P, parseBits } from './access.ts'
@@ -196,8 +196,10 @@ export class Settings {
     // An app is notified over its socket, so it has push while connected.
     const pushed = new Set((await this.hub.store.pushSubscriptions()).map((s) => s.deviceId))
     const devices = (await this.hub.store.listDevices()).filter((d) => !d.revokedAt && this.hub.userOf(d) === v.userId)
+    const open = this.hub.options.config.localAccess === 'open'
     return {
-      devices: devices.map((d) => ({ id: d.id, name: d.name, created_at: d.createdAt, last_seen_at: d.lastSeenAt, kind: d.kind, current: d.id === v.device.id, online: online.has(d.id), push: pushed.has(d.id) || (d.kind === 'app' && online.has(d.id)) })),
+      // open: the row open access signs this computer's browsers in as; no pairing to undo.
+      devices: devices.map((d) => ({ id: d.id, name: d.name, created_at: d.createdAt, last_seen_at: d.lastSeenAt, kind: d.kind, current: d.id === v.device.id, online: online.has(d.id), push: pushed.has(d.id) || (d.kind === 'app' && online.has(d.id)), ...(open && isLocalDevice(d, this.hub.options.config.ownerUserId) && { open: true }) })),
     }
   }
 

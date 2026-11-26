@@ -1,0 +1,137 @@
+/* Profile card, as Discord's popout: 300 wide, 105 banner, 80 avatar in a 6px ring 61 from
+   the top, 20px bold name, 14px username, 24px chips, a full-width 32px button 16 from the foot. */
+.sheet.profile-sheet {
+  width: 300px;
+  max-width: 300px;
+  padding: 0;
+  overflow: hidden;
+  --backdrop: var(--sheet);
+}
+.sheet-layer .sheet.profile-sheet .sheet-head {
+  display: none;
+}
+.profile-banner {
+  height: 105px;
+}
+.profile-avatar {
+  position: absolute;
+  left: 9px;
+  top: 54px;
+  padding: 6px;
+  border-radius: 50%;
+  background: var(--sheet);
+}
+.profile-avatar .avatar.panel {
+  width: 80px;
+  height: 80px;
+  font-size: 32px;
+}
+.profile-avatar .presence {
+  right: 8px;
+  bottom: 8px;
+  width: 16px;
+  height: 16px;
+  box-shadow: 0 0 0 5px var(--sheet);
+}
+.profile-body {
+  padding: 45px 15px 15px;
+}
+.profile-name {
+  font: 700 20px/24px var(--font);
+  color: var(--text-strong);
+  overflow-wrap: anywhere;
+}
+.profile-user {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font: 400 14px/18px var(--font);
+  color: var(--text);
+}
+.profile-presence {
+  margin-top: 12px;
+  font: 400 14px/18px var(--font);
+  color: var(--text-muted);
+}
+.profile-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 12px;
+}
+.profile-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  max-width: 100%;
+  padding: 0 8px 0 6px;
+  border: 1px solid var(--line-raised);
+  border-radius: var(--r-inline);
+  font: 500 12px/16px var(--font);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chip-dot {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.chip-dot.online { background: var(--ok); }
+.chip-dot.idle { background: var(--warn); }
+.chip-dot.busy { background: var(--busy); }
+.profile-actions {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+.profile-actions .button {
+  width: 100%;
+  height: 32px;
+}
+
+/* Phones: the existing bottom sheet, the banner along its top under the grab. */
+.sheet-layer.phone .sheet.profile-sheet {
+  width: auto;
+  max-width: none;
+  padding: 0 0 max(24px, env(safe-area-inset-bottom));
+}
+.sheet-layer.phone .profile-sheet .grab {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 8px;
+  background: rgb(0 0 0 / 0.35);
+}
+/* No 1px edge on the sheet: the desktop insets plus one. */
+.sheet-layer.phone .profile-avatar {
+  left: 10px;
+  top: 55px;
+}
+.sheet-layer.phone .profile-body {
+  padding: 46px 16px 0;
+}
+.sheet-layer.phone .profile-actions .button {
+  height: 44px;
+  font-size: 16px;
+}
+
+.member.open {
+  background: var(--fill-selected);
+}
+.message-head .author[role=button],
+.author-avatar .avatar {
+  cursor: pointer;
+}
+@media (hover: hover) {
+  .message-head .author[role=button]:hover {
+    text-decoration: underline;
+  }
+}
+.author-avatar {
+  display: contents;
+}

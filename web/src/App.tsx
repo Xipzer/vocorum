@@ -2,11 +2,12 @@ import { ALL_MARKS, markBit, MarkHalo, ThreadFilter, useThreadFilter } from './T
 // App shell: passkey gate, channel list with sessions hung under projects,
 // message pane. On phones the list is a full screen and a thread pushes over it.
 
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, Fragment, Profiler, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ago } from './SettingsKit.tsx'
+import { elapsedRun } from './run-clock.ts'
 import { startAuthentication, startRegistration } from '@simplewebauthn/browser'
-import { api, connectEvents, type Channel, type Guild, type HubState, type LinkKind, type SessionSummary, type User } from './api.ts'
+import { api, connectEvents, signedIn, type Channel, type Guild, type HubState, type LinkKind, type SessionSummary, type User } from './api.ts'
 import { Avatar, DmAvatar, machineIcon } from './Avatar.tsx'
 import { Chat } from './Chat.tsx'
 import { Overview } from './Overview.tsx'
@@ -17,7 +18,7 @@ import { ChatMentions, Empty, Inbox, InboxPanel, ScheduledPanel, LinksPanel, Mem
 import { below, Sheet, sessionActions, usePress, type SheetAt, type SheetSpec } from './Sheet.tsx'
 import type { MarkdownContext } from './markdown.tsx'
 import { ModalDialog, type OpenModal } from './Modal.tsx'
-import { DM_GUILD, dmName, dmUser, isDm, snowflakeGt, store, THREAD_TYPES, useStore } from './store.ts'
+import { DM_GUILD, dmName, dmUser, isDm, machineNamed, snowflakeGt, store, THREAD_TYPES, machineName, useMachineName, useStore } from './store.ts'
 import { bellSheet, useFocusReporting, useNotificationClicks } from './notify.ts'
 import { native, shareOrigin } from './native.ts'
 import { setPlace } from './TitleBar.tsx'
@@ -37,15 +38,29 @@ import { Icon, type IconName } from './icons.tsx'
 import { E } from './emoji.tsx'
 import { Forum } from './Forum.tsx'
 import { Notice } from './Notice.tsx'
-import { VoicePeople, VoiceStrip, VoiceView } from './Voice.tsx'
-import { plain, machineLabel, displayName, motion } from './text.ts'
-import { indexThreads, newestThreadFirst, snowflakeTime } from './thread-list.ts'
+import { CallPill, VoicePeople, VoiceStrip, VoiceView } from './Voice.tsx'
+import { plain, displayName, motion } from './text.ts'
+import { indexThreads, listedUntil, newestThreadFirst, snowflakeTime } from './thread-list.ts'
+import { rendered } from './perf.ts'
 
 export function applyAccent(accent: string | null) {
   if (accent === 'pink') document.documentElement.dataset['accent'] = 'pink'
   else delete document.documentElement.dataset['accent']
 }
 applyAccent(localStorage.getItem('accent'))
+
+// Themes: 'vocorum' (the default look, with its accent) or 'og' (Discord's dark scheme).
+// /theme.js applies the saved one before the first paint; this keeps a live change in step.
+export type Theme = 'vocorum' | 'og'
+export function savedTheme(): Theme {
+  return localStorage.getItem('theme') === 'og' ? 'og' : 'vocorum'
+}
+export function applyTheme(theme: Theme) {
+  if (theme === 'og') document.documentElement.dataset['theme'] = 'og'
+  else delete document.documentElement.dataset['theme']
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'og' ? '#121214' : '#060608')
+}
+applyTheme(savedTheme())
 
 // A pairing link (#pair=CODE) opens straight onto creating this device's passkey. The
 // fragment is read once and cleared so the code never stays in the address bar or history.
@@ -223,19 +238,25 @@ function UserPanel({ state }: { state: HubState }) {
       <HubUpdateBadge />
       {open && (
         <div className="menu-pop" role="menu">
-          <div className="menu-label">Accent colour</div>
-          <button className={`menu-item${accent !== 'pink' ? ' on' : ''}`} onClick={() => pick('cyan')}>
-            <i className="swatch" style={{ background: 'var(--cyan)' }} /> Cyber cyan
-          </button>
-          <button className={`menu-item${accent === 'pink' ? ' on' : ''}`} onClick={() => pick('pink')}>
-            <i className="swatch" style={{ background: 'var(--pink)' }} /> Hyper pink
-          </button>
+          {savedTheme() === 'vocorum' && (
+            <>
+              <div className="menu-label">Accent colour</div>
+              <button className={`menu-item${accent !== 'pink' ? ' on' : ''}`} onClick={() => pick('cyan')}>
+                <i className="swatch" style={{ background: 'var(--cyan)' }} /> Cyber cyan
+              </button>
+              <button className={`menu-item${accent === 'pink' ? ' on' : ''}`} onClick={() => pick('pink')}>
+                <i className="swatch" style={{ background: 'var(--pink)' }} /> Hyper pink
+              </button>
+            </>
+          )}
           <button className="menu-item" onClick={() => (setOpen(false), sessionActions.settings?.())}>
-            <Icon name="gear" size={18} /> User settings
+            <Icon name="gear" size={20} /> User settings
           </button>
-          <button className="menu-item red" onClick={() => void api.logout().then(() => location.reload())}>
-            <Icon name="signout" size={18} /> Sign out
-          </button>
+          {!signedIn.local && (
+            <button className="menu-item red" onClick={() => void api.logout().then(() => location.reload())}>
+              <Icon name="signout" size={20} /> Sign out
+            </button>
+          )}
         </div>
       )}
       <SettingsHost />
@@ -254,10 +275,11 @@ function SystemLight() {
   const machines = useStore((d) => (d.state?.hub_owner === false ? NO_MACHINES : d.machines))
   const push = useStore((d) => d.state?.notifications?.push_subscribed)
   const icons = useStore((d) => d.state?.machine_icons)
+  const named = useMachineName()
   // Connectivity only: the hub and the machines. Services have their own button.
   const down = machines.filter((m) => m.online === false)
   const level = !online ? 'red' : down.length ? 'amber' : 'green'
-  const headline = !online ? 'Can’t reach the hub, retrying' : down.length ? `${down.map((m) => machineLabel(m.name)).join(', ')} offline` : 'Connected'
+  const headline = !online ? 'Can’t reach the hub, retrying' : down.length ? `${down.map((m) => named(m.name)).join(', ')} offline` : 'Connected'
   return (
     <span className={`system-light ${level}`} tabIndex={0} role="status" aria-label={headline}>
       <i />
@@ -271,7 +293,7 @@ function SystemLight() {
           <span key={m.name} className="sys-row">
             <i className={m.online === false ? 'bad' : m.online ? 'ok' : 'idle'} />
             {machineIcon(icons, m.name, 'avatar') && <img className="sys-icon" src={machineIcon(icons, m.name, 'avatar')!} alt="" />}
-            {machineLabel(m.name)} {m.online === false ? 'offline' : m.online ? 'online' : 'unknown'}
+            {named(m.name)} {m.online === false ? 'offline' : m.online ? 'online' : 'unknown'}
             {m.running + m.waiting > 0 && <span className="num muted"> · {m.running} running, {m.waiting} waiting</span>}
           </span>
         ))}
@@ -384,9 +406,23 @@ function useSwipeBack(enabled: boolean, onOpen: () => void) {
   }, [enabled, onOpen])
 }
 
-function elapsed(iso: string) {
-  const m = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60_000))
-  return m < 1 ? '' : m < 60 ? `${m}m` : `${Math.floor(m / 60)}h`
+function WorkingAge({ session }: { session: SessionSummary }) {
+  const [, tick] = useState(0)
+  // Wake just this label at its next displayed minute or hour, even in a quiet thread.
+  useEffect(() => {
+    let timer = 0
+    const schedule = () => {
+      const age = elapsedRun(session)
+      if (age === null) return
+      const unit = age < 3_600_000 ? 60_000 : 3_600_000
+      timer = window.setTimeout(() => { tick((n) => n + 1); schedule() }, Math.ceil(unit - age % unit))
+    }
+    schedule()
+    return () => window.clearTimeout(timer)
+  }, [session])
+  const age = elapsedRun(session)
+  if (age === null || age < 60_000) return null
+  return <span className="meta">{age < 3_600_000 ? `${Math.floor(age / 60_000)}m` : `${Math.floor(age / 3_600_000)}h`}</span>
 }
 
 // One mark at the edge. Activity picks its colour; unread picks the title weight.
@@ -396,7 +432,9 @@ function threadMark(state: SessionSummary['state'] | undefined, unread: boolean)
   return { 'data-thread-row': '', 'data-thread-activity': activity, 'aria-description': description || undefined }
 }
 
-function ThreadRow({ thread, title, current, unread, session, favourite, mentions, onOpen, onSheet }: { thread: Channel; title: string; current: boolean; unread: boolean; session?: SessionSummary; favourite: boolean; mentions: number; onOpen: (id: string) => void; onSheet: (spec: SheetSpec) => void }) {
+// Memoised: a message anywhere replaces the workspace state and redraws the sidebar, and
+// each row should redraw only when its own thread, session, unread or mention count does.
+const ThreadRow = memo(function ThreadRow({ thread, title, current, unread, session, favourite, mentions, onOpen, onSheet }: { thread: Channel; title: string; current: boolean; unread: boolean; session?: SessionSummary; favourite: boolean; mentions: number; onOpen: (id: string) => void; onSheet: (spec: SheetSpec) => void }) {
   const state = session?.state
   const mark = threadMark(state, unread)
   const manage = can(P.MANAGE_THREADS, thread) || thread.owner_id === store.data.state?.me.id
@@ -404,7 +442,7 @@ function ThreadRow({ thread, title, current, unread, session, favourite, mention
     onSheet({
       at,
       title,
-      subtitle: [session?.project, session?.machine, state && state !== 'idle' ? STATE_LABEL[state] : null].filter(Boolean).join(' · '),
+      subtitle: [session?.project, session?.machine && machineName(session.machine), state && state !== 'idle' ? STATE_LABEL[state] : null].filter(Boolean).join(' · '),
       badge: <i className={`st ${state ?? 'idle'}`} />,
       groups: [
         [{ label: 'Mark as read', icon: 'eye', run: () => store.markSeen(thread.id) }],
@@ -423,13 +461,13 @@ function ThreadRow({ thread, title, current, unread, session, favourite, mention
   })
   return (
     <button data-nav={thread.id} {...mark} title={[title, mark['aria-description']].filter(Boolean).join('\n')} aria-current={current ? 'page' : undefined} className={`channel${current ? ' active' : ''}${unread ? ' unread' : ''}${thread.thread_metadata?.archived ? ' dim' : ''}`} onClick={() => onOpen(thread.id)} {...press}>
-      {(state === 'busy' || state === 'waiting') && <MarkHalo/>}
+      {state === 'busy' && <MarkHalo/>}
       <span className="channel-name"><E>{title}</E></span>
-      {state === 'busy' && session && elapsed(session.since) && <span className="meta">{elapsed(session.since)}</span>}
+      {state === 'busy' && session?.runStartedAt != null && <WorkingAge session={session} />}
       {mentions > 0 && <span className="badge num" aria-label={`${mentions} mentions`}>{mentions}</span>}
     </button>
   )
-}
+})
 
 export const LINK_LABEL: Record<LinkKind, string> = { liaison: 'liaison', parent: 'started this', spawned: 'started here', mentions: 'mentioned here', mentioned: 'mentions this' }
 const LINKED_ROWS = 4
@@ -456,7 +494,7 @@ function LinkedRows({ threadId, title, unread, onOpen, mask }: { mask:number; th
         const mark = threadMark(state, isUnread)
         return (
           <button key={link.id} {...mark} className={`channel linked-row${isUnread ? ' unread' : ''}`} onClick={() => onOpen(link.id)} title={[LINK_LABEL[link.kind], mark['aria-description']].filter(Boolean).join('\n')}>
-            {(state === 'busy' || state === 'waiting') && <MarkHalo/>}
+            {state === 'busy' && <MarkHalo/>}
             <Icon name="link" size={14} />
             <span className="channel-name"><E>{thread ? title(thread) : 'A thread not on this hub'}</E></span>
             {(!state || state === 'idle' || state === 'done') && <span className="meta">{SHORT_KIND[link.kind]}</span>}
@@ -553,7 +591,7 @@ function GuildRail({ guilds, current, onGuild }: { guilds: Guild[]; current: str
           {admin && <i className="rail-line" aria-hidden />}
           <button className={`rail-item${g.id === current ? ' active' : ''}${unread ? ' unread' : ''}${admin ? ' admin' : ''}`} onClick={() => onGuild(g.id)} title={admin ? `${g.name}: only you and your admin agent` : g.name} aria-label={`${g.name}${count ? `, ${count} mentions` : ''}`} aria-current={g.id === current}>
             <i className="rail-pip" />
-            <span className={`rail-guild${g.icon ? ' has-icon' : ''}`}>{g.icon ? <img src={`/client/guild-icons/${g.id}?v=${g.icon}`} alt="" /> : initials(g.name)}</span>
+            <span className={`rail-guild${g.icon ? ' has-icon' : ''}`} data-long={(!g.icon && [...initials(g.name)].length > 2) || undefined}>{g.icon ? <img src={`/client/guild-icons/${g.id}?v=${g.icon}`} alt="" /> : initials(g.name)}</span>
             {count > 0 && <span className="rail-badge num">{count > 99 ? '99+' : count}</span>}
           </button>
           </Fragment>
@@ -643,7 +681,9 @@ function OlderThreads({ threads, onOpen, onSeeAll, children }: { threads: Channe
 
 // Discord's "NEW MENTIONS" (top, red) and "NEW UNREADS" (bottom) pills: shown while a
 // mentioned or unread row is scrolled out of the channel list; a click brings it into view.
-function ListPills({ list, edge }: { list: React.RefObject<HTMLDivElement | null>; edge: 'top' | 'bottom' }) {
+// Memoised: its layout effect measures the list, and running that on every sidebar redraw
+// forced a layout of every row for each message anywhere.
+const ListPills = memo(function ListPills({ list, edge }: { list: React.RefObject<HTMLDivElement | null>; edge: 'top' | 'bottom' }) {
   const [kind, setKind] = useState<'mentions' | 'unreads' | null>(null)
   const dockRef = useRef<HTMLDivElement>(null)
   const pillRef = useRef<HTMLButtonElement>(null)
@@ -674,8 +714,9 @@ function ListPills({ list, edge }: { list: React.RefObject<HTMLDivElement | null
         }
         const box = el.getBoundingClientRect()
         // The floating user panel covers the list's foot: what sits under it is out of view,
-        // and the bottom pill sits 6px above it (Discord).
-        const panel = document.querySelector('.user-panel')?.getBoundingClientRect()
+        // and the bottom pill sits 6px above it (Discord). During a call the voice strip
+        // floats above the panel, so it is the strip the pill has to clear.
+        const panel = (document.querySelector('.voice-strip') ?? document.querySelector('.user-panel'))?.getBoundingClientRect()
         const floor = panel && panel.top < box.bottom ? panel.top : box.bottom
         floorRef.current = panel ? panel.top : box.bottom
         rightRef.current = panel && dockRef.current ? dockRef.current.getBoundingClientRect().right - panel.right : 0
@@ -705,10 +746,14 @@ function ListPills({ list, edge }: { list: React.RefObject<HTMLDivElement | null
     const watch = new MutationObserver(() => { dirty = true; check() })
     watch.observe(el, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] })
     window.addEventListener('resize', check)
+    // The list shrinks when the voice strip appears and grows back when it goes.
+    const sized = new ResizeObserver(check)
+    sized.observe(el)
     return () => {
       cancelAnimationFrame(frame)
       el.removeEventListener('scroll', check)
       watch.disconnect()
+      sized.disconnect()
       window.removeEventListener('resize', check)
     }
   }, [list, edge])
@@ -721,11 +766,56 @@ function ListPills({ list, edge }: { list: React.RefObject<HTMLDivElement | null
       )}
     </div>
   )
+})
+
+// A message replaces the channel and thread lists (each channel carries its last message
+// id) several times a minute. On its own that changes nothing the sidebar shows unless a
+// row turns unread or an expired thread comes back into the list, so the sidebar skips the
+// redraw otherwise. The same goes for a read mark that moves without changing whether its
+// row is unread (the open chat reading each new message). Every other prop and part of the
+// hub state must be the same object.
+type SidebarProps = Parameters<typeof SidebarView>[0]
+function sameSidebar(a: SidebarProps, b: SidebarProps) {
+  if (a.current !== b.current || a.open !== b.open || a.ctx !== b.ctx || a.guild !== b.guild) return false
+  if (b.guild === DM_GUILD) return a.state === b.state && a.seen === b.seen // the direct messages are ordered by their last message
+  if (a.seen !== b.seen && !sameSeen(a, b)) return false
+  if (a.state === b.state) return true
+  for (const key of Object.keys(b.state) as Array<keyof HubState>) if (key !== 'channels' && key !== 'threads' && a.state[key] !== b.state[key]) return false
+  return sameRows(a.state.channels, b.state.channels, a.seen, b.seen) && sameRows(a.state.threads, b.state.threads, a.seen, b.seen)
+}
+function sameSeen(a: SidebarProps, b: SidebarProps) {
+  const row = (state: HubState, id: string) => state.threads.find((c) => c.id === id) ?? state.channels.find((c) => c.id === id)
+  const unread = (p: SidebarProps, id: string) => snowflakeGt(row(p.state, id)?.last_message_id, p.seen[id])
+  for (const id in b.seen) if (b.seen[id] !== a.seen[id] && unread(a, id) !== unread(b, id)) return false
+  for (const id in a.seen) if (!(id in b.seen)) return false
+  return true
+}
+function sameRows(before: Channel[], after: Channel[], seenBefore: Record<string, string>, seen: Record<string, string>) {
+  if (before === after) return true
+  if (before.length !== after.length) return false
+  const now = Date.now()
+  for (let i = 0; i < after.length; i++) {
+    const x = before[i]!, y = after[i]!
+    if (x === y) continue
+    if (x.id !== y.id) return false
+    for (const key of Object.keys(y) as Array<keyof Channel>) if (key !== 'last_message_id' && key !== 'message_count' && x[key] !== y[key]) return false
+    if (snowflakeGt(x.last_message_id, seenBefore[x.id]) !== snowflakeGt(y.last_message_id, seen[y.id])) return false
+    if (THREAD_TYPES.has(y.type) && listedUntil(x) > now !== listedUntil(y) > now) return false
+  }
+  return true
+}
+const SidebarMemo = memo(SidebarView, sameSidebar)
+function Sidebar(props: Omit<SidebarProps, 'seen'>) {
+  const seen = useStore((d) => d.seen)
+  return <SidebarMemo {...props} seen={seen} />
 }
 
-function Sidebar({ state, current, open, onOpen, ctx, guild, onGuild, onThreads }: { state: HubState; current: string | null; open: boolean; onOpen: (id: string) => void; ctx: MarkdownContext; guild: string; onGuild: (id: string) => void; onThreads?: (channelId: string) => void }) {
+function SidebarView({ state, seen, current, open, onOpen: openLatest, ctx, guild, onGuild, onThreads }: { state: HubState; seen: Record<string, string>; current: string | null; open: boolean; onOpen: (id: string) => void; ctx: MarkdownContext; guild: string; onGuild: (id: string) => void; onThreads?: (channelId: string) => void }) {
+  // One open handler for the life of the sidebar, so memoised rows keep their props equal.
+  const latestOpen = useRef(openLatest)
+  latestOpen.current = openLatest
+  const onOpen = useCallback((id: string) => latestOpen.current(id), [])
   const listRef = useRef<HTMLDivElement>(null)
-  const seen = useStore((d) => d.seen)
   const online = useStore((d) => d.online)
   const sessions = useStore((d) => d.sessions)
   const machines = useStore((d) => d.machines)
@@ -746,7 +836,14 @@ function Sidebar({ state, current, open, onOpen, ctx, guild, onGuild, onThreads 
     setCollapsed(next)
     localStorage.setItem('collapsed', JSON.stringify(next))
   }
-  const title = (c: Channel) => plain(c.name ?? '', ctx.userName, ctx.channelName) || 'untitled'
+  // A title is worked out once per thread object: a message anywhere redraws the sidebar,
+  // and most of its rows have not changed.
+  const titles = useMemo(() => new WeakMap<Channel, string>(), [ctx])
+  const title = (c: Channel) => {
+    let t = titles.get(c)
+    if (t === undefined) titles.set(c, (t = plain(c.name ?? '', ctx.userName, ctx.channelName) || 'untitled'))
+    return t
+  }
   const unread = (c: Channel) => (THREAD_TYPES.has(c.type) || c.id !== current) && snowflakeGt(c.last_message_id, seen[c.id])
   const passes = (t:Channel) => !filtering || Boolean(mask & markBit(sessions[t.id]?.state,unread(t)))
   const q = query.trim().toLowerCase()
@@ -755,7 +852,13 @@ function Sidebar({ state, current, open, onOpen, ctx, guild, onGuild, onThreads 
   const inGuild = (c: Channel) => (c.guild_id ?? state.guild.id) === guild
   const guildName = guilds.find((g) => g.id === guild)?.name ?? state.guild.name
   const categories = state.channels.filter((c) => c.type === 4 && inGuild(c)).sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
-  const text = state.channels.filter((c) => (c.type === 0 || c.type === 2 || c.type === 5 || c.type === 15) && inGuild(c)).sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+  // Kimaki can make its own voice channel before an import brings Discord's of the same
+  // name: one row for the two, unless the later one is open or has people in it.
+  const inCall = new Set((state.voice_states ?? []).map((v) => v.channel_id))
+  const text = state.channels
+    .filter((c) => (c.type === 0 || c.type === 2 || c.type === 5 || c.type === 15) && inGuild(c))
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+    .filter((c, i, all) => c.type !== 2 || c.id === current || inCall.has(c.id) || !all.slice(0, i).some((o) => o.type === 2 && o.name === c.name && o.parent_id === c.parent_id))
   const groups: Array<{ category: Channel | null; channels: Channel[] }> = [
     { category: null, channels: text.filter((c) => !c.parent_id || !categories.some((cat) => cat.id === c.parent_id)) },
     ...categories.map((category) => ({ category, channels: text.filter((c) => c.parent_id === category.id) })),
@@ -769,11 +872,14 @@ function Sidebar({ state, current, open, onOpen, ctx, guild, onGuild, onThreads 
   }, [threadList.nextExpiry, clock])
   const waiting = Object.values(sessions).filter((s) => s.state === 'waiting').length
   // A machine that's down dims its category; the reason lives in the status light.
-  const machineOf = (category: Channel) => machines.find((x) => x.name.toLowerCase() === (category.name ?? '').toLowerCase() || `kimaki ${x.name.toLowerCase()}` === (category.name ?? '').toLowerCase())
+  const machineOf = (category: Channel) => {
+    const machine = machineNamed(state, category.name ?? '')?.toLowerCase()
+    return machines.find((x) => x.name.toLowerCase() === machine || x.name.toLowerCase() === (category.name ?? '').toLowerCase() || `kimaki ${x.name.toLowerCase()}` === (category.name ?? '').toLowerCase())
+  }
   const row = (thread: Channel) => (
     <Fragment key={thread.id}>
       <ThreadRow thread={thread} title={title(thread)} current={thread.id === current} unread={unread(thread)} session={sessions[thread.id]} favourite={favourites.includes(thread.id)} mentions={thread.id === current ? 0 : (mentionCounts[thread.id] ?? 0)} onOpen={onOpen} onSheet={setSheet} />
-      {thread.id === current && !q && <LinkedRows mask={mask} threadId={thread.id} title={title} unread={unread} onOpen={onOpen} />}
+      {thread.id === current && !q && <LinkedRows mask={mask} unread={unread} threadId={thread.id} title={title} onOpen={onOpen} />}
     </Fragment>
   )
   const favouriteThreads = favourites.map((id) => state.threads.find((t) => t.id === id)).filter((t): t is Channel => Boolean(t && hit(t) && passes(t)))
@@ -863,6 +969,7 @@ function Sidebar({ state, current, open, onOpen, ctx, guild, onGuild, onThreads 
           </button>
         )}
         {filtering && !state.threads.some(t=>inGuild(t)&&hit(t)&&passes(t)) && <div className="mark-empty" role="status">No matching threads. <button onClick={()=>changeMask(ALL_MARKS)}>Show all statuses</button></div>}
+        {!q && extensions.map(e => e.BeforeChannels && <e.BeforeChannels key={e.id} current={current} onOpen={onOpen} />)}
         {favouriteThreads.length > 0 && (
           <div className="category">
             <div className="category-name static">Favourites</div>
@@ -930,7 +1037,9 @@ function Sidebar({ state, current, open, onOpen, ctx, guild, onGuild, onThreads 
       <VoiceStrip state={state} onOpen={onOpen} />
       <UserPanel state={state} />
       <ColumnHandle id="side" label="Channel list" />
-      {sheet && <Sheet spec={sheet} onClose={() => setSheet(null)} />}
+      {/* On the body: the sidebar is a containing block (contain: layout), so a backdrop left
+          inside it would cover the list only and a click in the chat would not close the menu. */}
+      {sheet && createPortal(<Sheet spec={sheet} onClose={() => setSheet(null)} />, document.body)}
     </nav>
   )
 }
@@ -1003,7 +1112,7 @@ function DmList({ state, current, onOpen }: { state: HubState; current: string |
             </div>
           ))}
       </div>
-      {sheet && <Sheet spec={sheet} onClose={() => setSheet(null)} />}
+      {sheet && createPortal(<Sheet spec={sheet} onClose={() => setSheet(null)} />, document.body)}
     </>
   )
 }
@@ -1130,6 +1239,20 @@ function Main() {
       return p.kind === 'split' ? (p.channelId === current ? null : p) : { ...p, channelId: current }
     })
   }, [current])
+  // Create Thread: a message in the channel starts one, so open the channel at its message box.
+  const startThread = (channelId: string) => {
+    const before = current === channelId ? null : document.querySelector('.chat .composer textarea')
+    setCurrent(channelId)
+    setDrawer(false)
+    setPanel(null)
+    let frames = 0
+    const focus = () => {
+      const box = document.querySelector<HTMLTextAreaElement>('.chat:not(.split) .composer textarea')
+      if (box && (box !== before || frames > 30)) box.focus()
+      else if (frames++ < 60) requestAnimationFrame(focus)
+    }
+    requestAnimationFrame(focus)
+  }
   const togglePanel = (next: { kind: 'pins' | 'links' | 'threads' | 'members' | 'workspace'; channelId: string }) => setPanel((p) => (p && p.kind === next.kind && 'channelId' in p && p.channelId === next.channelId ? null : next))
   sessionActions.links = (channelId) => setPanel({ kind: 'links', channelId })
   // A thread opened from its channel sits beside it on desktop (Discord's split view).
@@ -1345,7 +1468,7 @@ function Main() {
     )
   const overview = current === 'overview'
   const inbox = current === 'inbox'
-  const page = current?.startsWith('x:') ? extensions.find((e) => e.id === current.slice(2) && e.Page) : undefined
+  const page = current?.startsWith('x:') ? extensions.find((e) => e.id === current.slice(2) && e.Page && (!e.ownerOnly || state.hub_owner === true)) : undefined
   const jump = (channelId: string, messageId: string) => {
     setJumpTo({ channelId, messageId, nonce: Date.now() })
     setCurrent(channelId)
@@ -1360,7 +1483,9 @@ function Main() {
   // The server shown in the sidebar: the open channel's, else the one picked last.
   const guildIds = [...store.guilds().map((g) => g.id), ...(state.private_channels ? [DM_GUILD] : [])]
   const activeGuild = guildIds.includes(guildPick) ? guildPick : channel?.guild_id && guildIds.includes(channel.guild_id) ? channel.guild_id : state.guild.id
+  // Reads the hub's live lists: the sidebar can keep an earlier copy of this callback.
   const pickGuild = (id: string) => {
+    const state = store.data.state!
     setGuildPick(id)
     localStorage.setItem('guild', id)
     if (window.matchMedia('(max-width: 767px)').matches) return
@@ -1394,7 +1519,9 @@ function Main() {
       </button>
       <Tooltips />
       <WhenHost />
-      <Sidebar state={state} current={overview ? 'overview' : inbox ? 'inbox' : page ? current : (channel?.id ?? null)} open={drawer} onOpen={open} ctx={ctx} guild={activeGuild} onGuild={pickGuild} onThreads={(channelId) => setPanel({ kind: 'threads', channelId })} />
+      <Profiler id="sidebar" onRender={rendered}>
+        <Sidebar state={state} current={overview ? 'overview' : inbox ? 'inbox' : page ? current : (channel?.id ?? null)} open={drawer} onOpen={open} ctx={ctx} guild={activeGuild} onGuild={pickGuild} onThreads={(channelId) => setPanel({ kind: 'threads', channelId })} />
+      </Profiler>
       {overview ? (
         <Overview onMenu={showChannels} onOpen={open} onSearch={() => setPanel({ kind: 'search' })} />
       ) : page?.Page ? (
@@ -1402,7 +1529,32 @@ function Main() {
       ) : inbox ? (
         <Inbox guildId={activeGuild} onMenu={showChannels} onJump={jump} onSearch={() => setPanel({ kind: 'search' })} />
       ) : channel && channel.type === 2 ? (
-        <VoiceView key={`v${channel.id}`} channel={channel} state={state} onMenu={showChannels} />
+        <VoiceView
+          key={`v${channel.id}`}
+          channel={channel}
+          state={state}
+          onMenu={showChannels}
+          // The room's own chat: the same Chat as everywhere, without a second header.
+          chat={(onClose) => (
+            <Chat
+              key={`vc${channel.id}`}
+              channel={channel}
+              state={state}
+              ctx={ctx}
+              onMenu={() => {}}
+              onModal={(m) => setModal(m)}
+              jumpTo={jumpTo?.channelId === channel.id ? jumpTo : null}
+              onJumpStarted={(request) => setJumpTo((pending) => pending === request ? null : pending)}
+              split={{ onClose, headless: true }}
+              onSearch={() => setPanel({ kind: 'search' })}
+              onPins={() => setPanel({ kind: 'pins', channelId: channel.id })}
+              onLinks={() => setPanel({ kind: 'links', channelId: channel.id })}
+              onThreads={() => setPanel({ kind: 'threads', channelId: channel.id })}
+              onMembers={() => setPanel({ kind: 'members', channelId: channel.id })}
+              onServices={() => setPanel({ kind: 'services', threadId: channel.id })}
+            />
+          )}
+        />
       ) : channel && channel.type === 15 ? (
         <Forum key={`f${channel.id}`} channel={channel} state={state} onMenu={showChannels} onOpen={open} onSearch={() => setPanel({ kind: 'search' })} />
       ) : channel && !(channel.type === 4) ? (
@@ -1416,6 +1568,7 @@ function Main() {
           onMenu={showChannels}
           onModal={(m) => setModal(m)}
           jumpTo={jumpTo?.channelId === channel.id ? jumpTo : null}
+          onJumpStarted={(request) => setJumpTo((pending) => pending === request ? null : pending)}
           onSearch={() => setPanel({ kind: 'search' })}
           open={panel && (!('channelId' in panel) || panel.channelId === channel.id || panel.kind === 'threads') ? (panel.kind === 'services' && panel.threadId !== channel.id ? null : panel.kind) : null}
           onPins={() => togglePanel({ kind: 'pins', channelId: channel.id })}
@@ -1447,6 +1600,7 @@ function Main() {
       )}
       {panel?.kind === 'search' && <SearchPanel key="search" initial={panel.q} onClose={() => setPanel(null)} onJump={jump} />}
       {linkSheet && <Sheet spec={linkSheet} onClose={() => setLinkSheet(null)} />}
+      <CallPill state={state} current={channel?.id ?? null} onOpen={open} />
       <Notice state={state} current={current} onOpen={(channelId, messageId) => jump(channelId, messageId)} />
       {panel?.kind === 'services' && (
         <ServicesPanel
@@ -1486,12 +1640,12 @@ function Main() {
         )
       })()}
       {panel?.kind === 'scheduled' && <ScheduledPanel key={`sch${panel.channelId ?? ''}`} channelId={panel.channelId} onClose={() => setPanel(null)} onJump={jump} onOpen={(id) => { setCurrent(id); setDrawer(false); if (window.matchMedia('(max-width: 767px)').matches) setPanel(null) }} />}
-      {panel?.kind === 'inbox' && <InboxPanel onClose={() => setPanel(null)} onJump={jump} onOpen={(id) => { setCurrent(id); setDrawer(false); if (window.matchMedia('(max-width: 767px)').matches) setPanel(null) }} />}
+      {panel?.kind === 'inbox' && <InboxPanel onClose={() => setPanel(null)} onJump={(c, m) => { jump(c, m); setPanel(null) }} onOpen={(id) => { setCurrent(id); setDrawer(false); setPanel(null) }} />}
       {panel?.kind === 'mentions' && store.channel(panel.channelId) && can(P.READ_MESSAGE_HISTORY, panel.channelId) && <ChatMentions key={panel.channelId} channelId={panel.channelId} onClose={() => setPanel(null)} onJump={jump}/>}
-      {panel?.kind === 'threads' && <ThreadsPanel key={`t${panel.channelId}`} channelId={panel.channelId} onClose={() => setPanel(null)} onOpen={(id) => { setCurrent(id); setDrawer(false); if (window.matchMedia('(max-width: 767px)').matches) setPanel(null) }} />}
+      {panel?.kind === 'threads' && <ThreadsPanel key={`t${panel.channelId}`} channelId={panel.channelId} onClose={() => setPanel(null)} onOpen={(id) => { setCurrent(id); setDrawer(false); setPanel(null) }} onCreate={() => startThread(panel.channelId)} />}
       {panel?.kind === 'workspace' && channel?.id === panel.channelId && <WorkspacePanel key={`w${panel.channelId}`} channelId={panel.channelId} ctx={ctx} onClose={() => setBoardLocation(state.me.id, panel.channelId, false)} onJump={jump} onOpen={(id) => { setCurrent(id); setDrawer(false) }} onServices={() => setPanel({ kind: 'services', threadId: panel.channelId })} />}
       {panel?.kind === 'members' && <MembersPanel key={`m${panel.channelId}`} channelId={panel.channelId} onClose={() => setPanel(null)} />}
-      {panel?.kind === 'pins' && <PinsPanel key={`p${panel.channelId}`} channelId={panel.channelId} ctx={ctx} onClose={() => setPanel(null)} onJump={jump} />}
+      {panel?.kind === 'pins' && <PinsPanel key={`p${panel.channelId}`} channelId={panel.channelId} ctx={ctx} onClose={() => setPanel(null)} onJump={(c, m) => { jump(c, m); setPanel(null) }} />}
       {switcher === 'switcher' && <QuickSwitcher current={channel?.id ?? null} onOpen={open} onGuild={pickGuild} onClose={() => setSwitcher(null)} />}
       {switcher === 'shortcuts' && <ShortcutSheet onClose={() => setSwitcher(null)} />}
       {modal && modal.channelId === channel?.id && (
@@ -1510,6 +1664,9 @@ function Main() {
 
 export function App() {
   const [phase, setPhase] = useState<'loading' | 'login' | 'ready' | 'error'>('loading')
+  // Signed in but in no server (never added, or removed from the last one): nothing to
+  // open, and nothing wrong to retry.
+  const noServer = useStore((d) => d.state !== null && !d.state.guild)
   const [error, setError] = useState('')
   const check = async () => {
     try {
@@ -1519,6 +1676,7 @@ export function App() {
         status = await api.status()
       }
       if (!status.signedIn) return setPhase('login')
+      signedIn.local = Boolean(status.local)
       await store.loadState()
       setPhase('ready')
     } catch (e) {
@@ -1549,6 +1707,23 @@ export function App() {
           </div>
           <button className="button primary wide" onClick={() => void check()}>
             Try again
+          </button>
+        </div>
+      </div>
+    )
+  if (noServer)
+    return (
+      <div className="login">
+        <div className="login-card" role="status">
+          <div className="login-head">
+            <h1>No servers yet</h1>
+            <p>You're signed in, but no server on this hub has you in it yet. Ask the person who runs the hub to add you. Your servers show here once they do.</p>
+          </div>
+          <button className="button primary wide" onClick={() => void check()}>
+            Check again
+          </button>
+          <button className="link-button login-help" onClick={() => void api.logout().then(() => location.reload())}>
+            Sign out
           </button>
         </div>
       </div>

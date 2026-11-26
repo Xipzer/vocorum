@@ -1,13 +1,19 @@
-// Tooltips for chrome controls: a dark label above the control after a short delay, and
-// at once on keyboard focus. It takes over native `title`s on controls inside the app
-// chrome (icon buttons, the search bar, rail icons), so the two never show together.
+// Tooltips for chrome controls: a dark label above the control, at once on hover as Discord's
+// header icons (sidebar rows after a short delay), and at once on keyboard focus. It takes over native `title`s on controls inside the app
+// chrome (icon buttons, the search bar, rail icons, sidebar thread rows), so the two
+// never show together.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { motion } from './text.ts'
 
-const SCOPE = '.icon-button, .search-field, .rail-item, .message-actions > button, .row-gear'
-const DELAY = 400
+const SCOPE = '.icon-button, .search-field, .rail-item, .message-actions > button, .row-gear, .channel-list .channel[data-nav], .channel-list .linked-row'
+// Beside the control, as Discord does: server icons and sidebar rows, whose tooltip
+// above would cover the rows over them.
+const BESIDE = '.rail-item, .channel-list .channel'
+// Sidebar rows wait, so running the pointer down the list stays quiet.
+const ROW_DELAY = 400
 
-type Tip = { text: string; x: number; y: number; side: 'above' | 'below' | 'right' }
+type Tip = { text: string; x: number; y: number; side: 'above' | 'below' | 'right'; out?: boolean }
 
 function label(el: HTMLElement): string {
   const title = el.getAttribute('title')
@@ -32,6 +38,7 @@ export function Tooltips() {
   }, [tip])
   useEffect(() => {
     let timer = 0
+    let gone = 0
     let lastHidden = 0
     let current: HTMLElement | null = null
     const show = (el: HTMLElement, now: boolean) => {
@@ -42,20 +49,23 @@ export function Tooltips() {
       const place = () => {
         if (current !== el || !el.isConnected) return
         const r = el.getBoundingClientRect()
-        // Server icons speak to the right, as in Discord; others above (below at the top edge).
-        if (el.matches('.rail-item')) return setTip({ text, x: r.right, y: r.top + r.height / 2, side: 'right' })
+        // Server icons and sidebar rows speak to the right, as in Discord; others above (below at the top edge).
+        if (el.matches(BESIDE)) return setTip({ text, x: r.right, y: r.top + r.height / 2, side: 'right' })
         const below = r.top < 44
         setTip({ text, x: r.left + r.width / 2, y: below ? r.bottom : r.top, side: below ? 'below' : 'above' })
       }
       // Moving between controls keeps the tooltip up without waiting again.
-      if (now || Date.now() - lastHidden < 600) place()
-      else timer = window.setTimeout(place, DELAY)
+      if (now || !el.matches('.channel-list *') || Date.now() - lastHidden < 600) place()
+      else timer = window.setTimeout(place, ROW_DELAY)
     }
+    // Discord fades a tooltip out over ~50 ms.
     const hide = () => {
       clearTimeout(timer)
       if (current) lastHidden = Date.now()
       current = null
-      setTip(null)
+      setTip((t) => (t && !t.out ? { ...t, out: true } : t))
+      clearTimeout(gone)
+      gone = window.setTimeout(() => setTip((t) => (t?.out ? null : t)), motion() === 'auto' ? 0 : 50)
     }
     const over = (e: PointerEvent) => {
       if (e.pointerType !== 'mouse') return
@@ -79,6 +89,7 @@ export function Tooltips() {
       window.removeEventListener('focusin', focus)
       window.removeEventListener('focusout', hide)
       window.removeEventListener('scroll', hide, true)
+      clearTimeout(gone)
     }
   }, [])
   if (!tip) return null
@@ -86,7 +97,7 @@ export function Tooltips() {
   const m = / \(((?:Ctrl|Alt|Shift|Esc|Enter|⌘|⌥|⇧)[^)]*)\)$/.exec(tip.text)
   const [main, keys] = m ? [tip.text.slice(0, m.index), m[1]] : [tip.text, undefined]
   return (
-    <div ref={ref} className={`tip ${tip.side}`} role="tooltip" style={{ left: tip.x, top: tip.y }}>
+    <div ref={ref} className={`tip ${tip.side}${tip.out ? ' out' : ''}`} role="tooltip" style={{ left: tip.x, top: tip.y }}>
       {main}
       {keys && <kbd>{keys}</kbd>}
     </div>

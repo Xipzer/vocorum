@@ -205,7 +205,8 @@ export type GuildRow = { id: string; name: string; icon: string | null; position
 // userId null: the owner (devices paired before there were several people).
 export type DeviceKind = 'web' | 'app'
 export type SessionKind = 'cookie' | 'bearer'
-export type DeviceRow = { id: string; name: string; userId: string | null; kind: DeviceKind; createdAt: number; lastSeenAt: number | null; revokedAt: number | null }
+// local: the row open access signs this computer's browsers in as (no pairing, no passkey).
+export type DeviceRow = { id: string; name: string; userId: string | null; kind: DeviceKind; createdAt: number; lastSeenAt: number | null; revokedAt: number | null; local: boolean }
 export type CredentialRow = { id: string; deviceId: string; publicKey: Uint8Array; counter: number; transports: string[] }
 export type AttachmentRow = {
   id: string
@@ -262,11 +263,17 @@ export class HubStore {
     await this.addColumn('sessions', 'kind', "TEXT NOT NULL DEFAULT 'cookie'")
     // A second app key for approving requests: P-256, kept where the OS asks for Touch ID, Face ID or Windows Hello.
     await this.addColumn('app_keys', 'approval_key', 'BLOB')
+    // The row open access signs this computer's browsers in as. Before the mark it was found
+    // by its name; a paired browser always has a passkey, so a passkey-less one is that row.
+    if (await this.addColumn('devices', 'local', 'INTEGER NOT NULL DEFAULT 0'))
+      await this.db.execute("UPDATE devices SET local = 1 WHERE name = 'This computer' AND kind = 'web' AND revoked_at IS NULL AND id NOT IN (SELECT device_id FROM credentials)")
   }
 
   private async addColumn(table: string, column: string, type: string) {
     const columns = (await this.rows(`PRAGMA table_info(${table})`)).map((row) => String(row['name']))
-    if (!columns.includes(column)) await this.db.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
+    if (columns.includes(column)) return false
+    await this.db.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
+    return true
   }
 
   // The single-owner tables of older hubs become the owner's rows, once.
@@ -571,9 +578,9 @@ export class HubStore {
     return result.rowsAffected > 0
   }
 
-  async createDevice(name: string, userId: string | null = null, kind: DeviceKind = 'web'): Promise<DeviceRow> {
-    const row: DeviceRow = { id: crypto.randomUUID(), name, userId, kind, createdAt: Date.now(), lastSeenAt: null, revokedAt: null }
-    await this.db.execute({ sql: 'INSERT INTO devices (id, name, created_at, user_id, kind) VALUES (?, ?, ?, ?, ?)', args: [row.id, row.name, row.createdAt, userId, kind] })
+  async createDevice(name: string, userId: string | null = null, kind: DeviceKind = 'web', local = false): Promise<DeviceRow> {
+    const row: DeviceRow = { id: crypto.randomUUID(), name, userId, kind, createdAt: Date.now(), lastSeenAt: null, revokedAt: null, local }
+    await this.db.execute({ sql: 'INSERT INTO devices (id, name, created_at, user_id, kind, local) VALUES (?, ?, ?, ?, ?, ?)', args: [row.id, row.name, row.createdAt, userId, kind, local ? 1 : 0] })
     return row
   }
 
@@ -706,5 +713,6 @@ function deviceFromRow(row: Record<string, unknown>): DeviceRow {
     createdAt: Number(row['created_at']),
     lastSeenAt: row['last_seen_at'] == null ? null : Number(row['last_seen_at']),
     revokedAt: row['revoked_at'] == null ? null : Number(row['revoked_at']),
+    local: Number(row['local'] ?? 0) === 1,
   }
 }

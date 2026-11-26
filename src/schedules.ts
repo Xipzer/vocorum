@@ -182,7 +182,7 @@ export class Schedules {
   }
 
   private async fire(s: Schedule): Promise<string> {
-    const viewer: Viewer = { userId: s.user_id, device: { id: 'schedule', name: 'schedule', userId: s.user_id, kind: 'web', createdAt: 0, lastSeenAt: null, revokedAt: null } }
+    const viewer: Viewer = { userId: s.user_id, device: { id: 'schedule', name: 'schedule', userId: s.user_id, kind: 'web', createdAt: 0, lastSeenAt: null, revokedAt: null, local: false } }
     if (s.kind === 'message') {
       const message = await this.hub.api.postMessage(viewer, s.channel_id, { content: s.content })
       return `posted ${message.id}`

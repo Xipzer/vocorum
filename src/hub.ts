@@ -321,7 +321,13 @@ export class Hub {
   }
 
   async stop() {
-    for (const extension of [...this.extensions].reverse()) await extension.stop?.()
+    for (const extension of [...this.extensions].reverse()) {
+      try {
+        await extension.stop?.()
+      } catch (error) {
+        console.error(`[extension ${extension.id}] did not stop cleanly:`, error)
+      }
+    }
     this.schedules.stop()
     await this.privateListener?.stop()
     this.search.stop()
@@ -692,7 +698,7 @@ export class Hub {
     const guildIds = Array.isArray(body['guilds']) && body['guilds'].length ? (body['guilds'] as string[]) : [this.options.config.guildId]
     for (const id of guildIds) if (!this.guildIds.has(id)) throw new HttpError(404, `Unknown guild ${id}`)
     if (this.options.config.adminGuildId && guildIds.includes(this.options.config.adminGuildId)) throw new HttpError(400, 'The Admin server is only for you and your admin agent')
-    const owner = { userId: this.options.config.ownerUserId, device: { id: 'cli', name: 'cli', userId: null, kind: 'web' as const, createdAt: 0, lastSeenAt: null, revokedAt: null } }
+    const owner = { userId: this.options.config.ownerUserId, device: { id: 'cli', name: 'cli', userId: null, kind: 'web' as const, createdAt: 0, lastSeenAt: null, revokedAt: null, local: false } }
     const invite = (await this.members.invite(owner, guildIds[0]!, { username: body['username'], global_name: body['global_name'] })) as { user: { id: string } }
     for (const id of guildIds.slice(1)) await this.twin.addGuildMember({ guildId: id, userId: invite.user.id })
     if (typeof body['tailscale_login'] === 'string' && body['tailscale_login']) {

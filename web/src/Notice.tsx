@@ -9,8 +9,8 @@ import type { HubState, Message } from './api.ts'
 import { emojify } from './emoji.tsx'
 import { Icon } from './icons.tsx'
 import { effective } from './notify.ts'
-import { dmName, isDm, machineOf, onIncoming, store, THREAD_TYPES } from './store.ts'
-import { machineLabel, plain } from './text.ts'
+import { agentName, dmName, isDm, machineOf, onIncoming, store, THREAD_TYPES } from './store.ts'
+import { plain } from './text.ts'
 
 const SHOWN_MS = 5000
 
@@ -68,7 +68,7 @@ function Card({ state, message, onOpen, onClose }: { state: HubState; message: M
   const parent = thread ? state.channels.find((c) => c.id === channel.parent_id) : undefined
   const guildName = state.guilds?.find((g) => g.id === channel.guild_id)?.name ?? state.guild.name
   const machine = message.author.bot ? machineOf(state, channel) : null
-  const name = machine ? machineLabel(machine) : (message.author.global_name ?? message.author.username)
+  const name = machine ? agentName(state.machine_bots, machine) : (message.author.global_name ?? message.author.username)
   const color = state.users.find((u) => u.id === message.author.id)?.color
   const userName = (id: string) => state.users.find((u) => u.id === id)?.global_name ?? state.users.find((u) => u.id === id)?.username ?? null
   const channelName = (id: string) => state.channels.find((c) => c.id === id)?.name ?? state.threads.find((c) => c.id === id)?.name ?? null

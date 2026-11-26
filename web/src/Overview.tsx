@@ -3,15 +3,16 @@
 // model; buttons are mirrored only when it is safe to answer from a summary.
 
 import { isMac } from './columns.ts'
+import { elapsedRun } from './run-clock.ts'
 import { Fragment, useEffect, useState } from 'react'
 import { api, type SessionSummary } from './api.ts'
 import { Icon } from './icons.tsx'
 import { Empty } from './Panels.tsx'
 import { extensions } from './extensions.tsx'
-import { snowflakeGt, store, useStore } from './store.ts'
-import { plain, machineLabel } from './text.ts'
+import { snowflakeGt, store, useMachineName, useStore } from './store.ts'
+import { plain } from './text.ts'
 
-function age(iso: string, now: number) {
+function age(iso: string | number, now: number) {
   const s = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000))
   if (s < 60) return 'now'
   if (s < 3600) return `${Math.floor(s / 60)}m`
@@ -19,7 +20,7 @@ function age(iso: string, now: number) {
   return `${Math.floor(s / 86_400)}d`
 }
 
-const STYLE: Record<number, string> = { 1: ' primary', 3: ' success', 4: ' danger' }
+export const STYLE: Record<number, string> = { 1: ' primary', 3: ' success', 4: ' danger' }
 
 // Dismissed items stay hidden until the session changes again (its `since` moves on).
 const dismissed: Record<string, string> = JSON.parse(localStorage.getItem('dismissed') ?? '{}')
@@ -31,10 +32,12 @@ function dismiss(session: SessionSummary) {
 
 function Row({ session, now, onOpen, names, onDismiss }: { session: SessionSummary; now: number; onOpen: (id: string) => void; names: (text: string) => string; onDismiss: () => void }) {
   const [chose, setChose] = useState<string | null>(null)
+  const machineName = useMachineName()
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
   const raw = session.state === 'waiting' ? session.ask?.text : session.state === 'failed' ? session.error : session.state === 'busy' ? (session.lastStep ? `Last step: ${session.lastStep}` : 'Working') : undefined
   const line = raw && names(raw)
+  const runAge = elapsedRun(session)
   const choose = async (customId: string, label: string) => {
     if (busy || !session.ask) return
     setBusy(true)
@@ -56,9 +59,9 @@ function Row({ session, now, onOpen, names, onDismiss }: { session: SessionSumma
         <i className={`st ${session.state}`} />
         <span className="ov-title">
           {names(session.title)}
-          <span className="ov-where">{[session.project, session.machine && machineLabel(session.machine)].filter(Boolean).join(' · ')}</span>
+          <span className="ov-where">{[session.project, session.machine && machineName(session.machine)].filter(Boolean).join(' · ')}</span>
         </span>
-        <span className="ov-age num">{age(session.since, now)}</span>
+        <span className="ov-age num">{session.state !== 'busy' ? age(session.since, now) : runAge !== null ? age(0, runAge) : ''}</span>
       </button>
       <button className="icon-button ov-dismiss" onClick={onDismiss} aria-label="Dismiss" title="Dismiss">
         <Icon name="close" size={16} />
@@ -98,6 +101,7 @@ const SECTIONS: Array<{ state: SessionSummary['state']; title: string }> = [
 export function Overview({ onMenu, onOpen, onSearch }: { onMenu: () => void; onOpen: (id: string) => void; onSearch: () => void }) {
   const sessions = useStore((d) => d.sessions)
   const machines = useStore((d) => d.machines)
+  const machineName = useMachineName()
   const seen = useStore((d) => d.seen)
   const users = useStore((d) => d.state?.users)
   const channels = useStore((d) => d.state?.channels)
@@ -156,7 +160,7 @@ export function Overview({ onMenu, onOpen, onSearch }: { onMenu: () => void; onO
                 const inner = (
                   <>
                     <i className={`dot${m.online === false ? ' off' : ''}`} />
-                    <b>{machineLabel(m.name)}</b> {m.online === false ? 'offline' : m.failed ? `${m.failed} failed` : m.running ? `${m.running} running` : m.waiting ? `${m.waiting} waiting` : 'idle'}
+                    <b>{machineName(m.name)}</b> {m.online === false ? 'offline' : m.failed ? `${m.failed} failed` : m.running ? `${m.running} running` : m.waiting ? `${m.waiting} waiting` : 'idle'}
                   </>
                 )
                 return <span key={m.name}>{inner}</span>

@@ -3,14 +3,14 @@
 // servers. Prefixes narrow it: # channels, * servers, @ people and bots.
 // Enter on an empty query goes back to the previous channel.
 
-import { useEffect, useMemo, useRef, useState } from 'react'
-import type { Channel } from './api.ts'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import type { Channel, SessionSummary } from './api.ts'
 import { Icon, type IconName } from './icons.tsx'
 import { snowflakeGt, store, THREAD_TYPES, useStore } from './store.ts'
 import { native } from './native.ts'
-import { plain } from './text.ts'
+import { leave, plain } from './text.ts'
 
-type Item = { id: string; kind: 'channel' | 'thread' | 'server' | 'person'; label: string; hint: string; icon: IconName; unread: boolean; mentions: number; open: () => void; rank: number }
+type Item = { id: string; kind: 'channel' | 'thread' | 'server' | 'person'; label: string; hint: string; sub?: string; side?: string; why?: string; state?: SessionSummary['state']; needs?: boolean; icon: IconName; unread: boolean; mentions: number; open: () => void; rank: number }
 
 const RECENT_KEY = 'recent-channels'
 
@@ -39,6 +39,7 @@ export function QuickSwitcher({ current, onOpen, onGuild, onClose }: { current: 
   const state = useStore((d) => d.state)
   const seen = useStore((d) => d.seen)
   const mentions = useStore((d) => d.mentions)
+  const sessions = useStore((d) => d.sessions)
   const [query, setQuery] = useState('')
   const [pick, setPick] = useState(0)
   const input = useRef<HTMLInputElement>(null)
@@ -68,18 +69,24 @@ export function QuickSwitcher({ current, onOpen, onGuild, onClose }: { current: 
         const parent = thread ? state.channels.find((p) => p.id === c.parent_id) : state.channels.find((p) => p.id === c.parent_id && p.type === 4)
         const archived = Boolean(c.thread_metadata?.archived)
         const unread = snowflakeGt(c.last_message_id, seen[c.id])
-        const hint = [parent ? (thread ? `#${parent.name}` : parent.name) : '', guildName(c.guild_id), archived ? 'archived' : ''].filter(Boolean).join(' · ')
-        add({ id: c.id, kind: thread ? 'thread' : 'channel', label: name(c), hint, icon: thread ? 'thread' : 'hash', unread, mentions: mentions[c.id] ?? 0, open: () => onOpen(c.id) }, recency(c.id) + (unread ? 5 : 0) + (mentions[c.id] ? 10 : 0) - (archived ? 15 : 0))
+        const session = thread ? sessions[c.id] : undefined
+        // What needs the owner leads the list, and says why.
+        const needs = session?.state === 'waiting' || session?.state === 'failed'
+        const reason = session?.state === 'waiting' ? session.ask?.text : session?.state === 'failed' ? session.error : undefined
+        // As Discord: the parent beside the name in small type, the server at the right edge.
+        const sub = [parent?.name ?? '', archived ? 'archived' : ''].filter(Boolean).join(' · ')
+        const why = needs && reason && !q ? plain(reason, () => null, () => null).replace(/^\**(question|error)\**:\**\s*/i, '').replace(/\s+/g, ' ') : undefined
+        add({ id: c.id, kind: thread ? 'thread' : 'channel', label: name(c), hint: sub, sub, side: guildName(c.guild_id), why, icon: thread ? 'thread' : 'hash', unread, mentions: mentions[c.id] ?? 0, open: () => onOpen(c.id), state: session?.state, needs }, recency(c.id) + (unread ? 5 : 0) + (mentions[c.id] ? 10 : 0) - (archived ? 15 : 0) + (needs ? (q ? 8 : 1000) : 0))
       }
     }
     if ((prefix === '' && q) || prefix === '*') {
-      for (const g of guilds) add({ id: g.id, kind: 'server', label: g.name, hint: 'Server', icon: 'server', unread: false, mentions: 0, open: () => onGuild(g.id) }, 0)
+      for (const g of guilds) add({ id: g.id, kind: 'server', label: g.name, hint: 'Server', sub: 'Server', icon: 'server', unread: false, mentions: 0, open: () => onGuild(g.id) }, 0)
     }
     if (prefix === '@') {
-      for (const u of state.users) add({ id: u.id, kind: 'person', label: u.global_name ?? u.username, hint: u.bot ? 'App' : `@${u.username}`, icon: 'at', unread: false, mentions: 0, open: () => void navigator.clipboard?.writeText(`<@${u.id}>`) }, 0)
+      for (const u of state.users) add({ id: u.id, kind: 'person', label: u.global_name ?? u.username, hint: u.bot ? 'App' : `@${u.username}`, sub: u.bot ? 'App' : u.username, icon: 'at', unread: false, mentions: 0, open: () => (u.bot || u.id === state.me.id ? void navigator.clipboard?.writeText(`<@${u.id}>`) : void store.openDm({ recipient_id: u.id }).then((c) => onOpen(c.id)).catch(() => {})) }, 0)
     }
     return out.sort((a, b) => b.rank - a.rank).slice(0, 50)
-  }, [state, seen, mentions, query, current, onOpen, onGuild])
+  }, [state, seen, mentions, sessions, query, current, onOpen, onGuild])
 
   useEffect(() => setPick(0), [query])
   useEffect(() => {
@@ -99,7 +106,6 @@ export function QuickSwitcher({ current, onOpen, onGuild, onClose }: { current: 
     <div className="overlay switcher-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="switcher" role="dialog" aria-label="Quick switcher">
         <div className="switcher-field">
-          <Icon name="search" size={18} />
           <input
             ref={input}
             value={query}
@@ -123,19 +129,24 @@ export function QuickSwitcher({ current, onOpen, onGuild, onClose }: { current: 
           />
         </div>
         <div className="switcher-list" ref={list}>
-          {!query.trim() && items.length > 0 && <div className="switcher-head">Recent and unread</div>}
           {items.map((item, index) => (
-            <button key={`${item.kind}${item.id}`} className={`switcher-item${index === pick ? ' picked' : ''}${item.unread ? ' unread' : ''}`} onMouseMove={() => setPick(index)} onClick={() => choose(item)}>
+            <Fragment key={`${item.kind}${item.id}`}>
+            {!query.trim() && (index === 0 || items[index - 1]!.needs !== item.needs) && <div className="switcher-head">{item.needs ? 'Needs you' : 'Recent and unread'}</div>}
+            <button className={`switcher-item${index === pick ? ' picked' : ''}${item.unread ? ' unread' : ''}`} onMouseMove={() => setPick(index)} onClick={() => choose(item)}>
               <Icon name={item.icon} size={16} />
               <span className="switcher-label">{item.label}</span>
-              {item.hint && <span className="switcher-hint">{item.hint}</span>}
               {item.mentions > 0 && <span className="badge num">{item.mentions}</span>}
+              {item.sub && <span className="switcher-sub">{item.sub}</span>}
+              {item.why ? <span className="switcher-why">{item.why}</span> : <span className="switcher-gap" />}
+              {item.state && item.state !== 'idle' && item.state !== 'done' && <i className={`st ${item.state}`} aria-label={item.state === 'busy' ? 'Working' : item.state === 'waiting' ? 'Waiting for you' : 'Failed'} />}
+              {item.side && <span className="switcher-side">{item.side}</span>}
             </button>
+            </Fragment>
           ))}
           {query.trim() && items.length === 0 && <div className="switcher-empty">Nothing matches.</div>}
         </div>
         <div className="switcher-tip">
-          Type <kbd>#</kbd> for channels, <kbd>*</kbd> for servers, <kbd>@</kbd> to copy a mention. <kbd>Enter</kbd> on empty goes back.
+          Type <kbd>#</kbd> for channels, <kbd>*</kbd> for servers, <kbd>@</kbd> for people. <kbd>Enter</kbd> on empty goes back.
         </div>
       </div>
     </div>
@@ -165,24 +176,39 @@ const SHORTCUTS: Array<[string, string]> = [
   [`${mod} B / I / U`, 'Bold, italic, underline in the message box'],
 ]
 
+// One cap per key, as Discord draws them. A slash between keys separates alternatives
+// ("Alt ↑ / ↓"); words from " in " onward are a plain note.
+function Keys({ keys }: { keys: string }) {
+  const at = keys.indexOf(' in ')
+  const caps = (at < 0 ? keys : keys.slice(0, at)).split(' ')
+  return (
+    <span className="keys">
+      {caps.map((k, i) => (k === '/' && i > 0 && i < caps.length - 1 ? <span key={i}>/</span> : <kbd key={i}>{k}</kbd>))}
+      {at >= 0 && <span>{keys.slice(at + 1)}</span>}
+    </span>
+  )
+}
+
 export function ShortcutSheet({ onClose }: { onClose: () => void }) {
+  const overlay = useRef<HTMLDivElement>(null)
+  const close = () => leave(overlay.current, onClose)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault()
         e.stopPropagation()
-        onClose()
+        leave(overlay.current, onClose)
       }
     }
     window.addEventListener('keydown', onKey, { capture: true })
     return () => window.removeEventListener('keydown', onKey, { capture: true })
   }, [onClose])
   return (
-    <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div ref={overlay} className="overlay" onMouseDown={(e) => e.target === e.currentTarget && close()}>
       <div className="modal shortcuts" role="dialog" aria-label="Keyboard shortcuts">
         <div className="modal-header">
           <h2>Keyboard shortcuts</h2>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Close">
+          <button type="button" className="icon-button" onClick={close} aria-label="Close">
             <Icon name="close" size={18} />
           </button>
         </div>
@@ -190,7 +216,7 @@ export function ShortcutSheet({ onClose }: { onClose: () => void }) {
           {SHORTCUTS.map(([keys, what]) => (
             <div key={keys} className="shortcut-row">
               <span>{what}</span>
-              <kbd>{keys}</kbd>
+              <Keys keys={keys} />
             </div>
           ))}
         </div>

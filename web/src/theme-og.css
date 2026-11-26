@@ -1,0 +1,110 @@
+/* OG: Discord's dark colour scheme, 1:1. Every value is measured from Discord's desktop app
+   (its colour tokens and screen captures), not remembered. The Vocorum
+   tokens keep their roles; only their values change. Vocorum's own signals keep their
+   meaning: working stays pink, waiting takes the brand blurple, unread stays white. */
+:root[data-theme='og'] {
+  /* Surfaces: the frame (rail, list, title bar), the chat, raised cards and popouts. */
+  --bg-0: #121214;
+  --bg-1: #121214;
+  --bg-2: #1a1a1e;
+  --bg-3: #242429;
+  --bg-4: #2e2e33;
+  --sheet: #28282d;
+  --group: #202024;
+  --group-line: #2c2c30;
+  /* State fills over any surface: list hover #222225 and selected #2c2c30 on #121214,
+     message and member hover #29292d on #1a1a1e, menu hover #35353b on #28282d. */
+  --fill-hover: rgb(255 255 255 / 0.068);
+  --fill-selected: rgb(255 255 255 / 0.113);
+  --fill-press: rgb(255 255 255 / 0.15);
+  --fill-control-hover: rgb(255 255 255 / 0.1);
+  --fill-control-press: rgb(255 255 255 / 0.181);
+  --fill-menu-hover: rgb(255 255 255 / 0.063);
+  --fill-row-hover: rgb(255 255 255 / 0.066);
+  /* Rules: the frame #222225, chat-side rules #29292d, cards #323237, menus #35353b. */
+  --line: #222225;
+  --line-strong: #29292d;
+  --line-card: #323237;
+  --line-raised: #35353b;
+  --spine: #474851;
+  /* Text: strong #fbfbfb, body #efeff1, icons and quotes #abacb2, secondary #96979e,
+     muted #81828a (channel names, categories, timestamps). */
+  --text-strong: #fbfbfb;
+  --text: #efeff1;
+  --text-muted: #abacb2;
+  --text-faint: #96979e;
+  --text-quiet: #81828a;
+  --danger-text: #f87e7a;
+  /* Brand and signals. */
+  --accent: #5865f2;
+  --accent-rgb: 88 101 242;
+  --accent-ink: #ffffff;
+  --on-accent: #ffffff;
+  --on-ok: #ffffff;
+  --busy: var(--pink);
+  --busy-rgb: 255 46 136;
+  --link: #4d96ee;
+  --ok: #45a366;
+  --success-button: #028449;
+  --success-ring: #0c8950;
+  --danger: #d22d39;
+  --danger-fill: #d22d39;
+  --warn: #ffc04e;
+  /* Role colours Discord gives their own value (Vocorum derives these from the tokens above). */
+  --frame-line: #222225;
+  --rail-active-ink: #ffffff;
+  --selected-thread-text: var(--text-strong);
+  --menu-bg: #28282d;
+  --float-bg: #242429;
+  --float-well: #1a1a1e;
+  --float-line: #323237;
+  --popout-line: #29292c;
+  --tip-text: #efeff1;
+  --toolbar-line: #29292d;
+  --card-surface: #242429;
+  --card-surface-line: #323237;
+  --panel-bg: #202024;
+  --panel-line: #252529;
+  --panel-sub: #97989d;
+  --composer-bg: #222327;
+  --composer-line: #27282b;
+  --composer-focus-line: #303135;
+  --composer-placeholder: #6c6d76;
+  --search-bg: #17171a;
+  --search-line: #303035;
+  --search-text: #8f9097;
+  --select-bg: #17171a;
+  --select-line: #303035;
+  --switcher-field-bg: #202024;
+  --switcher-field-line: #37373d;
+  --time-text: #81828a;
+  --members-head: #81828a;
+  --code-bg: #1f202f;
+  --code-line: #373745;
+  --quote-bar: #474851;
+  --mention-bg: rgb(88 101 242 / 0.24);
+  --mention-text: #a9bbff;
+  --needs-bg: rgb(234 152 0 / 0.08);
+  --needs-bar: #ea9800;
+  --highlight-bg: rgb(88 101 242 / 0.29);
+  --new-line: #d22d39;
+  --pill-bg: #2c2d32;
+  --pill-line: #414248;
+  --thread-count: #4d96ee;
+  --button-fill: rgb(255 255 255 / 0.066);
+  --settings-bg: #202024;
+  --settings-rule: #54545a;
+  --settings-nav-rule: #222225;
+  --settings-side: #1a1a1e;
+  --field-bg: #1c1c20;
+  --field-line: #343439;
+  --switch-off: #1c1c20;
+  --switch-line: #313136;
+  --scrollbar: #5f606a;
+  --scrollbar-active: #666770;
+  --radio-ring: #abacb2;
+}
+/* Discord's chat is a flat surface: no wall tint, no dot grid. */
+:root[data-theme='og'] .chat {
+  background: var(--bg-2);
+}

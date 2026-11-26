@@ -1,0 +1,60 @@
+/* Threads panel cards. The status is the card's left edge, in the shape card-edges.css gives
+   every accented card: pink working, accent waiting for you, red failed, white unread. */
+.side-panel .panel-thread { position: relative; cursor: pointer; }
+.side-panel .panel-thread[data-edge='busy']::before { background: var(--busy); }
+.side-panel .panel-thread[data-edge='waiting']::before { background: var(--accent); }
+.side-panel .panel-thread[data-edge='failed']::before { background: var(--danger); }
+.side-panel .panel-thread[data-edge='unread']::before { background: var(--text-strong); }
+/* Only a working edge breathes. */
+@media (prefers-reduced-motion: no-preference) {
+  .side-panel .panel-thread[data-edge='busy']::before { animation: thread-edge-breathe 2.4s ease-in-out infinite; }
+  [data-lowfps] .side-panel .panel-thread[data-edge='busy']::before { animation-timing-function: steps(6); }
+}
+@keyframes thread-edge-breathe {
+  50% { opacity: 0.36; }
+}
+/* The name opens the thread from anywhere on the card; the answer buttons sit above it. */
+.panel-thread .thread-open { text-align: left; }
+.panel-thread .thread-open::after { content: ''; position: absolute; inset: 0; }
+.side-panel .panel-thread .thread-open:focus-visible { outline: none; }
+.side-panel .panel-thread:has(.thread-open:focus-visible) { outline: 2px solid var(--accent); outline-offset: -2px; }
+.side-panel .panel-thread:not([data-unread]) .link-title { color: var(--text); }
+.side-panel .panel-thread .ov-line { margin: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.side-panel .panel-thread .action-row { position: relative; z-index: 1; flex-direction: row; align-items: center; align-self: flex-start; max-width: 100%; margin: 4px 0; cursor: default; }
+.side-panel .thread-row.panel-thread .result-where { display: flex; align-items: center; gap: 8px; padding-left: 0; }
+.panel-thread .thread-count { display: inline-flex; align-items: center; gap: 4px; }
+.side-panel .panel-thread[data-unread] .link-title { color: var(--text-strong); }
+
+/* Create Thread: Discord's row above the list, shaped like the cards below it (16px icon inset,
+   16px label at 56px, a muted chevron at the right). */
+.side-panel .create-thread {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 56px;
+  margin: 12px 8px 0;
+  padding: 0 12px 0 16px;
+  background: var(--bg-3);
+  border: 1px solid var(--line-card);
+  border-radius: var(--r-control);
+  font: 400 16px/20px var(--font);
+  color: var(--text);
+  text-align: left;
+  transition: background-color var(--t-fast);
+}
+.side-panel .create-thread > span { flex: 1; min-width: 0; }
+.side-panel .create-thread > svg:last-child { color: var(--text-muted); }
+@media (hover: hover) {
+  .side-panel .create-thread:hover { background: color-mix(in srgb, var(--bg-3), #fff 6%); }
+}
+.side-panel .create-thread:active { background: color-mix(in srgb, var(--bg-3), #fff 10%); }
+.side-panel .create-thread:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.panel-head .panel-action { display: none; }
+/* Phones: the close X at the left, the title centred, + at the right, as in Discord's Threads. */
+@media (max-width: 767px) {
+  .side-panel.with-action .panel-head { padding-left: 4px; padding-right: 4px; }
+  .side-panel.with-action .panel-head .panel-icon { display: none; }
+  .side-panel.with-action .panel-title { justify-content: center; font: 600 17px/22px var(--font); }
+  .side-panel.with-action .panel-head .panel-action { display: inline-grid; color: var(--text); }
+  .side-panel.with-action .panel-head .panel-back { color: var(--text); }
+}

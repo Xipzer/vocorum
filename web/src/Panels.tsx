@@ -3,21 +3,26 @@
 
 import { isMac } from './columns.ts'
 import { extensions } from './extensions.tsx'
-import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { below, Sheet, type SheetSpec } from './Sheet.tsx'
+import { profileSheet, type ProfileOf } from './Profile.tsx'
 import { startAuthentication } from '@simplewebauthn/browser'
-import { api, type Channel, type HubRequest, type Reminder, type FoundChannel, type LinkKind, type Mention, type Message, type SearchResult, type Service, type ServiceEvent } from './api.ts'
+import { api, call, type Channel, type HubRequest, type Reminder, type FoundChannel, type LinkKind, type Mention, type Message, type SearchResult, type Service, type ServiceEvent, type SessionSummary } from './api.ts'
 import { Avatar, machineIcon } from './Avatar.tsx'
 import { Icon, type IconName } from './icons.tsx'
 import { E } from './emoji.tsx'
 import { Markdown, type MarkdownContext } from './markdown.tsx'
-import { dmName, isDm, machineOf, store, useStore } from './store.ts'
+import { agentName, dmName, isDm, machineOf, snowflakeGt, store, useMachineName, useStore } from './store.ts'
 import { cronLabel, isDue, remindTime, remindSheet } from './remind.ts'
 import { can, P } from './perms.ts'
-import { clock, displayName, plain, machineLabel } from './text.ts'
+import { clock, displayName, plain } from './text.ts'
 import { approveInApp, native } from './native.ts'
 import { approvalError } from './login.ts'
 import { CodeCard } from './SettingsPeople.tsx'
+import { STYLE } from './Overview.tsx'
+import { elapsedRun } from './run-clock.ts'
+import { ALL_MARKS, choices as MARKS, markBit, ThreadFilter, useThreadFilter } from './ThreadFilter.tsx'
+import './threads-panel.css'
 
 export type Jump = (channelId: string, messageId: string) => void
 
@@ -38,9 +43,12 @@ function useWhere() {
 }
 
 // Server snippets mark hits with **…**; shown as highlights, everything else as text.
-function Snippet({ text }: { text: string }) {
+// Mentions arrive as ids (<@id>, <#id>) and read as the names the chat shows.
+function Snippet({ text, userName, channelName }: { text: string; userName: (id: string) => string | null; channelName: (id: string) => string | null }) {
   // Markdown syntax around the hits is noise in a one-line result.
   const parts = text
+    .replace(/<@!?(\d+)>/g, (_, id: string) => `@${userName(id) ?? 'someone'}`)
+    .replace(/<#(\d+)>/g, (_, id: string) => `#${channelName(id) ?? 'channel'}`)
     .replace(/```\w*|`/g, '')
     .replace(/^#{1,6}\s+|^>\s?|^-#\s+/gm, '')
     .split(/\*\*(.+?)\*\*/g)
@@ -65,8 +73,63 @@ export function Empty({ icon, title, children }: { icon: IconName; title: string
   )
 }
 
+function useDesk() {
+  const [desk, setDesk] = useState(() => window.matchMedia('(min-width: 768px)').matches)
+  useEffect(() => {
+    const query = window.matchMedia('(min-width: 768px)')
+    const on = () => setDesk(query.matches)
+    query.addEventListener('change', on)
+    return () => query.removeEventListener('change', on)
+  }, [])
+  return desk
+}
+
+// Discord's popout on desktop: it hangs from its trigger, right edge on the trigger's right edge,
+// under the header; a trigger low on the screen (the inbox bell) opens it upward from the user
+// panel's left edge. Height follows the content; a click outside closes it.
+function usePopout(anchor: string | undefined, box: React.RefObject<HTMLElement | null>, onClose: () => void) {
+  const desk = useDesk()
+  const [at, setAt] = useState<CSSProperties | null>(null)
+  const close = useRef(onClose)
+  close.current = onClose
+  const on = Boolean(anchor && desk)
+  useLayoutEffect(() => {
+    if (!anchor || !on) return setAt(null)
+    const place = () => {
+      const trigger = [...document.querySelectorAll<HTMLElement>(anchor)].find((el) => !el.closest('.side-panel') && el.getBoundingClientRect().width > 0)
+      const width = box.current?.offsetWidth ?? 0
+      const fit = (left: number) => Math.round(Math.max(8, Math.min(left, innerWidth - 8 - width)))
+      const r = trigger?.getBoundingClientRect()
+      if (trigger && r && r.top > innerHeight / 2) {
+        const foot = (trigger.closest('.user-panel') ?? trigger).getBoundingClientRect()
+        return setAt({ left: fit(foot.left), top: 'auto', bottom: Math.round(innerHeight - foot.top + 8), '--pop-room': `${Math.round(foot.top - 16)}px` } as CSSProperties)
+      }
+      const head = (trigger?.closest('.chat-header') ?? document.querySelector('.app > .chat > .chat-header'))?.getBoundingClientRect()
+      const top = Math.round(head?.bottom ?? 48)
+      setAt({ left: fit((r ? r.right : innerWidth - 8) - width), top, bottom: 'auto', '--pop-room': `${innerHeight - top - 16}px` } as CSSProperties)
+    }
+    place()
+    window.addEventListener('resize', place)
+    return () => window.removeEventListener('resize', place)
+  }, [anchor, on, box])
+  useEffect(() => {
+    if (!anchor || !on) return
+    const down = (e: PointerEvent) => {
+      const target = e.target as Element
+      if (box.current?.contains(target) || target.closest?.(`${anchor}, .sheet-layer, .overlay, .lightbox`)) return
+      close.current()
+    }
+    document.addEventListener('pointerdown', down)
+    return () => document.removeEventListener('pointerdown', down)
+  }, [anchor, on, box])
+  return on ? (at ?? { visibility: 'hidden' }) : null
+}
+
 // Side panel shell: icon and title like Discord's popouts, a count only when there's something.
-function Panel({ title, icon, count, children, onClose, extra }: { title: ReactNode; icon?: IconName; count?: number; children: ReactNode; onClose: () => void; extra?: ReactNode }) {
+// With an anchor (a CSS selector for its trigger) it floats as a popout on desktop.
+function Panel({ title, icon, count, children, onClose, extra, kind, action, anchor }: { title: ReactNode; icon?: IconName; count?: number; children: ReactNode; onClose: () => void; extra?: ReactNode; /** Names the panel for its own type sizes (`pins-panel`). */ kind?: 'threads' | 'pins' | 'inbox' | 'members'; /** On a phone: a close X at the left and this button at the right, around a centred title. */ action?: { label: string; icon: IconName; run: () => void }; anchor?: string }) {
+  const box = useRef<HTMLElement>(null)
+  const popout = usePopout(anchor, box, onClose)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !document.querySelector('.sheet-layer, .overlay')) onClose()
@@ -75,10 +138,10 @@ function Panel({ title, icon, count, children, onClose, extra }: { title: ReactN
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
   return (
-    <aside className="side-panel" role="complementary">
+    <aside ref={box} className={`side-panel${kind ? ` ${kind}-panel` : ''}${action ? ' with-action' : ''}${popout ? ' popout' : ''}`} style={popout ?? undefined} role="complementary">
       <header className="panel-head">
         <button className="icon-button panel-back" onClick={onClose} aria-label="Close panel">
-          <Icon name="back" size={22} />
+          <Icon name={action ? 'close' : 'back'} size={22} />
         </button>
         {icon && <Icon name={icon} size={20} className="panel-icon" />}
         <div className="panel-title">
@@ -89,6 +152,11 @@ function Panel({ title, icon, count, children, onClose, extra }: { title: ReactN
         <button className="icon-button panel-close" onClick={onClose} aria-label="Close">
           <Icon name="close" size={18} />
         </button>
+        {action && (
+          <button className="icon-button panel-action" onClick={action.run} aria-label={action.label} title={action.label}>
+            <Icon name={action.icon} size={22} />
+          </button>
+        )}
       </header>
       {children}
     </aside>
@@ -108,10 +176,16 @@ export function SearchPanel({ onClose, onJump, initial = '' }: { onClose: () => 
   const where = useWhere()
   const seq = useRef(0)
   const hubState = useStore((d) => d.state)
+  // Mentions in a result read as they do in the chat: the person's or channel's name.
+  const userName = (raw: string) => {
+    const user = hubState?.users.find((u) => u.id === (hubState.user_aliases?.[raw] ?? raw))
+    return user ? (user.global_name ?? user.username) : null
+  }
+  const channelName = (id: string) => (hubState?.channels.find((c) => c.id === id) ?? hubState?.threads.find((c) => c.id === id))?.name ?? null
   // A bot's result carries the name the chat shows for it: its machine's.
   const author = (r: SearchResult) => {
     const machine = r.message.author.bot && hubState ? machineOf(hubState, (hubState.threads.find((c) => c.id === r.channel.id) ?? hubState.channels.find((c) => c.id === r.channel.id)) ?? ({ ...r.channel, name: r.channel.name ?? undefined } as Channel)) : null
-    return machine ? machineLabel(machine) : (r.message.author.global_name ?? r.message.author.username)
+    return machine ? agentName(hubState!.machine_bots, machine) : (r.message.author.global_name ?? r.message.author.username)
   }
 
   useEffect(() => input.current?.focus(), [])
@@ -197,7 +271,7 @@ export function SearchPanel({ onClose, onJump, initial = '' }: { onClose: () => 
               <b>{author(r)}</b>
               <span className="num">{when(r.message.timestamp)}</span>
             </span>
-            <Snippet text={r.snippet ?? plain(r.message.content).slice(0, 200)} />
+            <Snippet text={r.snippet ?? plain(r.message.content, userName, channelName).slice(0, 200)} userName={userName} channelName={channelName} />
           </button>
         ))}
         {total !== null && results.length < total && (
@@ -220,7 +294,7 @@ export function PinsPanel({ channelId, ctx, onClose, onJump }: { channelId: stri
     api.pins(channelId).then((r) => setPins(r.messages), (e: Error) => setError(e.message))
   }, [channelId, pinnedKey])
   return (
-    <Panel title="Pinned messages" icon="pin" count={pins?.length} onClose={onClose}>
+    <Panel title="Pinned messages" icon="pin" kind="pins" count={pins?.length} onClose={onClose} anchor=".chat-header [aria-label='Pinned messages']">
       <div className="panel-body">
         {error && <div className="error panel-pad">{error}</div>}
         {pins?.length === 0 && <Empty icon="pin" title="No pinned messages">Pin a message to keep it here.</Empty>}
@@ -345,6 +419,7 @@ export function Inbox({ guildId, onMenu, onJump, onSearch }: { guildId: string; 
 export function InboxPanel({ onClose, onJump, onOpen }: { onClose: () => void; onJump: Jump; onOpen: (id: string) => void }) {
   const { list, error, unread } = useMentions()
   const sessions = useStore((d) => d.sessions)
+  const machineName = useMachineName()
   const needs = Object.values(sessions)
     .filter((s) => s.state === 'waiting' || s.state === 'failed')
     .sort((a, b) => b.since.localeCompare(a.since))
@@ -363,8 +438,10 @@ export function InboxPanel({ onClose, onJump, onOpen }: { onClose: () => void; o
     <Panel
       title="Inbox"
       icon="bell"
+      kind="inbox"
       count={due.length + pendingCount + needs.length + unreadCount + more}
       onClose={onClose}
+      anchor=".inbox-button"
       extra={
         unreadCount > 0 ? (
           <button className="button" onClick={() => store.markAllSeen([...new Set(list!.filter(unread).map((m) => m.channel.id))])}>
@@ -403,7 +480,7 @@ export function InboxPanel({ onClose, onJump, onOpen }: { onClose: () => void; o
               <b>{plain(s.title)}</b>
             </span>
             <span className="result-where">
-              {[s.project && `#${s.project}`, s.machine].filter(Boolean).join(' · ')}
+              {[s.project && `#${s.project}`, s.machine && machineName(s.machine)].filter(Boolean).join(' · ')}
               {s.ask?.text ? ` · ${plain(s.ask.text).slice(0, 80)}` : s.error ? ` · ${s.error}` : ''}
             </span>
           </button>
@@ -466,6 +543,7 @@ function ReminderRow({ reminder: r, due, onJump, onOpen, fullText = false }: { r
 // Messages waiting to be posted: in one channel, or everywhere. Each says when (in local
 // time, or its repeat), where, and what; a failed one says why. The cross cancels it.
 export function ScheduledPanel({ channelId, onClose, onOpen, onJump }: { channelId?: string; onClose: () => void; onOpen: (id: string) => void; onJump: Jump }) {
+  const machineName = useMachineName()
   const all = useStore((d) => d.scheduled)
   const reminders = (useStore((d) => d.reminders) ?? []).filter((r) => !r.due && (!channelId || r.channel_id === channelId))
   const list = channelId ? all.filter((s) => s.channel_id === channelId) : all
@@ -515,7 +593,7 @@ export function ScheduledPanel({ channelId, onClose, onOpen, onJump }: { channel
         {routines.map((m) => (
           <Fragment key={m.machine}>
             <div className="panel-section">
-              Routines on {machineLabel(m.machine)} <span className="num">{m.routines.length}</span>
+              Routines on {machineName(m.machine)} <span className="num">{m.routines.length}</span>
             </div>
             {m.routines.map((r) => {
               const target = r.thread_id ?? r.channel_id
@@ -647,6 +725,7 @@ const KIND_TEXT: Record<LinkKind, string> = {
 // Sessions this one works with: liaisons first, then parent and children, then one-way mentions.
 export function LinksPanel({ channelId, onClose, onOpen, onJump }: { channelId: string; onClose: () => void; onOpen: (id: string) => void; onJump: Jump }) {
   const links = useStore((d) => d.linked[channelId])
+  const machineName = useMachineName()
   const threads = useStore((d) => d.state?.threads)
   const channels = useStore((d) => d.state?.channels)
   const sessions = useStore((d) => d.sessions)
@@ -666,7 +745,7 @@ export function LinksPanel({ channelId, onClose, onOpen, onJump }: { channelId: 
           return (
             <div key={link.id} className="result link-item">
               <button className="link-open" onClick={() => onOpen(link.id)}>
-                <span className="result-where">{[project && `#${project}`, session?.machine].filter(Boolean).join(' · ')}</span>
+                <span className="result-where">{[project && `#${project}`, session?.machine && machineName(session.machine)].filter(Boolean).join(' · ')}</span>
                 <span className="link-title">
                   <i className={`st ${session?.state ?? 'idle'}`} />
                   <b>{thread ? plain(thread.name ?? '') : 'A thread not on this hub'}</b>
@@ -948,44 +1027,230 @@ function ServiceDetail({ unit, service, all, onBack, onClose, onOpen }: { unit: 
   )
 }
 
-// The threads of a channel, newest activity first, like Discord's Threads popout.
-export function ThreadsPanel({ channelId, onClose, onOpen }: { channelId: string; onClose: () => void; onOpen: (id: string) => void }) {
-  const state = useStore((d) => d.state)
-  const sessions = useStore((d) => d.sessions)
-  const [query, setQuery] = useState('')
-  const channel = state?.channels.find((c) => c.id === channelId)
-  const q = query.trim().toLowerCase()
-  const threads = (state?.threads ?? [])
-    .filter((t) => t.parent_id === channelId && (!q || plain(t.name ?? '').toLowerCase().includes(q)))
-    .sort((a, b) => (BigInt(b.last_message_id ?? b.id) > BigInt(a.last_message_id ?? a.id) ? 1 : -1))
-  const open = threads.filter((t) => !t.thread_metadata?.archived)
-  const older = threads.filter((t) => t.thread_metadata?.archived)
-  const row = (t: (typeof threads)[number]) => {
-    const session = sessions[t.id]
-    const at = t.last_message_id ?? t.id
-    return (
-      <button key={t.id} className="result thread-row" onClick={() => onOpen(t.id)}>
-        <span className="link-title">
-          <i className={`st ${session?.state ?? 'idle'}`} />
-          <b>{plain(t.name ?? '')}</b>
-        </span>
-        <span className="result-where">
-          {session?.lastStep ?? (t.message_count ? `${t.message_count} ${t.message_count === 1 ? 'message' : 'messages'}` : 'No messages yet')}
-          <span className="num"> · {since(new Date(Number((BigInt(at) >> 22n) + 1420070400000n)).toISOString())}</span>
-        </span>
-      </button>
-    )
+// A thread's first prompt, when the channel isn't loaded that far back: one small request,
+// a few at a time, asked for only once its card is near the screen.
+const starters = new Map<string, Promise<Message | null>>()
+const starterQueue: Array<() => void> = []
+let starterSlots = 4
+function fetchStarter(threadId: string, channelId: string) {
+  let job = starters.get(threadId)
+  if (!job) {
+    job = new Promise<void>((go) => (starterSlots > 0 ? (starterSlots--, go()) : starterQueue.push(go)))
+      .then(() => call<{ messages: Message[] }>(`/client/channels/${channelId}/messages?limit=1&before=${BigInt(threadId) + 1n}`))
+      .then(
+        (page) => page.messages.find((m) => m.id === threadId) ?? null,
+        () => (starters.delete(threadId), null),
+      )
+      .finally(() => {
+        const next = starterQueue.shift()
+        if (next) next()
+        else starterSlots++
+      })
+    starters.set(threadId, job)
+  }
+  return job
+}
+function useStarter(card: React.RefObject<HTMLElement | null>, threadId: string, loaded: Message | undefined, from: string | null) {
+  const [fetched, setFetched] = useState<Message | null>(null)
+  const wanted = !loaded && from
+  useEffect(() => {
+    const el = card.current
+    if (!wanted || !el) return
+    let live = true
+    const load = () => void fetchStarter(threadId, wanted).then((m) => live && setFetched(m))
+    if (typeof IntersectionObserver === 'undefined') return load()
+    const near = new IntersectionObserver((entries) => entries.some((e) => e.isIntersecting) && (near.disconnect(), load()), { rootMargin: '400px' })
+    near.observe(el)
+    return () => {
+      live = false
+      near.disconnect()
+    }
+  }, [card, threadId, wanted])
+  return loaded ?? fetched ?? undefined
+}
+
+// The buttons of a mirrored question, as on the Overview: the answer goes without opening.
+function ThreadAnswer({ session, onOpen }: { session: SessionSummary; onOpen: (id: string) => void }) {
+  const [chose, setChose] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [failed, setFailed] = useState<string | null>(null)
+  const ask = session.ask
+  if (chose) return <span className="ov-line num">{chose}</span>
+  if (!ask?.choices) return null
+  const choose = async (customId: string, label: string) => {
+    if (busy) return
+    setBusy(true)
+    setFailed(null)
+    try {
+      const result = await api.interaction({ type: 'button', customId, channelId: session.id, messageId: ask.messageId })
+      if (result.type === 9) onOpen(session.id)
+      else if (!result.acknowledged) setFailed("The bot didn't answer. Try again, or type your reply.")
+      else setChose(`Chose ${label} · ${clock(new Date().toISOString())}`)
+    } catch (e) {
+      setFailed(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
   }
   return (
-    <Panel title="Threads" icon="threads" onClose={onClose}>
-      <div className="panel-search">
-        <label className="search">
-          <Icon name="search" size={18} />
-          <input autoFocus={!window.matchMedia('(pointer: coarse)').matches} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search thread names" aria-label="Search thread names" />
-        </label>
+    <>
+      <div className="action-row">
+        {ask.choices.map((c) => (
+          <button key={c.customId} className={`button${STYLE[c.style] ?? ''}${busy ? ' busy' : ''}`} disabled={busy} onClick={() => void choose(c.customId, c.label)}>
+            {c.label}
+          </button>
+        ))}
       </div>
-      <div className="panel-body">
-        {threads.length === 0 && (q ? <Empty icon="search" title="No matching threads" /> : <Empty icon="threads" title="No threads yet">A message in{channel ? ` #${channel.name}` : ' this channel'} starts one.</Empty>)}
+      {failed && <span className="ov-line error">{failed}</span>}
+    </>
+  )
+}
+
+const EDGES = ['busy', 'waiting', 'failed'] as const
+const RANK: Partial<Record<SessionSummary['state'], number>> = { waiting: 0, failed: 1, busy: 2 }
+
+// One thread as a card. Its left edge is the status: working, waiting for you, failed, or white
+// for unread when nothing is active. The title is bright only when unread.
+function ThreadCard({ thread, session, unread, starter, from, names, onOpen }: { thread: Channel; session?: SessionSummary; unread: boolean; starter?: Message; from: string | null; names: (text: string) => string; onOpen: (id: string) => void }) {
+  const root = useRef<HTMLDivElement>(null)
+  const first = useStarter(root, thread.id, starter, from)
+  const state = session?.state
+  const edge = EDGES.find((e) => e === state) ?? (unread ? 'unread' : undefined)
+  const raw = state === 'waiting' ? session?.ask?.text : state === 'failed' ? session?.error : state === 'busy' ? session?.lastStep : undefined
+  const line = names(raw || first?.content || '').replace(/^(question|error):\s*/i, '')
+  const run = state === 'busy' ? elapsedRun(session) : null
+  const at = Number((BigInt(thread.last_message_id ?? thread.id) >> 22n) + 1420070400000n)
+  const mark = [edge && edge !== 'unread' && MARKS[EDGES.indexOf(edge)], unread && 'Unread messages'].filter(Boolean).join(', ')
+  return (
+    <div ref={root} className="result thread-row panel-thread" data-thread={thread.id} data-edge={edge} data-unread={unread || undefined}>
+      <button className="link-title thread-open" aria-description={mark || undefined} onClick={() => onOpen(thread.id)}>
+        <b>{plain(thread.name ?? '')}</b>
+      </button>
+      {line && <span className="ov-line">{line}</span>}
+      {session?.state === 'waiting' && <ThreadAnswer key={session.ask?.messageId} session={session} onOpen={onOpen} />}
+      <span className="result-where">
+        <span className="thread-count num">
+          <Icon name="chat" size={14} />
+          {thread.message_count ?? 0}
+        </span>
+        <span className="num">{since(new Date(run !== null ? Date.now() - run : at).toISOString())}</span>
+      </span>
+    </div>
+  )
+}
+
+// Up and Down walk the cards, from the search field too; Enter on one opens it.
+function threadKeys(e: React.KeyboardEvent<HTMLElement>) {
+  if ((e.key !== 'ArrowDown' && e.key !== 'ArrowUp') || e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return
+  const target = e.target as HTMLElement
+  const panel = target.closest('.side-panel')
+  const field = panel?.querySelector<HTMLElement>('.thread-search-tools .search input')
+  const cards = [...(panel?.querySelectorAll<HTMLElement>('.thread-open') ?? [])]
+  const at = cards.indexOf(target.closest('.panel-thread')?.querySelector<HTMLElement>('.thread-open') as HTMLElement)
+  if (at < 0 && target !== field) return
+  const next = at < 0 ? (e.key === 'ArrowDown' ? cards[0] : undefined) : (cards[at + (e.key === 'ArrowDown' ? 1 : -1)] ?? (e.key === 'ArrowUp' ? field : undefined))
+  if (!next) return
+  e.preventDefault()
+  next.focus()
+}
+
+// The threads of a channel, newest activity first, like Discord's Threads popout.
+export function ThreadsPanel({ channelId, onClose, onOpen, onCreate }: { channelId: string; onClose: () => void; onOpen: (id: string) => void; onCreate: () => void }) {
+  const state = useStore((d) => d.state)
+  const sessions = useStore((d) => d.sessions)
+  const seen = useStore((d) => d.seen)
+  const entry = useStore((d) => d.messages[channelId])
+  const [query, setQuery] = useState('')
+  // The same status filter as the channel list, kept for this channel's panel alone.
+  const [mask, setMask] = useThreadFilter(state?.me.id ?? '', `panel:${channelId}`)
+  // Ages and the run clock move on while the panel stays open.
+  const [, tick] = useState(0)
+  useEffect(() => {
+    const id = window.setInterval(() => tick((n) => n + 1), 30_000)
+    return () => window.clearInterval(id)
+  }, [])
+  const channel = state?.channels.find((c) => c.id === channelId)
+  // Threads start from a message in an agent's project channel, so that is where Create Thread goes.
+  const creates = Boolean(state && channel && channel.type === 0 && machineOf(state, channel) && can(P.SEND_MESSAGES, channel) && can(P.CREATE_PUBLIC_THREADS, channel))
+  const q = query.trim().toLowerCase()
+  const unread = (t: Channel) => snowflakeGt(t.last_message_id, seen[t.id])
+  const named = (state?.threads ?? []).filter((t) => t.parent_id === channelId && (!q || plain(t.name ?? '').toLowerCase().includes(q)))
+  const threads = named
+    .filter((t) => mask & markBit(sessions[t.id]?.state, unread(t)))
+    .sort((a, b) => (BigInt(b.last_message_id ?? b.id) > BigInt(a.last_message_id ?? a.id) ? 1 : -1))
+  const rank = (t: Channel) => RANK[sessions[t.id]?.state ?? 'idle'] ?? 3
+  const open = threads.filter((t) => !t.thread_metadata?.archived).sort((a, b) => rank(a) - rank(b))
+  const older = threads.filter((t) => t.thread_metadata?.archived)
+  const names = (text: string) =>
+    plain(
+      text,
+      (id) => {
+        const user = state?.users.find((u) => u.id === id)
+        return user ? displayName(user) : null
+      },
+      (id) => state?.channels.find((c) => c.id === id)?.name ?? null,
+    )
+  // A thread's first prompt is the channel message it was started from.
+  const loaded = new Map<string, Message>()
+  for (const m of entry?.list ?? []) loaded.set((m as Message & { thread?: { id: string } }).thread?.id ?? m.id, m)
+  const from = entry?.loading || (entry && !entry.hasMore) ? null : channelId
+  const desk = useDesk()
+  const search = (
+    <div className="thread-search-tools">
+      <label className="search">
+        <Icon name="search" size={18} />
+        <input autoFocus={!window.matchMedia('(pointer: coarse)').matches} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search thread names" aria-label="Search thread names" />
+      </label>
+      <ThreadFilter mask={mask} change={setMask} />
+    </div>
+  )
+  const row = (t: Channel) => <ThreadCard key={t.id} thread={t} session={sessions[t.id]} unread={unread(t)} starter={loaded.get(t.id)} from={from} names={names} onOpen={onOpen} />
+  return (
+    <Panel
+      title="Threads"
+      icon="threads"
+      kind="threads"
+      onClose={onClose}
+      action={creates ? { label: 'Create Thread', icon: 'plus', run: onCreate } : undefined}
+      anchor=".chat-header [aria-label='Threads']"
+      extra={
+        desk ? (
+          <>
+            <div className="panel-search" onKeyDown={threadKeys}>
+              {search}
+            </div>
+            {creates && (
+              <button className="button primary thread-create" onClick={onCreate}>
+                Create
+              </button>
+            )}
+          </>
+        ) : undefined
+      }
+    >
+      {creates && !desk && (
+        <button className="create-thread" onClick={onCreate}>
+          <Icon name="threads" size={24} />
+          <span>Create Thread</span>
+          <Icon name="chevron" size={20} />
+        </button>
+      )}
+      {!desk && (
+        <div className="panel-search" onKeyDown={threadKeys}>
+          {search}
+        </div>
+      )}
+      <div className="panel-body" onKeyDown={threadKeys}>
+        {threads.length === 0 &&
+          (named.length > 0 ? (
+            <div className="mark-empty" role="status">
+              No matching threads. <button onClick={() => setMask(ALL_MARKS)}>Show all statuses</button>
+            </div>
+          ) : q ? (
+            <Empty icon="search" title="No matching threads" />
+          ) : (
+            <Empty icon="threads" title="No threads yet">A message in{channel ? ` #${channel.name}` : ' this channel'} starts one.</Empty>
+          ))}
         {open.length > 0 && (
           <div className="panel-section">
             Active <span className="num">{open.length}</span>
@@ -1007,19 +1272,18 @@ export function ThreadsPanel({ channelId, onClose, onOpen }: { channelId: string
 export function MembersPanel({ channelId, onClose }: { channelId: string; onClose: () => void }) {
   const state = useStore((d) => d.state)
   const typing = useStore((d) => d.typing[channelId])
+  const machineName = useMachineName()
   const [sheet, setSheet] = useState<SheetSpec | null>(null)
+  const [opened, setOpened] = useState<string | null>(null)
   if (!state) return null
   const presence = state.presence ?? {}
-  // A member's menu, as Discord's profile: message them, or the machine's agent.
-  const dmsOn = Boolean(state.private_channels)
-  const openDm = (to: { recipient_id: string } | { machine: string }) => void store.openDm(to).then((c) => (location.hash = `#/c/${c.id}`)).catch(() => {})
-  const memberMenu = (e: React.MouseEvent, title: string, sub: string, to: { recipient_id: string } | { machine: string } | null, copy: string) =>
-    setSheet({
-      at: below(e.currentTarget, 'start'),
-      title,
-      subtitle: sub,
-      groups: [to && dmsOn ? [{ label: 'machine' in to ? 'Message this machine' : 'Message', icon: 'chat' as const, run: () => openDm(to) }] : [], [{ label: sub === 'Agent' ? 'Copy machine name' : 'Copy user ID', icon: 'copy' as const, run: () => void navigator.clipboard?.writeText(copy) }]],
-    })
+  // A member's profile card, beside the list as Discord's; the row stays lit while it is open.
+  const profile = (e: React.MouseEvent, key: string, of: ProfileOf) => {
+    const row = e.currentTarget.getBoundingClientRect()
+    const edge = e.currentTarget.closest('.side-panel')?.getBoundingClientRect().left ?? row.left
+    setOpened(key)
+    setSheet(profileSheet(of, { rect: new DOMRect(edge, row.top, row.right - edge, row.height), side: 'left' }, channelId))
+  }
   const all = [...state.channels, ...state.threads]
   const where = (id: string | null) => {
     if (!id) return 'Overview'
@@ -1038,9 +1302,9 @@ export function MembersPanel({ channelId, onClose }: { channelId: string; onClos
     if (u.bot && p?.activity && !p.machines?.length) notes.push(p.activity)
     if (isTyping(u.id)) notes.push(u.bot ? 'working here' : 'typing here')
     for (const d of p?.devices ?? []) notes.push(`${d.name}${d.visible ? '' : ' (away)'} · ${where(d.channel_id)}`)
-    if (u.bot && p?.machines?.length) notes.push(p.machines.map((m) => `${m.machine}${m.online ? '' : ' (offline)'}`).join(', '))
+    if (u.bot && p?.machines?.length) notes.push(p.machines.map((m) => `${machineName(m.machine)}${m.online ? '' : ' (offline)'}`).join(', '))
     return (
-      <button key={u.id} className={`member${st === 'offline' ? ' away' : ''}`} onClick={(e) => memberMenu(e, u.global_name ?? u.username, `@${u.username}`, u.id === state.me.id || u.bot ? null : { recipient_id: u.id }, u.id)}>
+      <button key={u.id} className={`member${st === 'offline' ? ' away' : ''}${opened === u.id ? ' open' : ''}`} onClick={(e) => profile(e, u.id, { user: u })}>
         <span className="member-avatar">
           <Avatar id={u.id} name={u.global_name ?? u.username} size="panel" version={u.avatar} />
           <i className={`presence ${st}`} aria-label={st} />
@@ -1066,14 +1330,14 @@ export function MembersPanel({ channelId, onClose }: { channelId: string; onClos
     if (!r.machine) return row(r.user)
     const u = r.user
     return (
-      <button key={r.key} className={`member${r.machine.online ? '' : ' away'}`} onClick={(e) => memberMenu(e, machineLabel(r.machine!.machine), 'Agent', null, r.machine!.machine)}>
+      <button key={r.key} className={`member${r.machine.online ? '' : ' away'}${opened === r.key ? ' open' : ''}`} onClick={(e) => profile(e, r.key, { user: u, machine: r.machine!.machine })}>
         <span className="member-avatar">
-          <Avatar id={u.id} name={r.machine.machine} size="panel" src={machineIcon(state.machine_icons, r.machine.machine, 'avatar')} />
+          <Avatar id={u.id} name={machineName(r.machine.machine)} size="panel" src={machineIcon(state.machine_icons, r.machine.machine, 'avatar')} />
           <i className={`presence ${r.machine.online ? 'online' : 'offline'}`} aria-label={r.machine.online ? 'online' : 'offline'} />
         </span>
         <span className="member-name">
           <span className="member-line">
-            <b>{machineLabel(r.machine.machine)}</b>
+            <b>{machineName(r.machine.machine)}</b>
             <span className="bot-tag">BOT</span>
           </span>
           {isTyping(u.id) ? <span className="member-note">working here</span> : r.machine.activity && <span className="member-note">{r.machine.activity}</span>}
@@ -1084,7 +1348,7 @@ export function MembersPanel({ channelId, onClose }: { channelId: string; onClos
   const online = rows.filter(isOn)
   const offline = rows.filter((r) => !isOn(r))
   return (
-    <Panel title="Members" icon="members" onClose={onClose}>
+    <Panel title="Members" icon="members" kind="members" onClose={onClose}>
       <div className="panel-body">
         <div className="panel-section">
           Online <span className="num">{online.length}</span>
@@ -1099,7 +1363,7 @@ export function MembersPanel({ channelId, onClose }: { channelId: string; onClos
           </>
         )}
       </div>
-      {sheet && <Sheet spec={sheet} onClose={() => setSheet(null)} />}
+      {sheet && <Sheet spec={sheet} onClose={() => (setSheet(null), setOpened(null))} />}
     </Panel>
   )
 }

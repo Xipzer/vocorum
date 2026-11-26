@@ -44,15 +44,17 @@ beforeAll(async () => {
   browser = await chromium.launch({ executablePath })
   const context = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, viewport: { width: 1280, height: 800 }, serviceWorkers: 'block' })
   page = await context.newPage()
-  // Count every emoji scan of message text: each one is a block reading its text again.
+  // Count every emoji scan of message text (each one is a block reading its text again) and
+  // every redraw of a bot's message row (each one looks its text over for request links).
   await page.addInitScript(() => {
-    const scans = { count: 0 }
+    const scans = { count: 0, rows: 0 }
     Object.assign(window, { emojiScans: scans })
     const matchAll = RegExp.prototype[Symbol.matchAll]
     Object.defineProperty(RegExp.prototype, Symbol.matchAll, {
       configurable: true,
       value(this: RegExp, text: string) {
         if (/RGI_Emoji|Emoji_Presentation/.test(this.source)) scans.count++
+        else if (this.source.includes('requests')) scans.rows++
         return matchAll.call(this, text)
       },
     })
@@ -76,6 +78,7 @@ afterAll(async () => {
 })
 
 const scans = () => page.evaluate(() => (window as unknown as { emojiScans: { count: number } }).emojiScans.count)
+const rowDraws = () => page.evaluate(() => (window as unknown as { emojiScans: { rows: number } }).emojiScans.rows)
 
 test.skipIf(!ready)('a message or presence change elsewhere does not make the open chat read its text again; a rename still updates mentions', async () => {
   const named = await demo.kimaki.threads.create({ name: 'Before the rename' })
@@ -102,4 +105,65 @@ test.skipIf(!ready)('a message or presence change elsewhere does not make the op
   await named.setName('After the rename')
   await page.locator('.messages .channel-chip', { hasText: 'After the rename' }).waitFor()
   await expect.poll(() => chip.count()).toBe(0)
+}, 60_000)
+
+test.skipIf(!ready)('an agent typing in the open chat shows who is working without redrawing the messages', async () => {
+  await page.goto(`${origin}/#/c/${demo.kimaki.id}`)
+  await page.locator('.messages .message', { hasText: 'Line 19' }).waitFor()
+  // Park the pointer outside the list: when the typing line takes space, rows move under a still
+  // pointer and the hovered row (with its toolbar) changes, which is a correct redraw of two rows.
+  await page.mouse.move(2, 2)
+  await page.waitForTimeout(600)
+  const before = await rowDraws()
+  expect(before).toBeGreaterThan(20)
+  // Typing arrives every few seconds while an agent works; the indicator outlives each by 10 s.
+  for (let i = 0; i < 3; i++) {
+    await demo.kimaki.sendTyping()
+    await page.waitForTimeout(700)
+  }
+  await page.locator('.footer-line', { hasText: 'is working' }).waitFor()
+  await page.locator('.chat-header .chat-sub', { hasText: 'is working' }).waitFor()
+  await page.waitForTimeout(1500)
+  expect((await rowDraws()) - before).toBe(0)
+  // It goes away by itself once the last typing notice has expired.
+  await page.locator('.footer-line', { hasText: 'is working' }).waitFor({ state: 'detached', timeout: 15_000 })
+  expect((await rowDraws()) - before).toBe(0)
+}, 60_000)
+
+test.skipIf(!ready)('a new message redraws only its own row; one elsewhere redraws none', async () => {
+  await page.goto(`${origin}/#/c/${demo.kimaki.id}`)
+  await page.locator('.messages .message', { hasText: 'Line 19' }).waitFor()
+  await page.waitForTimeout(600)
+  let before = await rowDraws()
+  for (let i = 0; i < 3; i++) await demo.website.send(`Somewhere else ${i} — ✅`)
+  await page.locator('.sidebar .channel.unread', { hasText: 'website' }).waitFor()
+  await page.waitForTimeout(600)
+  expect((await rowDraws()) - before).toBe(0)
+  before = await rowDraws()
+  await demo.kimaki.send('A new line here — ✅')
+  await page.locator('.messages .message', { hasText: 'A new line here' }).waitFor()
+  await page.waitForTimeout(600)
+  // A few rows at the end (the new one, its neighbour as they group), never the whole chat:
+  // before rows were memoised this was every row in the chat for every message anywhere.
+  expect((await rowDraws()) - before).toBeLessThanOrEqual(3)
+}, 60_000)
+
+test.skipIf(!ready)('a message in the open thread, read as it lands, never shows its row as unread', async () => {
+  await page.goto(`${origin}/#/c/${demo.thread.id}`)
+  await page.locator('.messages .message').last().waitFor()
+  await page.waitForTimeout(600)
+  // Record every class the open thread's row takes, from the first DOM change on.
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll<HTMLElement>('.sidebar .channel')].find((r) => r.textContent?.includes('Fix footer on short turns'))!
+    const seen: string[] = []
+    Object.assign(window, { rowClasses: seen })
+    new MutationObserver(() => seen.push(row.className)).observe(row, { attributes: true, attributeFilter: ['class'] })
+  })
+  for (let i = 0; i < 3; i++) {
+    await demo.thread.send(`Read as it lands ${i}`)
+    await page.locator('.messages .message', { hasText: `Read as it lands ${i}` }).waitFor()
+  }
+  await page.waitForTimeout(600)
+  const classes = await page.evaluate(() => (window as unknown as { rowClasses: string[] }).rowClasses)
+  expect(classes.filter((c) => /\bunread\b/.test(c))).toEqual([])
 }, 60_000)

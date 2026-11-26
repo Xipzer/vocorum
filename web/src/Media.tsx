@@ -102,10 +102,10 @@ export function Lightbox({ items, start, onClose }: { items: Viewable[]; start: 
         </span>
         {!item.video && <button className="viewer-action" onClick={() => magnify()}>{zoom ? 'Fit' : 'Zoom in'}</button>}
         <a className="viewer-action" href={item.url} download={item.name} aria-label="Download" title="Download">
-          <Icon name="download" size={16} /> Download
+          <Icon name="download" size={22} /> Download
         </a>
         <button ref={close} className="icon-button" onClick={onClose} aria-label="Close" title="Close (Esc)">
-          <Icon name="close" size={20} />
+          <Icon name="close" size={24} />
         </button>
       </div>
       <div ref={stage} className={`lightbox-stage${zoom ? ' zoomed' : ''}`}>
@@ -159,6 +159,11 @@ function MediaCell({ item, spoiler, onOpen, fit }: { item: Viewable; spoiler?: b
     const scale = Math.min(1, fit.maxW / item.width, fit.maxH / item.height)
     style = { width: Math.round(item.width * scale), aspectRatio: `${item.width} / ${item.height}` }
   }
+  // A mosaic cell has a fixed shape. A picture smaller than its cell keeps its own size,
+  // centred: stretching a small screenshot to fill the cell only blurs it.
+  const [loaded, setLoaded] = useState<{ width: number; height: number } | null>(null)
+  const own = item.width && item.height ? { width: item.width, height: item.height } : loaded
+  const cap: CSSProperties | undefined = !fit && own ? { maxWidth: own.width, maxHeight: own.height } : undefined
   if (failed)
     return (
       <a className="media-cell failed" href={item.url} target="_blank" rel="noreferrer noopener" style={style} title={item.name}>
@@ -169,7 +174,7 @@ function MediaCell({ item, spoiler, onOpen, fit }: { item: Viewable; spoiler?: b
   return (
     <div className={`media-cell${fit ? ' single' : ''}${shown ? '' : ' spoiler'}`} style={style}>
       <button className="media-open" onClick={() => (shown ? onOpen() : setShown(true))} aria-label={shown ? `Open ${item.name}` : 'Show spoiler'}>
-        {item.video ? <video src={`${item.url}#t=0.1`} muted playsInline preload="metadata" /> : <img src={previewUrl(item.url, item.width, typeof style?.width === 'number' ? style.width : 400)} alt={item.name} loading="lazy" decoding="async" onError={() => setFailed(true)} />}
+        {item.video ? <video src={`${item.url}#t=0.1`} muted playsInline preload="metadata" /> : <img src={previewUrl(item.url, item.width, typeof style?.width === 'number' ? style.width : 400)} alt={item.name} loading="lazy" decoding="async" style={cap} onLoad={fit || own ? undefined : (e) => setLoaded({ width: e.currentTarget.naturalWidth, height: e.currentTarget.naturalHeight })} onError={() => setFailed(true)} />}
         {item.video && shown && (
           <span className="media-play">
             <Icon name="play" size={20} />
@@ -225,7 +230,7 @@ export function Mosaic({ items, spoilers, onOpen }: { items: Viewable[]; spoiler
 function FileGlyph({ kind }: { kind: string }) {
   return (
     <span className={`file-glyph ${kind}`} aria-hidden="true">
-      <svg width="24" height="32" viewBox="0 0 24 32" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinejoin="round">
+      <svg width="30" height="40" viewBox="0 0 24 32" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinejoin="round">
         <path d="M2.5 1.5h12l7 7v22h-19z" vectorEffect="non-scaling-stroke" />
         <path d="M14.5 1.5v7h7" vectorEffect="non-scaling-stroke" />
       </svg>
@@ -288,7 +293,7 @@ function TextAttachment({ a }: { a: Attachment }) {
   const lang = TEXT_LANG[ext(a.filename)] ?? ''
   return (
     <div className={`text-file${open ? ' open' : ''}`}>
-      <pre className="text-file-body" style={text === null ? { minHeight: PREVIEW_LINES * 18 + 16 } : undefined}>
+      <pre className="text-file-body" style={text === null ? { minHeight: PREVIEW_LINES * 16 + 32 } : undefined}>
         <code>{text === null ? null : highlight(lang, shown.join('\n'))}</code>
       </pre>
       <div className="text-file-foot">
@@ -297,16 +302,18 @@ function TextAttachment({ a }: { a: Attachment }) {
             <Icon name="down" size={18} />
           </button>
         )}
-        <span className="text-file-name">{a.filename}</span>
-        <span className="file-bytes num">
-          {bytes(a.size)}
-          {text !== null && ` · ${lines.length} ${lines.length === 1 ? 'line' : 'lines'}`}
+        <span className="text-file-meta">
+          <span className="text-file-name">{a.filename}</span>
+          <span className="file-bytes num">
+            {bytes(a.size)}
+            {text !== null && ` · ${lines.length} ${lines.length === 1 ? 'line' : 'lines'}`}
+          </span>
         </span>
         <a className="icon-button" href={a.url} target="_blank" rel="noreferrer noopener" aria-label="View whole file" title="View whole file">
-          <Icon name="external" size={18} />
+          <Icon name="external" size={24} />
         </a>
         <a className="icon-button" href={a.url} download={a.filename} aria-label={`Download ${a.filename}`} title="Download">
-          <Icon name="download" size={18} />
+          <Icon name="download" size={24} />
         </a>
       </div>
     </div>

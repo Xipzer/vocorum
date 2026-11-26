@@ -71,6 +71,8 @@ test('kimaki tool lines and relays', async () => {
   expect(out).toContain('<div class="subtext step-line tool-shell"><span class="step-glyph">┣ </span><span class="step-tool">shell</span> <em>Build the docs site</em></div>')
   expect(out.replace(/<[^>]+>/g, '')).toContain('┣ shell Build the docs site')
   expect(out).not.toContain('status-row')
+  const failed = renderToStaticMarkup(createElement(Markdown, { ctx, text: '-#  ⨯  shell _Run the map check_' }))
+  expect(failed).toContain('<div class="subtext step-line tool-shell failed"><span class="step-glyph">⨯  </span><span class="step-tool">shell</span>')
   const relay = renderToStaticMarkup(createElement(Markdown, { ctx, text: 'Now the tools.\n-# » **CLI:** From the other thread\n-# - **Search is live**\n-# - more' }))
   expect(relay).toContain('class="relay"')
   expect(relay).toContain('CLI:')
@@ -120,4 +122,24 @@ test('a dotted file name is one path token', async () => {
   const { inline } = await import('../web/src/markdown.tsx')
   const ctx = { userName: () => null, channelName: () => null } as never
   expect(renderToStaticMarkup(createElement(Fragment, null, inline('wrote cluster.test.ts and src/a.b.config.ts', ctx)))).toBe('wrote <span class="sem-path">cluster.test.ts</span> and <span class="sem-path">src/a.b.config.ts</span>')
+})
+
+test('words joined by slashes stay prose; only real paths get the path style', async () => {
+  const { inline } = await import('../web/src/markdown.tsx')
+  const ctx = { userName: () => null, channelName: () => null } as never
+  const render = (text: string) => renderToStaticMarkup(createElement(Fragment, null, inline(text, ctx)))
+  // The owner's own sentences: no part of them is a path.
+  for (const prose of [
+    'a few freezes/stalls/hitches whilst typing',
+    'do you know why/when/how these occurred',
+    'yes/no/maybe, and/or, he/she/they',
+    'due 25/11/2026 at 24/7 pace',
+    'see example.org/harbour/timetable and @scope/pkg/sub',
+    'either /stalls/hitches or nothing...',
+  ]) expect(render(prose)).not.toContain('sem-path')
+  const path = (p: string) => `<span class="sem-path">${p}</span>`
+  expect(render('open ./run.sh then ../notes and ~/code/kimaki')).toBe(`open ${path('./run.sh')} then ${path('../notes')} and ${path('~/code/kimaki')}`)
+  expect(render('read /home/harbour/ledger and /var/log/')).toBe(`read ${path('/home/harbour/ledger')} and ${path('/var/log/')}`)
+  expect(render('wrote /harbour/ledger.csv (see /client/auth/register)')).toBe(`wrote ${path('/harbour/ledger.csv')} (see ${path('/client/auth/register')})`)
+  expect(render('edited why/when/how.md and web/src/styles.css')).toBe(`edited ${path('why/when/how.md')} and ${path('web/src/styles.css')}`)
 })

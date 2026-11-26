@@ -135,12 +135,23 @@ function Spoiler({ children }: { children: ReactNode }) {
 // Machine tokens in agent prose, coloured by what they are (like a terminal's grey ids):
 // session ids, snowflakes and hashes dim and monospace; paths monospace; durations,
 // sizes, percentages and token counts with even figures; key= in key=value dim.
-const SEMANTIC = /(\bses_[A-Za-z0-9]{12,}\b|\b\d{17,20}\b|\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,12}\b)|((?:~|\.{1,2})?\/[\w.@~-]+(?:\/[\w.@~-]+)+\/?|\b[\w-]+(?:[\/.][\w-]+)*\.(?:tsx?|jsx?|mjs|cjs|py|rs|go|md|json|css|ya?ml|toml|sh|html|sql|lock)\b)|(\b\d+m \d+s\b|\b\d+(?:[.,]\d+)*\s?(?:ms|s|m|h|%|KB|MB|GB|tokens?|lines?)(?![\w]))|(\b[a-z_][\w.-]*=)(?=\S)/gi
+const SEMANTIC = /(\bses_[A-Za-z0-9]{12,}\b|\b\d{17,20}\b|\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,12}\b)|((?:~|\.{1,2})\/[\w.@~-]+(?:\/[\w.@~-]+)*\/?|\/[\w.@~-]+(?:\/[\w.@~-]+)+\/?|\b[\w-]+(?:[\/.][\w-]+)*\.(?:tsx?|jsx?|mjs|cjs|py|rs|go|md|json|css|ya?ml|toml|sh|html|sql|lock)\b)|(\b\d+m \d+s\b|\b\d+(?:[.,]\d+)*\s?(?:ms|s|m|h|%|KB|MB|GB|tokens?|lines?)(?![\w]))|(\b[a-z_][\w.-]*=)(?=\S)/gi
+// A path, or words joined by slashes ("why/when/how", "and/or", a date)? A path starts its
+// own token; ./ ../ and ~/ say so outright, and an absolute one must look like a place on
+// disk: a known root, a file name with an extension, a trailing slash, or three levels deep.
+const ROOTS = /^\/(?:home|Users|usr|etc|var|tmp|opt|mnt|srv|bin|sbin|lib|dev|proc|sys|run|root|private|Volumes|Library|Applications|System|data|app|workspace)\//
+function isPath(token: string, before: string) {
+  if (!token.includes('/') || !/^[~./]/.test(token)) return true
+  if (/[\w/.~@-]/.test(before)) return false
+  if (token[0] !== '/') return true
+  return ROOTS.test(token) || token.endsWith('/') || /\.[A-Za-z][\w-]*$/.test(token) || token.split('/').length > 3
+}
 function semantic(text: string, key: string): ReactNode[] {
   const out: ReactNode[] = []
   let last = 0
   let n = 0
   for (const m of text.matchAll(SEMANTIC)) {
+    if (m[2] && !isPath(m[2], text[m.index! - 1] ?? '')) continue
     if (m.index! > last) out.push(...emojify(text.slice(last, m.index), `${key}e${n}`))
     const cls = m[1] ? 'sem-id' : m[2] ? 'sem-path' : m[3] ? 'sem-num' : 'sem-key'
     out.push(<span key={`${key}s${n++}`} className={cls}>{m[0]}</span>)
@@ -208,22 +219,23 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
   const [open, setOpen] = useState(lines <= FOLD)
   return (
     <div className={`codeblock${open ? '' : ' folded'}`}>
-      <div className="codeblock-tools">
-        {lang && <span className="codeblock-lang">{lang}</span>}
-        <button
-          className="codeblock-copy"
-          aria-label={copied ? 'Copied' : 'Copy code'}
-          onClick={() => {
-            void navigator.clipboard?.writeText(code).then(() => {
-              setCopied(true)
-              setTimeout(() => setCopied(false), 1500)
-            })
-          }}
-        >
-          <Icon name={copied ? 'check' : 'copy'} size={16} />
-        </button>
-      </div>
       <pre>
+        {/* Floated inside the card so the first lines wrap around it instead of under it. */}
+        <div className="codeblock-tools">
+          {lang && <span className="codeblock-lang">{lang}</span>}
+          <button
+            className="codeblock-copy"
+            aria-label={copied ? 'Copied' : 'Copy code'}
+            onClick={() => {
+              void navigator.clipboard?.writeText(code).then(() => {
+                setCopied(true)
+                setTimeout(() => setCopied(false), 1500)
+              })
+            }}
+          >
+            <Icon name={copied ? 'check' : 'copy'} size={16} />
+          </button>
+        </div>
         <code>{highlight(lang, code)}</code>
       </pre>
       {lines > FOLD && (
@@ -365,9 +377,9 @@ function blocks(source: string): Block[] {
         continue
       }
     }
-    // Kimaki's step lines ("┣ shell _Deploy_", "■ write _file_ (12 lines)"): Discord shows
-    // them as quiet small text with their glyph, and so do we.
-    const step = /^(?:-# )?([┣■◼]\uFE0E?)(\s+)([\w-]+)(.*)$/.exec(line)
+    // Kimaki's step lines ("┣ shell _Deploy_", "■ write _file_ (12 lines)", a failed "⨯ shell …"):
+    // Discord shows them as quiet small text with their glyph, and so do we.
+    const step = /^(?:-# )?\s*([┣■◼⨯]\uFE0E?)(\s+)([\w-]+)(.*)$/.exec(line)
     if (step) {
       flush()
       out.push({ kind: 'step', glyph: step[1]! + step[2]!, tool: step[3]!, rest: step[4]! })
@@ -541,6 +553,8 @@ function isJumbo(text: string) {
   return custom + unicode <= 30
 }
 
+// Memoised: a chat redraws on every hub event, and parsing text again is the costly part.
+// The context from App only changes when a name it resolves does.
 export const Markdown = memo(function Markdown({ text, ctx, runFooter = false }: { text: string; ctx: MarkdownContext; runFooter?: boolean }) {
   if (!text) return null
   if (!ctx.jumbo && isJumbo(text.trim())) ctx = { ...ctx, jumbo: true }
@@ -592,7 +606,7 @@ export const Markdown = memo(function Markdown({ text, ctx, runFooter = false }:
           }
           case 'step':
             return (
-              <div key={key} className={`subtext step-line tool-${toolKind(block.tool)}`}>
+              <div key={key} className={`subtext step-line tool-${toolKind(block.tool)}${block.glyph.startsWith('⨯') ? ' failed' : ''}`}>
                 <span className="step-glyph">{block.glyph}</span>
                 <span className="step-tool">{block.tool}</span>
                 {inline(block.rest, ctx, key)}

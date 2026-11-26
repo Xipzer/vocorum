@@ -6,58 +6,85 @@
   inset: 0;
   z-index: 55;
   display: flex;
-  background: var(--bg-2);
+  background: var(--settings-bg, var(--bg-2));
   color: var(--text);
   font: 400 14px/20px var(--font);
-  animation: settings-open var(--move) var(--ease-out);
+  animation: card-in var(--card-in) var(--pop-ease);
+  /* Discord's desktop settings metrics. The phone layer below sets its own touch sizes. */
+  --set-row: 48px;
+  --set-row-pad: 12px;
+  --set-note-gap: 4px;
+  --set-field: 40px;
+  --set-field-pad: 12px;
+  --set-area-pad: 9px;
+  --set-gap: 40px;
+  --set-switch: 48px;
+  --set-knob: 16px;
 }
-@keyframes settings-open {
-  from {
-    opacity: 0;
-    transform: scale(1.03);
-  }
+/* Discord's settings card closes in ~100 ms; Shell sets data-leaving through leave(). */
+.settings-layer[data-leaving] {
+  pointer-events: none;
+  animation: card-out var(--backdrop-out) var(--pop-ease) forwards;
 }
 
 /* Left: the nav column, pinned to the right edge of its area. */
 .settings-side {
-  flex: 1 0 218px;
+  flex: 1 0 264px;
   display: flex;
   justify-content: flex-end;
   background: var(--bg-1);
   overflow-y: auto;
   scrollbar-width: thin;
 }
+/* 238px rows; the first row, not its heading, starts level with the page title. */
 .settings-nav {
-  width: 218px;
-  padding: 60px 8px 60px 20px;
+  width: 264px;
+  padding: 26px 14px 60px 12px;
 }
 .settings-nav-group + .settings-nav-group {
+  position: relative;
   margin-top: 8px;
   padding-top: 8px;
-  border-top: 1px solid var(--line-strong);
+}
+.settings-nav-group + .settings-nav-group::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 8px;
+  right: 8px;
+  height: 1px;
+  background: var(--settings-nav-rule, var(--line-strong));
 }
 .settings-nav-head {
-  padding: 6px 10px;
-  font: 600 12px/16px var(--font);
+  padding: 9px 8px 6px;
+  font: 500 14px/20px var(--font);
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .settings-nav-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
-  height: 32px;
-  margin-bottom: 2px;
-  padding: 0 10px;
+  height: 36px;
+  margin-bottom: 4px;
+  padding: 0 8px;
   border-radius: var(--r-control);
   font: 500 16px/20px var(--font);
   color: var(--text-muted);
   text-align: left;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   transition: background var(--fast), color var(--fast);
+}
+.settings-nav-item > svg {
+  flex: none;
+}
+.settings-nav-item > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 @media (hover: hover) {
   .settings-nav-item:hover {
@@ -71,6 +98,12 @@
 }
 .settings-nav-item.red {
   color: var(--danger-text);
+}
+@media (hover: hover) {
+  .settings-nav-item.red:hover {
+    background: rgb(210 47 63 / 0.1);
+    color: var(--danger-text);
+  }
 }
 
 /* Right: one section, then the close tools. */
@@ -90,32 +123,119 @@
 .settings-tools {
   position: sticky;
   top: 0;
-  flex: 0 0 32px;
+  flex: 0 0 36px;
   margin-right: 24px;
   padding-top: 60px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  font: 600 12px/16px var(--font);
-  color: var(--text-faint);
+  gap: 8px;
+  font: 600 11px/14px var(--font);
+  color: var(--text-muted);
+  text-transform: uppercase;
 }
+/* A ringed circle, as Discord's: the ring is the label grey and brightens on hover. */
 .settings-close {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   display: grid;
   place-items: center;
-  border-radius: var(--r-control);
-  background: var(--bg-3);
+  border-radius: 50%;
   color: var(--text-muted);
-  box-shadow: inset 0 0 0 1px var(--line-strong);
+  box-shadow: inset 0 0 0 2px currentColor;
   transition: background var(--fast), color var(--fast);
 }
 @media (hover: hover) {
   .settings-close:hover {
-    background: var(--bg-4);
+    background: var(--fill-hover);
     color: var(--text-strong);
   }
+}
+
+/* User settings: Discord's centred dialog, at most 1400x912 and 40px clear of the window's
+   edges; a 252px nav, a 48px header with the page title and close, a 696px column. */
+.settings-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  display: grid;
+  place-items: center;
+  background: rgb(0 0 0 / 0.72);
+  animation: fade var(--backdrop-in) var(--pop-ease);
+}
+/* Discord's modal timings: the backdrop fades ~100 ms, the card grows 0.9 to 1 over ~120 ms;
+   on close (leave() sets data-leaving on the scrim) the card shrinks out while the backdrop follows. */
+.settings-scrim[data-leaving] {
+  pointer-events: none;
+  animation: fade-out var(--backdrop-out) var(--pop-ease) forwards;
+}
+.settings-layer.dialog {
+  position: relative;
+  inset: auto;
+  width: min(1400px, calc(100vw - 80px));
+  height: min(912px, calc(100vh - 80px));
+  border: 1px solid var(--float-line, var(--line-card));
+  border-radius: var(--r-float);
+  overflow: hidden;
+  box-shadow: var(--shadow-float);
+  animation: card-in var(--card-in) var(--pop-ease);
+}
+.settings-scrim[data-leaving] .settings-layer.dialog {
+  animation: card-out var(--card-out) var(--pop-ease) forwards;
+}
+.settings-layer.dialog .settings-side {
+  flex: 0 0 252px;
+  display: block;
+  background: var(--settings-side, var(--bg-1));
+}
+.settings-layer.dialog .settings-nav {
+  width: auto;
+  padding: 16px 16px 24px;
+}
+.settings-layer.dialog .settings-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  overflow: hidden;
+}
+.settings-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 49px;
+  padding: 0 8px 0 16px;
+  border-bottom: 1px solid var(--settings-nav-rule, var(--line-strong));
+}
+.settings-head h2 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font: 600 16px/20px var(--font);
+  color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-head .icon-button {
+  width: 32px;
+  height: 32px;
+}
+.settings-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.settings-layer.dialog .settings-content {
+  max-width: 776px;
+  margin: 0 auto;
+  padding: 64px 40px 80px;
+}
+/* The header carries the page's name. */
+.settings-layer.dialog .settings-title {
+  display: none;
 }
 
 /* Page content */
@@ -125,9 +245,9 @@
   color: var(--text-strong);
 }
 .settings-group {
-  padding-bottom: 24px;
-  margin-bottom: 24px;
-  border-bottom: 1px solid var(--line-strong);
+  padding-bottom: var(--set-gap);
+  margin-bottom: var(--set-gap);
+  border-bottom: 1px solid var(--settings-rule, var(--line-strong));
 }
 .settings-group:last-child {
   border-bottom: 0;
@@ -135,12 +255,22 @@
 }
 .settings-heading {
   margin: 0 0 4px;
-  font: 600 16px/20px var(--font);
+  font: 500 20px/24px var(--font);
   color: var(--text-strong);
+}
+/* Headings inside a card or a panel stay at the row size. */
+.settings-create .settings-heading,
+.settings-overwrite-head .settings-heading {
+  font: 600 16px/20px var(--font);
 }
 .settings-note {
   margin: 0 0 16px;
   color: var(--text-muted);
+}
+/* A page's opening line sits 8px under its title, in body colour (phones show no title). */
+.settings-layer:not(.phone, .dialog) .settings-title + .settings-group > .settings-note:first-child {
+  margin-top: -12px;
+  color: var(--text);
 }
 .settings-group > .settings-heading:last-child {
   margin-bottom: 0;
@@ -152,10 +282,10 @@
   display: flex;
   align-items: center;
   gap: 16px;
-  min-height: 40px;
-  padding: 8px 0;
+  min-height: var(--set-row);
+  padding: var(--set-row-pad) 0;
 }
-.settings-item + .settings-item {
+.settings-layer.phone .settings-item + .settings-item {
   border-top: 1px solid var(--line);
 }
 .settings-item.stack {
@@ -174,7 +304,7 @@
   color: var(--text);
 }
 .settings-item-note {
-  margin-top: 2px;
+  margin-top: var(--set-note-gap);
   font: 400 14px/18px var(--font);
   color: var(--text-muted);
   overflow-wrap: anywhere;
@@ -216,7 +346,7 @@
   color: var(--text-muted);
 }
 
-/* Fields: filled, 8px corners, one control height. */
+/* Fields: filled, 8px corners, 40px tall with 16px text; a 2px ring when focused. */
 .settings-field {
   display: flex;
   flex-direction: column;
@@ -237,13 +367,13 @@
 .settings-input {
   flex: 1;
   min-width: 0;
-  height: var(--control);
-  padding: 0 10px;
+  height: var(--set-field);
+  padding: 0 var(--set-field-pad);
   border: 0;
   border-radius: var(--r-field);
-  background: var(--bg-0);
-  box-shadow: inset 0 0 0 1px var(--line-strong);
-  font: 400 14px/20px var(--font);
+  background: var(--field-bg, var(--bg-0));
+  box-shadow: inset 0 0 0 1px var(--field-line, var(--line-raised));
+  font: 400 16px/22px var(--font);
   color: var(--text);
   outline: none;
   transition: box-shadow var(--fast);
@@ -253,7 +383,7 @@
 }
 textarea.settings-input {
   height: auto;
-  padding: 6px 10px;
+  padding: var(--set-area-pad) var(--set-field-pad);
   resize: vertical;
 }
 .settings-input::placeholder {
@@ -262,7 +392,7 @@ textarea.settings-input {
 .settings-input:focus,
 .settings-input:focus-visible {
   outline: none;
-  box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / 0.7);
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 .settings-input:disabled {
   opacity: 0.45;
@@ -275,8 +405,8 @@ select.settings-input {
   appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23a3a3ae' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 8px center;
-  padding-right: 28px;
+  background-position: right calc(var(--set-field-pad) - 2px) center;
+  padding-right: calc(var(--set-field-pad) + 18px);
 }
 .settings-color {
   width: 32px;
@@ -315,26 +445,31 @@ select.settings-input {
   }
 }
 
-/* Switch: the accent fill means on. */
+/* Switch: the accent fill means on. Off is a field: dark fill, 1px line, white knob. */
 .settings-switch {
   position: relative;
-  width: 40px;
+  width: var(--set-switch);
   height: 24px;
   border-radius: 12px;
-  background: var(--bg-4);
-  box-shadow: inset 0 0 0 1px var(--line-strong);
+  background: var(--switch-off, var(--bg-0));
+  box-shadow: inset 0 0 0 1px var(--switch-line, var(--line-raised));
   transition: background var(--fast);
   flex: none;
+}
+@media (hover: hover) {
+  .settings-switch:hover:not(:disabled):not(.on) {
+    background: var(--bg-3);
+  }
 }
 .settings-switch::after {
   content: '';
   position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 18px;
-  height: 18px;
+  top: calc((24px - var(--set-knob)) / 2);
+  left: calc((24px - var(--set-knob)) / 2);
+  width: var(--set-knob);
+  height: var(--set-knob);
   border-radius: 50%;
-  background: var(--text-muted);
+  background: #fff;
   transition: transform var(--fast) var(--ease-out), background var(--fast);
 }
 .settings-switch.on {
@@ -342,40 +477,34 @@ select.settings-input {
   box-shadow: none;
 }
 .settings-switch.on::after {
-  transform: translateX(16px);
+  transform: translateX(calc(var(--set-switch) - 24px));
   background: var(--accent-ink);
 }
 .settings-switch:disabled {
-  opacity: 0.45;
   cursor: not-allowed;
 }
 
-/* Radio rows: filled, 8px corners, 8px apart. */
+/* Radio rows: plain rows, 36px for a label and 58px with a note. Phones keep filled rows (below). */
 .settings-radios {
   display: flex;
   flex-direction: column;
-  gap: 8px;
 }
 .settings-radio {
   position: relative;
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 40px;
-  padding: 10px 12px;
-  border-radius: var(--r-control);
-  background: var(--bg-3);
+  min-height: 36px;
+  padding: 8px 0;
   cursor: pointer;
-  transition: background var(--fast);
+}
+.settings-radio:has(small) {
+  padding: 10px 0;
 }
 @media (hover: hover) {
-  .settings-radio:not(.disabled):hover {
-    background: var(--bg-4);
+  .settings-radio:not(.disabled):not(.on):hover .settings-dot {
+    box-shadow: inset 0 0 0 2px var(--text-muted);
   }
-}
-.settings-radio.on {
-  background: var(--sel);
-  box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 .settings-radio.disabled {
   opacity: 0.45;
@@ -390,15 +519,18 @@ select.settings-input {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+/* Off: a ring on the field colour. On: a filled accent disc with a dark centre, like the menu radio. */
 .settings-dot {
   flex: none;
   width: 20px;
   height: 20px;
   border-radius: 50%;
+  background: var(--bg-0);
   box-shadow: inset 0 0 0 2px var(--text-faint);
 }
 .settings-radio.on .settings-dot {
-  box-shadow: inset 0 0 0 2px var(--accent), inset 0 0 0 5px var(--bg-3), inset 0 0 0 10px var(--accent);
+  background: var(--accent-ink);
+  box-shadow: inset 0 0 0 6px var(--accent);
 }
 .settings-swatch {
   flex: none;
@@ -409,7 +541,7 @@ select.settings-input {
 .settings-radio-text {
   display: flex;
   flex-direction: column;
-  font: 500 16px/20px var(--font);
+  font: 400 16px/20px var(--font);
   color: var(--text);
 }
 .settings-radio.on .settings-radio-text {
@@ -418,6 +550,76 @@ select.settings-input {
 .settings-radio-text small {
   font: 400 14px/18px var(--font);
   color: var(--text-muted);
+}
+
+/* Theme tiles, like Discord's: a rounded preview per theme, the chosen one ringed and
+   ticked, its name underneath. */
+.settings-themes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 8px 0 4px;
+}
+.settings-theme {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.settings-theme input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.settings-theme-tile {
+  position: relative;
+  width: 72px;
+  height: 56px;
+  border-radius: var(--r-control);
+  background:
+    radial-gradient(circle at 75% 70%, var(--tile-accent) 0 5px, transparent 5.5px),
+    linear-gradient(90deg, var(--tile-frame) 0 32%, var(--tile-chat) 32%);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.14);
+  transition: box-shadow var(--fast);
+}
+@media (hover: hover) {
+  .settings-theme:not(.on):hover .settings-theme-tile {
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.3);
+  }
+}
+.settings-theme.on .settings-theme-tile {
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.14),
+    0 0 0 2px var(--settings-bg, var(--bg-2)),
+    0 0 0 4px var(--accent);
+}
+.settings-theme:has(input:focus-visible) .settings-theme-tile {
+  outline: 2px solid var(--accent);
+  outline-offset: 6px;
+}
+.settings-theme-check {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 20px;
+  height: 20px;
+  padding: 2px;
+  border-radius: 50%;
+  background: var(--accent);
+  fill: none;
+  stroke: var(--accent-ink);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.settings-theme-label {
+  font: 500 14px/18px var(--font);
+  color: var(--text-muted);
+}
+.settings-theme.on .settings-theme-label {
+  color: var(--text-strong);
 }
 
 /* Lists: devices, members, overrides. */
@@ -482,8 +684,8 @@ select.settings-input {
   padding: 16px;
   margin-bottom: 24px;
   border-radius: var(--r-control);
-  background: var(--bg-1);
-  box-shadow: inset 0 0 0 1px var(--line-strong);
+  background: var(--bg-3);
+  box-shadow: inset 0 0 0 1px var(--line-raised);
 }
 .settings-profile-avatar,
 .settings-server-icon {
@@ -537,8 +739,8 @@ select.settings-input {
   gap: 4px;
   padding: 16px;
   border-radius: var(--r-control);
-  background: var(--bg-1);
-  box-shadow: inset 0 0 0 1px var(--line-strong);
+  background: var(--bg-3);
+  box-shadow: inset 0 0 0 1px var(--line-raised);
 }
 .settings-create > .settings-actions {
   justify-content: flex-end;
@@ -648,7 +850,7 @@ select.settings-input {
 /* Narrow desktop: the nav area stops growing first. */
 @media (max-width: 1100px) and (min-width: 768px) {
   .settings-side {
-    flex: 0 0 218px;
+    flex: 0 0 264px;
   }
   .settings-content {
     padding: 60px 24px 80px;
@@ -660,6 +862,15 @@ select.settings-input {
   flex-direction: column;
   background: var(--bg-1);
   animation: none;
+  --set-row: 40px;
+  --set-row-pad: 8px;
+  --set-note-gap: 2px;
+  --set-field: var(--control);
+  --set-field-pad: 10px;
+  --set-area-pad: 6px;
+  --set-gap: 24px;
+  --set-switch: 40px;
+  --set-knob: 18px;
 }
 .settings-push {
   flex: 1;
@@ -745,8 +956,11 @@ select.settings-input {
 .settings-layer.phone .settings-item {
   flex-wrap: wrap;
 }
+.settings-layer.phone .settings-heading {
+  font: 600 16px/20px var(--font);
+}
 .settings-layer.phone .settings-input {
-  font-size: 16px;
+  line-height: 20px;
 }
 .settings-layer.phone .settings-select {
   min-width: 0;
@@ -812,8 +1026,8 @@ select.settings-input {
   padding: 16px;
   margin-bottom: 12px;
   border-radius: var(--r-control);
-  background: var(--bg-1);
-  box-shadow: inset 0 0 0 1px var(--line-strong);
+  background: var(--bg-3);
+  box-shadow: inset 0 0 0 1px var(--line-raised);
 }
 .settings-code-row {
   display: flex;
@@ -1006,23 +1220,6 @@ select.settings-input {
 }
 
 /* States pass: switch, radios and fields follow the shared specs. */
-.settings-switch {
-  background: rgb(255 255 255 / 0.16);
-  box-shadow: none;
-}
-@media (hover: hover) {
-  .settings-switch:hover:not(:disabled):not(.on) {
-    background: rgb(255 255 255 / 0.2);
-  }
-}
-.settings-switch::after {
-  background: #fff;
-  opacity: 0.9;
-}
-.settings-switch.on::after {
-  background: var(--accent-ink);
-  opacity: 1;
-}
 .settings-switch:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -1032,15 +1229,18 @@ select.settings-input {
 .settings-radio.disabled {
   opacity: var(--disabled-opacity);
 }
-.settings-radio {
+/* Phones: radio rows stay filled, 8px apart, a full-width touch target. */
+.settings-layer.phone .settings-radios {
+  gap: 8px;
+}
+.settings-layer.phone .settings-radio {
+  min-height: 40px;
+  padding: 10px 12px;
+  border-radius: var(--r-control);
   background: var(--fill-hover);
+  transition: background var(--fast);
 }
-@media (hover: hover) {
-  .settings-radio:not(.disabled):not(.on):hover {
-    background: rgb(255 255 255 / 0.1);
-  }
-}
-.settings-radio.on {
+.settings-layer.phone .settings-radio.on {
   background: var(--fill-selected);
   box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / 0.5);
 }

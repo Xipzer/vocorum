@@ -1,0 +1,20 @@
+{
+  "before September 2026": [
+    "⬥ Looking at the footbridge survey first.",
+    "┣ bash _List the survey files_",
+    "◼︎ edit *survey.md* (+4-1)",
+    "┣ read _notes/footbridge.md_\n┣ grep _gate labels_",
+    "⨯ bash _Run the map check_",
+    "┣ bash _Run the map check again_",
+    "⬥ The map is ready."
+  ],
+  "since September 2026": [
+    "Looking at the footbridge survey first.",
+    "-# ┣ shell _List the survey files_",
+    "-# ◼︎ edit *survey.md* (+4-1)",
+    "-# ┣ read _notes/footbridge.md_\n-# ┣ grep _gate labels_",
+    "-#  ⨯  shell _Run the map check_",
+    "-# ┣ shell _Run the map check again_",
+    "The map is ready."
+  ]
+}

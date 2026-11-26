@@ -145,3 +145,14 @@ test('snippets mark prefix hits and phrases, and cut long text around the first 
   expect(cut).toContain('**w40**')
   expect(cut.split(' ').length).toBe(16)
 })
+
+test('a snippet keeps a mention whole and the marks around uncut text', () => {
+  // The id inside <@…> is not a word to start from: the reader used to get "123456789> could you…".
+  expect(snippet('<@123456789> could you check the sample names?', parseQuery('sample'))).toBe('<@123456789> could you check the **sample** names?')
+  expect(snippet('(see <#42>) the sample is ready.', parseQuery('sample'))).toBe('(see <#42>) the **sample** is ready.')
+  const long = `${Array.from({ length: 30 }, (_, i) => `w${i}`).join(' ')} <@123456789> ${Array.from({ length: 30 }, (_, i) => `v${i}`).join(' ')}`
+  const cut = snippet(long, parseQuery('v2'))!
+  expect(cut.startsWith('…')).toBe(true)
+  expect(cut).toContain('<@123456789> v0 v1 **v2**')
+  expect(cut).not.toMatch(/(^|[^@<!&#\d])\d{9}>/)
+})

@@ -21,7 +21,7 @@ export function useMessageToolbar() {
   }
   useEffect(() => () => { if (owner?.set === set) owner = null }, [])
   return { hot, warm: {
-    onPointerEnter: (e: React.PointerEvent) => { if (e.pointerType !== 'touch' && !e.buttons) take('pointer') },
+    onPointerEnter: (e: React.PointerEvent) => { if (e.pointerType !== 'touch' && !e.buttons && matchMedia('(any-hover: hover)').matches) take('pointer') },
     onPointerDownCapture: (e: React.PointerEvent) => {
       pointer.current = e.pointerType
       if (e.pointerType !== 'touch') take('pointer')

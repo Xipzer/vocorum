@@ -148,3 +148,27 @@ test('this computer is not closed before one of the owner\'s devices has finishe
     await u.cleanup()
   }
 })
+
+test('the open-access row is the one it made, not any device called "This computer"; an older hub keeps its row', async () => {
+  const u = await startTestHub()
+  try {
+    const store = u.hub.store
+    const owner = u.config.ownerUserId
+    // A paired browser the owner named "This computer".
+    const paired = await store.createDevice('laptop', owner)
+    await store.addCredential({ id: 'laptop-passkey', deviceId: paired.id, publicKey: new Uint8Array([1]), counter: 0, transports: [] })
+    await store.renameDevice(paired.id, 'This computer')
+    const { device } = await u.hub.auth.localSession(owner)
+    expect(device.id).not.toBe(paired.id)
+    expect((await store.getDevice(paired.id))!.local).toBe(false)
+    expect((await u.hub.auth.localSession(owner)).device.id).toBe(device.id)
+    // A hub from before the mark: its passkey-less "This computer" row is recognised once.
+    await store.db.execute('ALTER TABLE devices DROP COLUMN local')
+    await store.migrate()
+    expect((await store.getDevice(device.id))!.local).toBe(true)
+    expect((await store.getDevice(paired.id))!.local).toBe(false)
+    expect((await u.hub.auth.localSession(owner)).device.id).toBe(device.id)
+  } finally {
+    await u.cleanup()
+  }
+})

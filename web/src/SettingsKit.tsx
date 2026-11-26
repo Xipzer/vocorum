@@ -168,7 +168,7 @@ export function TextSetting({ label, note, value, max, placeholder, allowEmpty, 
           <input {...props} onKeyDown={(e) => (e.key === 'Enter' || e.key === 'Escape') && void save()} />
         )}
         {changed && (
-          <button className="button primary" data-save={id} disabled={!valid || busy} onClick={() => void save()}>
+          <button className="button medium primary" data-save={id} disabled={!valid || busy} onClick={() => void save()}>
             Save
           </button>
         )}
@@ -185,10 +185,10 @@ export function Confirm({ text, action, onConfirm, onCancel }: { text: string; a
     <div className="settings-confirm" role="alertdialog" aria-label={action}>
       <span>{text}</span>
       <div className="settings-actions">
-        <button ref={ref} className="button" onClick={onCancel}>
+        <button ref={ref} className="button small" onClick={onCancel}>
           Cancel
         </button>
-        <button className="button danger-fill" onClick={onConfirm}>
+        <button className="button small danger-fill" onClick={onConfirm}>
           {action}
         </button>
       </div>
@@ -196,11 +196,11 @@ export function Confirm({ text, action, onConfirm, onCancel }: { text: string; a
   )
 }
 
-export function ImagePicker({ label, onPick, disabled }: { label: string; onPick: (file: File) => void; disabled?: boolean }) {
+export function ImagePicker({ label, onPick, disabled, size = 'medium' }: { label: string; onPick: (file: File) => void; disabled?: boolean; size?: 'small' | 'medium' }) {
   const input = useRef<HTMLInputElement>(null)
   return (
     <>
-      <button className="button" disabled={disabled} onClick={() => input.current?.click()}>
+      <button className={`button ${size}`} disabled={disabled} onClick={() => input.current?.click()}>
         {label}
       </button>
       <input

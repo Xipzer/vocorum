@@ -58,6 +58,7 @@ export type Message = {
   interaction?: { id: string; type: number; name: string; user: User }
   reactions_summary?: Reaction[]
   pending?: boolean
+  local?: boolean // shown the moment it was sent, until the hub's copy replaces it
   private_reply?: boolean // received on the viewer-only path
   pinned?: boolean
 }
@@ -109,6 +110,8 @@ export type VoiceState = { guild_id?: string; channel_id: string | null; user_id
 export type HubState = {
   voice_states?: VoiceState[]
   machine_icons?: Record<string, MachineIcon>
+  // Each machine's own Discord bot (its Kimaki on Discord), by machine.
+  machine_bots?: Record<string, { discord_user_id: string; name: string }>
   presence?: Record<string, Presence>
   notifications?: NotificationState
   device: { id: string; name: string }
@@ -150,7 +153,8 @@ export type CustomEmojiInfo = { id: string; name: string; animated: boolean }
 export type HubRequest = { id: string; kind: string; summary: string; reason: string; origin: string; route?: string; status: 'pending' | 'approved' | 'denied' | 'failed' | 'expired'; created_at: number; expires_at: number; decided_at?: number | null; result: unknown; undoable?: boolean }
 export type ServiceEvent = { unit: string; at: number; kind: string; detail: string | null }
 export type Guild = { id: string; name: string; icon: string | null; owner_id?: string; permissions?: string }
-export type DeviceInfo = { id: string; name: string; created_at: number | string; last_seen_at: number | string | null; current: boolean; online: boolean; push: boolean }
+// open: the row an open hub signs this computer's browsers in as, with no pairing.
+export type DeviceInfo = { id: string; name: string; created_at: number | string; last_seen_at: number | string | null; current: boolean; online: boolean; push: boolean; open?: boolean }
 export type Me = { user: User; device: { id: string; name: string }; privacy?: Privacy }
 export type SessionState = 'waiting' | 'failed' | 'busy' | 'done' | 'idle'
 export type SessionSummary = {
@@ -162,6 +166,7 @@ export type SessionSummary = {
   state: SessionState
   since: string
   lastMessageId: string | null
+  runStartedAt?: number | null // source epoch ms; older hubs have no execution clock
   ask?: { text: string; messageId: string; choices?: Array<{ customId: string; label: string; style: number }>; openOnly?: boolean }
   lastStep?: string
   error?: string
@@ -218,8 +223,11 @@ export async function call<T>(path: string, init: RequestInit & { json?: unknown
   return (text ? JSON.parse(text) : undefined) as T
 }
 
+// Signed in by an open hub's local access: there is no session to sign out of, it opens again.
+export const signedIn = { local: false }
+
 export const api = {
-  status: () => call<{ signedIn: boolean; device: { id: string; name: string } | null; open?: boolean }>('/client/auth/status'),
+  status: () => call<{ signedIn: boolean; device: { id: string; name: string } | null; open?: boolean; local?: boolean }>('/client/auth/status'),
   // The hub's own updates (owner only): what is new, install it, and whether it installs by itself.
   hubUpdate: () => call<HubUpdate>('/client/hub/update'),
   hubUpdateCheck: () => call<HubUpdate>('/client/hub/update/check', { method: 'POST', json: {} }),
@@ -235,6 +243,8 @@ export const api = {
   state: () => call<HubState>('/client/state'),
   messages: (channelId: string, before?: string) =>
     call<{ messages: Message[]; hasMore: boolean; privateReplies?: Message[] }>(`/client/channels/${channelId}/messages?limit=50${before ? `&before=${before}` : ''}`),
+  messagesAfter: (channelId: string, after: string) =>
+    call<{ messages: Message[]; hasMore: boolean }>(`/client/channels/${channelId}/messages?limit=100&after=${after}`),
   dismissReply: (channelId: string, id: string) => call(`/client/channels/${channelId}/private-replies/${id}`, { method: 'DELETE' }),
   send: (channelId: string, body: { content: string; attachmentIds?: string[]; descriptions?: Record<string, string>; replyTo?: string; voice?: boolean }) =>
     call<Message>(`/client/channels/${channelId}/messages`, { method: 'POST', json: body }),
@@ -262,7 +272,7 @@ export const api = {
   inbox: (scope?: { channelId: string } | { guildId: string }) => call<{ mentions: Mention[] }>(`/client/inbox${scope ? '?' + new URLSearchParams('channelId' in scope ? { channel_id:scope.channelId } : { guild_id:scope.guildId }) : ''}`),
   pins: (channelId: string) => call<{ messages: Message[] }>(`/client/channels/${channelId}/pins`),
   pin: (channelId: string, messageId: string, on: boolean) => call(`/client/channels/${channelId}/pins/${messageId}`, { method: on ? 'PUT' : 'DELETE' }),
-  overview: () => call<{ machines: MachineSummary[]; sessions: SessionSummary[] }>('/client/overview'),
+  overview: () => call<{ machines: MachineSummary[]; sessions: SessionSummary[]; server_time_ms?: number }>('/client/overview'),
   markRead: (read: Record<string, string>) => call('/client/read', { method: 'PUT', json: { read } }),
   routines: () => call<{ machines: MachineRoutines[] }>('/client/routines'),
   schedules: () => call<{ schedules: Schedule[] }>('/client/schedules'),

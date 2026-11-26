@@ -15,5 +15,5 @@
   },
   "include": ["src", "tests"],
   // Tests that drive a browser page or render the web app need the DOM types.
-  "exclude": ["tests/*.browser.test.ts", "tests/highlight.test.ts", "tests/thread-list.test.ts"]
+  "exclude": ["tests/*.browser.test.ts", "tests/highlight.test.ts", "tests/thread-list.test.ts", "tests/perf.test.ts", "tests/steps.test.ts"]
 }

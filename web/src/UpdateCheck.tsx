@@ -65,8 +65,8 @@ export function UpdateCheck() {
     {found && <section className="update-notes"><h3>What changed</h3><Notes text={found.notes?.trim() || 'No release notes were provided.'} /></section>}
     </div>
     <form method="dialog" className="modal-footer">
-      {found && !installing && <button className="button" autoFocus={false}>Later</button>}
-      {found ? <button type="button" className="button primary" autoFocus disabled={installing} onClick={install}>Restart to update</button> : <button className="button primary" autoFocus>Done</button>}
+      {found && !installing && <button className="button medium" autoFocus={false}>Later</button>}
+      {found ? <button type="button" className="button medium primary" autoFocus disabled={installing} onClick={install}>Restart to update</button> : <button className="button medium primary" autoFocus>Done</button>}
     </form>
     </div>
   </dialog> : null
@@ -79,7 +79,7 @@ export function UpdatesPage() {
     <HubUpdateGroup />
     {desktopUpdates && <Group title="This app">
       <Item label="Check for updates" note="Asks your hub for a newer version of this app and shows what changed.">
-        <button className="settings-btn" onClick={requestUpdateCheck}>Check for Updates…</button>
+        <button className="button medium" onClick={requestUpdateCheck}>Check for Updates…</button>
       </Item>
       <Item label="Update automatically" note="Installs a new version while the window is closed. With the window open, you choose when to restart.">
         <Switch label="Update automatically" checked={auto === true} disabled={auto === null} onChange={(on) => void invoke<boolean>('auto_update', { enabled: on }).then(setAuto).catch(() => {})} />

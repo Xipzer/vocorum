@@ -249,7 +249,8 @@ export class ClientApi {
     if (method === 'GET' && pathname === '/client/auth/status') {
       const device = await auth.device(req)
       // open: this computer may sign in with no code or passkey (POST /client/auth/local).
-      return sendJson(res, 200, { signedIn: Boolean(device), device: device && { id: device.id, name: device.name }, userId: device ? this.hub.userOf(device) : null, ...(!device && this.hub.localOpen(req) && { open: true }) })
+      // local: signed in that way, so signing out would only sign in again.
+      return sendJson(res, 200, { signedIn: Boolean(device), device: device && { id: device.id, name: device.name }, userId: device ? this.hub.userOf(device) : null, ...(!device && this.hub.localOpen(req) && { open: true }), ...(device && auth.isLocal(req) && { local: true }) })
     }
     if (method !== 'POST') throw new HttpError(404, 'Not found')
     const peer = `${req.socket.remoteAddress ?? ''} ${this.hub.identityOf(req) ?? ''}`
@@ -506,18 +507,21 @@ export class ClientApi {
     const channel = await this.channel(v, channelId, P.READ_MESSAGE_HISTORY)
     const limit = Math.min(Math.max(Number(query.get('limit')) || 50, 1), 100)
     const before = query.get('before')
+    // Discord's after=: the oldest messages newer than it, and hasMore says newer ones remain.
+    const after = before ? null : query.get('after')
+    const order = after ? 'asc' : 'desc'
     const rows = await this.prisma.message.findMany({
-      where: { channelId, ...(before && { id: { lt: before } }) },
-      orderBy: [{ timestamp: 'desc' }, { id: 'desc' }],
+      where: { channelId, ...(before && { id: { lt: before } }), ...(after && { id: { gt: after } }) },
+      orderBy: [{ timestamp: order }, { id: order }],
       take: limit,
     })
-    rows.reverse()
+    if (!after) rows.reverse()
     const hasMore = rows.length === limit
-    if (!hasMore && channel.starterMessageId && !rows.some((row) => row.id === channel.starterMessageId)) {
+    if (!after && !hasMore && channel.starterMessageId && !rows.some((row) => row.id === channel.starterMessageId)) {
       const starter = await this.prisma.message.findUnique({ where: { id: channel.starterMessageId } })
       if (starter) rows.unshift(starter)
     }
-    return { messages: await this.toClient(v, rows, () => channel.guildId ?? undefined), hasMore, ...(!before && { privateReplies: this.hub.twin.privateReplies?.list(v.userId, channelId) ?? [] }) }
+    return { messages: await this.toClient(v, rows, () => channel.guildId ?? undefined), hasMore, ...(!before && !after && { privateReplies: this.hub.twin.privateReplies?.list(v.userId, channelId) ?? [] }) }
   }
 
   // A channel the viewer can view (404 otherwise, so hidden channels do not
@@ -546,7 +550,8 @@ export class ClientApi {
 
   async postMessage(v: Viewer, channelId: string, body: Body) {
     const channel = await this.channel(v, channelId)
-    if (channel.type === ChannelType.GuildCategory || channel.type === ChannelType.GuildVoice) throw new HttpError(400, 'Cannot post here')
+    // A voice channel has its own chat, as on Discord; Send Messages decides, as in a text channel.
+    if (channel.type === ChannelType.GuildCategory) throw new HttpError(400, 'Cannot post here')
     const thread = THREAD_TYPES.includes(channel.type)
     const closed = this.hub.dms.closedNote(channelId)
     if (closed) throw new HttpError(409, closed)

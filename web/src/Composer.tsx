@@ -9,7 +9,7 @@ import { BOARD_CORRECT, correctedDraft, type BoardCorrection } from './board-doc
 import { EmojiPicker, rememberEmoji } from './EmojiPicker.tsx'
 import { store, useStore } from './store.ts'
 import { loadVoice, saveVoice, type VoiceDraft } from './voiceDraft.ts'
-import { Sheet, usePress, type SheetAt, type SheetSpec } from './Sheet.tsx'
+import { below, Sheet, usePress, type SheetAt, type SheetSpec } from './Sheet.tsx'
 import { cronLabel, remindTime, whenPicker } from './remind.ts'
 import { api, type Attachment, type Command, type CommandOption, type InteractionResult, type Message } from './api.ts'
 import { Icon } from './icons.tsx'
@@ -114,10 +114,10 @@ function UploadEditor({ upload, onSave, onClose }: { upload: Upload; onSave: (na
           </label>
         </div>
         <div className="modal-footer">
-          <button type="button" className="button" onClick={onClose}>
+          <button type="button" className="button medium" onClick={onClose}>
             Cancel
           </button>
-          <button type="submit" className="button primary" disabled={!valid}>
+          <button type="submit" className="button medium primary" disabled={!valid}>
             Save
           </button>
         </div>
@@ -727,6 +727,27 @@ export function Composer({
     if (uploads.length) return onError('Scheduled messages are text only. Remove the files to schedule it.')
     setSheet(scheduleSheet(at))
   })
+
+  // The + menu: attach, schedule and record from one place, like Discord's.
+  const attach = useRef<HTMLButtonElement>(null)
+  const [plusMenu, setPlusMenu] = useState<SheetSpec | null>(null)
+  const openPlusMenu = () => {
+    const at = below(attach.current!, 'start')
+    setPlusMenu({
+      at,
+      title: 'Add to message',
+      plain: true,
+      groups: [[
+        { label: 'Upload a file', icon: 'file', run: () => fileInput.current?.click() },
+        ...(canSchedule ? [{ label: 'Schedule message', icon: 'clock' as const, run: () => {
+          if (!text.trim()) { onError('Write the message first, then schedule it.'); return textarea.current?.focus() }
+          if (uploads.length) return onError('Scheduled messages are text only. Remove the files to schedule it.')
+          setSheet(scheduleSheet(at))
+        } }] : []),
+        ...(!recording && !retained ? [{ label: 'Record voice message', icon: 'mic' as const, run: () => void startRecording() }] : []),
+      ]],
+    })
+  }
   const send = async () => {
     if (matches.length && slashQuery !== '') {
       chooseCommand(matches[pick] ?? matches[0]!)
@@ -748,14 +769,25 @@ export function Composer({
         ids.push(attachment.id)
         if (u.description.trim()) descriptions[attachment.id] = u.description.trim()
       }
+      const expanded = await expandEmoji(content, guildId)
+      // Text alone shows at once and the box clears; files wait for the hub as before.
+      const local = files.length ? undefined : store.sendLocal(channelId, expanded, replyTo?.id)
+      if (local) {
+        setText((t) => (t === content ? '' : t))
+        onCancelReply()
+      }
       try {
-        const posted = await api.send(channelId, { content: await expandEmoji(content, guildId), attachmentIds: ids, ...(Object.keys(descriptions).length && { descriptions }), ...(replyTo && { replyTo: replyTo.id }) })
-        store.confirmSent(posted)
+        const posted = await api.send(channelId, { content: expanded, attachmentIds: ids, ...(Object.keys(descriptions).length && { descriptions }), ...(replyTo && { replyTo: replyTo.id }) })
+        store.confirmSent(posted, local)
         setText((t) => (t === content ? '' : t))
         drop(files)
         setUploads((list) => list.filter((x) => !files.some((u) => u.key === x.key)))
         onCancelReply()
       } catch (e) {
+        if (local) {
+          store.dropLocal(channelId, local)
+          setText((t) => t || content)
+        }
         onError(e instanceof Error ? e.message : String(e))
       }
     } finally {
@@ -766,14 +798,15 @@ export function Composer({
   // Voice notes. Touch: hold to record, release to send, slide away to cancel.
   // A click (mouse) or a quick tap locks recording on: then Send or Enter
   // sends, Cancel or Esc drops it. Works the same on desktop and phones.
-  const startRecording = async (event: React.PointerEvent) => {
-    event.preventDefault()
+  // Without a press (the + menu) recording starts locked on.
+  const startRecording = async (event?: React.PointerEvent) => {
+    event?.preventDefault()
     if (recorder.current || retained || voiceSending.current) return
-    mic.current?.setPointerCapture(event.pointerId)
-    pressed.current = true
+    if (event) mic.current?.setPointerCapture(event.pointerId)
+    pressed.current = Boolean(event)
     downAt.current = Date.now()
-    lastPos.current = { x: event.clientX, y: event.clientY }
-    locked.current = event.pointerType === 'mouse'
+    lastPos.current = event ? { x: event.clientX, y: event.clientY } : null
+    locked.current = !event || event.pointerType === 'mouse'
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       // Released before the microphone opened: a hold that ended (drop it) unless it was a tap (lock on).
@@ -978,8 +1011,8 @@ export function Composer({
             addFiles(e.dataTransfer.files)
           }}
         >
-          <button className="icon-button attach" onClick={() => fileInput.current?.click()} aria-label="Attach files">
-            <Icon name="plus" size={20} />
+          <button ref={attach} className="icon-button attach" onClick={() => (plusMenu ? setPlusMenu(null) : openPlusMenu())} aria-label="Add to message" aria-haspopup="menu" aria-expanded={Boolean(plusMenu)}>
+            <Icon name="attach" size={20} />
           </button>
           <input ref={fileInput} type="file" multiple hidden onChange={(e) => {
               if (e.target.files) addFiles(e.target.files)
@@ -1084,13 +1117,13 @@ export function Composer({
               <Icon name="smile" />
             </button>
           )}
-          {text.trim() || uploads.length ? (
-            <button className="icon-button send" {...sendPress} onClick={() => void send()} aria-label="Send" title={canSchedule ? 'Send (right-click to schedule)' : 'Send'}>
+          {recording && locked.current ? (
+            <button className="icon-button send" onClick={() => finish(true)} aria-label="Send voice message" title="Send (Enter)">
               <Icon name="send" />
             </button>
           ) : (
-            recording && locked.current ? (
-              <button className="icon-button send" onClick={() => finish(true)} aria-label="Send voice message" title="Send (Enter)">
+            text.trim() || uploads.length ? (
+              <button className="icon-button send" {...sendPress} onClick={() => void send()} aria-label="Send" title={canSchedule ? 'Send (right-click to schedule)' : 'Send'}>
                 <Icon name="send" />
               </button>
             ) : (
@@ -1101,6 +1134,7 @@ export function Composer({
           )}
         </div>
       )}
+      {plusMenu && <Sheet spec={plusMenu} onClose={() => { setPlusMenu(null); attach.current?.focus({ preventScroll: true }) }} />}
       {sheet && <Sheet spec={sheet} onClose={() => setSheet(null)} />}
     </>
   )

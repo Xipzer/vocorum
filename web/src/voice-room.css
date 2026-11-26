@@ -1,0 +1,107 @@
+/* The call and the channel's own chat under one header. This sheet loads before styles.css:
+   a rule that changes one of its declarations carries the room's class to outrank it. */
+.voice-room {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.voice-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+@media (min-width: 768px) {
+  .side-panel.voice-chat {
+    width: 400px;
+  }
+}
+.voice-chat > .chat {
+  border: 0;
+  border-radius: 0;
+}
+.voice-chat .panel-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.voice-button.phone-chat {
+  display: none;
+}
+/* Docked: the room's header is the pane's header too. Narrower, the pane lies over the
+   call as every side panel does, with a panel's head. */
+@media (min-width: 1101px) {
+  .voice-room > .voice-chat {
+    border-top: 0;
+  }
+  .voice-chat > .panel-head {
+    display: none;
+  }
+  /* A stage the pane has narrowed keeps its tiles tall enough for the avatar, as on phones. */
+  @container chat (max-width: 1000px) {
+    .voice-room:has(> .voice-chat) .voice-tile {
+      aspect-ratio: 1;
+    }
+  }
+}
+
+/* The strip's second line: where, then for how long. The time never gives way to a long name. */
+.voice-strip-channel {
+  display: flex;
+  gap: 4px;
+}
+.voice-strip-place {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.voice-strip-time {
+  flex: none;
+}
+
+@media (max-width: 767px) {
+  /* Five controls in the dock. */
+  .voice-button.phone-chat {
+    display: grid;
+  }
+  .voice-view .voice-controls {
+    gap: 8px;
+  }
+  /* On the narrowest phones they give way evenly, never past the dock's edge. */
+  .voice-view .voice-button {
+    flex: 0 1 56px;
+    width: auto;
+    height: auto;
+    min-width: 0;
+    aspect-ratio: 1;
+  }
+  /* The call, docked under the header of every other screen. */
+  .voice-strip.call-pill {
+    position: fixed;
+    top: calc(env(safe-area-inset-top) + var(--header) + 8px);
+    bottom: auto;
+    height: var(--hit);
+    padding: 0 0 0 12px;
+    z-index: 3;
+  }
+  .call-pill .voice-strip-where {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    align-self: stretch;
+  }
+  .call-pill .voice-strip-status {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .call-pill .voice-strip-channel {
+    flex: none;
+  }
+  .app:has(> .call-pill) > .chat > .chat-header {
+    margin-bottom: calc(var(--hit) + 16px);
+  }
+}

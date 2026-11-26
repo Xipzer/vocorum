@@ -189,6 +189,23 @@ test.skipIf(!ready)('search: Ctrl+F opens the panel, filters work, a result jump
   await page.locator('.side-panel').waitFor({ state: 'detached' })
 })
 
+test.skipIf(!ready)('search: a result that starts with a mention shows the name, not the id', async () => {
+  // The bot mentions itself, so no unread mention is left behind for the tests after this one.
+  const sent = await demo.website.send(`<@${demo.bot.user!.id}> the heron survey is in <#${demo.kimaki.id}>`)
+  await page.goto(`${origin}/#/c/${demo.website.id}`)
+  const mention = page.locator(`#m-${sent.id} .mention`).first()
+  await mention.waitFor()
+  const name = await mention.textContent()
+  expect(name).toMatch(/^@\D/)
+  await page.keyboard.press('Control+f')
+  await page.getByPlaceholder('Search messages').fill('heron')
+  const snippet = page.locator('.result .snippet', { hasText: 'heron' })
+  await snippet.waitFor()
+  await expect(snippet.textContent()).resolves.toBe(`${name} the heron survey is in #kimaki`)
+  await page.keyboard.press('Escape')
+  await page.locator('.side-panel').waitFor({ state: 'detached' })
+})
+
 test.skipIf(!ready)('pins: pin from the toolbar, see it in the panel, unpin', async () => {
   await page.goto(`${origin}/#/c/${demo.thread.id}`)
   const message = page.locator('.message', { hasText: 'Found it' }).first()
@@ -207,7 +224,9 @@ test.skipIf(!ready)('pins: pin from the toolbar, see it in the panel, unpin', as
   await pin.getByRole('button', { name: 'Unpin' }).click()
   await pin.waitFor({ state: 'detached' })
   await page.getByText('No pinned messages').waitFor()
-  await page.getByRole('button', { name: 'Close', exact: true }).click()
+  // A popout on desktop: no close button, Esc closes it.
+  await page.keyboard.press('Escape')
+  await page.locator('.side-panel').waitFor({ state: 'detached' })
 })
 
 test.skipIf(!ready)('mentions: a ping shows a badge, the inbox lists it, a click jumps and clears it', async () => {
@@ -388,7 +407,8 @@ test.skipIf(!ready)('columns: drag the channel list wider, fold it by dragging p
     expect(Math.round(panelBox.x)).toBe(8)
     expect(Math.round(footerBox.x - chatBox.x)).toBe(8)
     expect(Math.round(chatBox.x + chatBox.width - footerBox.x - footerBox.width)).toBe(8)
-    // Inside: content starts and ends 14px from each piece's outer edge, on both sides of both.
+    // Inside: the panel's content starts and ends 14px from its outer edge. The composer's + and
+    // last icon are centred 28px from its edges, as in Discord (17px to a 22px glyph), the same on both sides.
     const inset = async (outer: string, first: string, last: string) => {
       const o = (await page.locator(outer).boundingBox())!
       const a = (await page.locator(first).first().boundingBox())!
@@ -396,7 +416,7 @@ test.skipIf(!ready)('columns: drag the channel list wider, fold it by dragging p
       return [Math.round(a.x - o.x), Math.round(o.x + o.width - b.x - b.width)]
     }
     expect(await inset('.user-panel', '.user-panel .avatar', '.user-panel > .services-button > *')).toEqual([14, 14])
-    expect(await inset('.footer', '.composer .attach svg', '.composer .mic svg')).toEqual([14, 14])
+    expect(await inset('.footer', '.composer .attach svg', '.composer .mic svg')).toEqual([17, 17])
   }
   await drag(96)
   expect(await width()).toBe(start + 96)
@@ -460,10 +480,27 @@ test.skipIf(!ready)('bell and members: mute a thread from the bell; the member l
   await page.getByRole('button', { name: 'Notification settings' }).click()
   await page.getByText('Unmute').click()
   await page.locator('.icon-button.muted-bell').waitFor({ state: 'detached' })
+  const header = page.locator('.app > .chat > .chat-header')
+  const before = (await header.boundingBox())!
   await page.getByRole('button', { name: 'Members' }).click()
   await page.locator('.member-note', { hasText: 'chromium · here' }).waitFor()
   await page.screenshot({ path: path.join(shots, 'members-panel.png') })
-  await page.getByRole('button', { name: 'Close', exact: true }).click()
+  // Discord's member list: a 264px column with no head of its own, under a header that keeps its full width.
+  const members = page.locator('.members-panel')
+  const [list, head] = [(await members.boundingBox())!, (await header.boundingBox())!]
+  expect(list.width).toBe(264)
+  expect(head.x + head.width).toBe(before.x + before.width)
+  expect(head.x + head.width).toBe(list.x + list.width)
+  await expect(members.locator('.panel-head').isVisible()).resolves.toBe(false)
+  expect((await members.locator('.panel-section').first().boundingBox())!.y).toBeGreaterThan(head.y + head.height)
+  await page.getByRole('button', { name: 'Members' }).click()
+  await members.waitFor({ state: 'detached' })
+  // Pinned is a 422px popout with its own head, as Discord's.
+  await page.getByRole('button', { name: 'Pinned messages' }).click()
+  await expect.poll(() => page.locator('.pins-panel.popout').boundingBox().then((b) => b?.width)).toBe(422)
+  await page.locator('.pins-panel .panel-head').waitFor()
+  await page.keyboard.press('Escape')
+  await page.locator('.pins-panel').waitFor({ state: 'detached' })
 })
 
 test.skipIf(!ready)('thread card: the message that started a thread carries its card in the channel, not inside the thread', async () => {
@@ -493,7 +530,7 @@ test.skipIf(!ready)('thread card: the message that started a thread carries its 
   await expect(page.locator('.messages .thread-card').count()).resolves.toBe(0)
 })
 
-test.skipIf(!ready)('message bands: every row has the same 3px inside its hover band, above and below', async () => {
+test.skipIf(!ready)('message bands: every row has the same 2px inside its hover band, above and below', async () => {
   // The edge case found in review: a one-line bot reply under a reply line, shorter than its avatar.
   const last = (await demo.thread.messages.fetch({ limit: 1 })).first()!
   await demo.thread.send({ content: '× OpenCode integration.list failed', reply: { messageReference: last.id } })
@@ -511,12 +548,12 @@ test.skipIf(!ready)('message bands: every row has the same 3px inside its hover 
       const first = kids.reduce((a, k) => (k.getBoundingClientRect().top < a.getBoundingClientRect().top ? k : a), kids[0])
       const top = Math.min(...kids.map((k) => k.getBoundingClientRect().top)) - (first.classList.contains('message-head') ? 0 : lead(first))
       const bottom = Math.max(...kids.map((k) => k.getBoundingClientRect().bottom))
-      // The avatar counts as content too: it must sit inside the band with the same 3px below.
+      // The avatar counts as content too: it must sit inside the band with the same 2px below.
       const av = m.querySelector('.message-head .avatar')
       const low = Math.max(bottom, av ? av.getBoundingClientRect().bottom : bottom)
       const extra = Math.round(r.bottom - low)
       return [Math.round(top - r.top), Math.min(Math.round(r.bottom - bottom), extra), extra, (m.textContent || '').slice(0, 30)]
-    }).filter(([a, b, c]) => a !== 3 || c < 3 || (b !== 3 && c !== 3))`)
+    }).filter(([a, b, c]) => a !== 2 || c < 2 || (b !== 2 && c !== 2))`)
     expect(off).toEqual([])
   }
 })
@@ -538,6 +575,54 @@ test.skipIf(!ready)('reactions: add from the toolbar, it lights up as yours; cli
   await picker.getByRole('button', { name: 'rocket' }).first().click()
   await message.locator('.reaction.me', { has: page.locator('img[alt="🚀"]') }).waitFor()
   await page.screenshot({ path: path.join(shots, 'reactions.png') })
+  // From the + pill at the left of the row, the picker opens inside the chat column, not over the channel list.
+  await message.hover()
+  await message.locator('.reaction.add').click()
+  await picker.waitFor()
+  const edges = await picker.evaluate((el: Element) => ({ picker: el.getBoundingClientRect().left, chat: el.closest('.chat')!.getBoundingClientRect().left }))
+  expect(edges.picker).toBeGreaterThanOrEqual(edges.chat)
+  await page.keyboard.press('Escape')
+  await picker.waitFor({ state: 'detached' })
+})
+
+test.skipIf(!ready)("emoji picker: Discord's 498 x 486 with nine 48px columns and a category rail that jumps and follows the scroll", async () => {
+  await page.goto(`${origin}/#/c/${demo.thread.id}`)
+  await page.locator('.composer .emoji-button').click()
+  const picker = page.locator('.emoji-picker')
+  await picker.locator('.emoji-cell').first().waitFor()
+  expect(await picker.evaluate((el) => [el.getBoundingClientRect().width, el.getBoundingClientRect().height])).toEqual([498, 486])
+  expect(await picker.locator('.emoji-grid').first().evaluate((el) => getComputedStyle(el).gridTemplateColumns)).toBe(Array(9).fill('48px').join(' '))
+  const rail = picker.getByRole('navigation', { name: 'Emoji categories' })
+  expect(await rail.evaluate((el) => el.getBoundingClientRect().width)).toBe(48)
+  const labels = await rail.getByRole('button').evaluateAll((els) => els.map((el) => el.getAttribute('aria-label')))
+  expect(labels.slice(-9)).toEqual(['Smileys & Emotion', 'People & Body', 'Animals & Nature', 'Food & Drink', 'Travel & Places', 'Activities', 'Objects', 'Symbols', 'Flags'])
+  const current = () => rail.locator('[aria-current]').getAttribute('aria-label')
+  expect(await current()).toBe(labels[0])
+  // A click scrolls its group to the top; the last group, too short to reach the top, keeps the marker.
+  await rail.getByRole('button', { name: 'Food & Drink' }).click()
+  await expect.poll(current, { timeout: 5000 }).toBe('Food & Drink')
+  const top = () => picker.evaluate((el) => {
+    const s = el.querySelector('.emoji-scroll')!
+    const h = [...s.querySelectorAll('h4')].find((h) => h.textContent === 'Food & Drink')!
+    return Math.round(h.getBoundingClientRect().top - s.getBoundingClientRect().top)
+  })
+  expect(await top()).toBe(0)
+  await rail.getByRole('button', { name: 'Flags' }).click()
+  await expect.poll(current, { timeout: 5000 }).toBe('Flags')
+  // Scrolling by hand moves the marker.
+  await picker.locator('.emoji-scroll').evaluate((s) => {
+    const h = [...s.querySelectorAll('section')].find((x) => x.querySelector('h4')!.textContent === 'Animals & Nature')!
+    s.scrollTop = h.offsetTop + 60
+  })
+  await expect.poll(current, { timeout: 5000 }).toBe('Animals & Nature')
+  // Searching drops the marker; a rail click clears the search.
+  await picker.getByRole('textbox').fill('rocket')
+  await expect.poll(() => rail.locator('[aria-current]').count(), { timeout: 5000 }).toBe(0)
+  await rail.getByRole('button', { name: 'Objects' }).click()
+  expect(await picker.getByRole('textbox').inputValue()).toBe('')
+  await expect.poll(current, { timeout: 5000 }).toBe('Objects')
+  await page.keyboard.press('Escape')
+  await picker.waitFor({ state: 'detached' })
 })
 
 test.skipIf(!ready)('inbox bell: the user panel bell gathers mentions from every server and sessions that need you', async () => {
@@ -550,7 +635,8 @@ test.skipIf(!ready)('inbox bell: the user panel bell gathers mentions from every
   const panel = page.locator('.side-panel', { hasText: 'Inbox' })
   await panel.locator('.mention-row', { hasText: 'the inbox should see this' }).waitFor()
   await page.screenshot({ path: path.join(shots, 'inbox-panel.png') })
-  await panel.getByRole('button', { name: 'Close', exact: true }).click()
+  await page.keyboard.press('Escape')
+  await panel.waitFor({ state: 'detached' })
 })
 
 test.skipIf(!ready)('errors: a failed turn with Retry reads red, with a red band and a solid red button', async () => {
@@ -757,6 +843,9 @@ test.skipIf(!ready)('media: embeds, attachment mosaics with a lightbox, spoilers
   await post({ authorId: ownerUserId, content: 'One picture', attachments: [await image(0, 900, 600)] })
   await post({ authorId: ownerUserId, content: 'Three of them', attachments: [await image(1), await image(2), await image(3)] })
   await post({ authorId: ownerUserId, content: 'Five for the mosaic', attachments: await Promise.all([0, 1, 2, 3, 4].map((i) => image(i + 2))) })
+  // Small screenshots side by side, with and without stored sizes: shown at their own size.
+  await post({ authorId: ownerUserId, content: 'Two small shots', attachments: [await image(0, 170, 104), await image(1, 150, 246)] })
+  await post({ authorId: ownerUserId, content: 'Small, sizes unknown', attachments: [await save('tiny-a.png', 'image/png', png(120, 90, hues[2]!)), await save('tiny-b.png', 'image/png', png(96, 200, hues[3]!))] })
   await post({ authorId: ownerUserId, content: 'Hidden one', attachments: [{ ...(await image(5)), filename: 'SPOILER_photo.png' }] })
   let video: unknown = null
   try {
@@ -821,6 +910,19 @@ test.skipIf(!ready)('media: embeds, attachment mosaics with a lightbox, spoilers
   await shot('One picture', 'media-one.png')
   await shot('Three of them', 'media-three.png')
   await shot('Five for the mosaic', 'media-five.png')
+  // A mosaic never enlarges a picture past its own size; a larger one still fills its cell.
+  const drawn = (text: string) => p.locator('.message', { hasText: text }).locator('.media-cell img').evaluateAll(async (imgs) => {
+    await Promise.all(imgs.map((img) => (img as HTMLImageElement).decode().catch(() => {})))
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+    return imgs.map((img) => { const r = img.getBoundingClientRect(), cell = img.closest('.media-cell')!.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height), cellW: Math.round(cell.width), cellH: Math.round(cell.height), centred: Math.abs(r.left + r.width / 2 - (cell.left + cell.width / 2)) < 1 && Math.abs(r.top + r.height / 2 - (cell.top + cell.height / 2)) < 1 } })
+  })
+  for (const text of ['Two small shots', 'Small, sizes unknown']) await p.locator('.message', { hasText: text }).scrollIntoViewIfNeeded()
+  const pair = await drawn('Two small shots')
+  expect(pair.map((i) => [i.w, i.h, i.centred])).toEqual([[170, 104, true], [150, 246, true]])
+  expect(pair.every((i) => i.cellW > 250 && i.cellH > 250)).toBe(true)
+  await expect.poll(async () => (await drawn('Small, sizes unknown')).map((i) => [i.w, i.h, i.centred])).toEqual([[120, 90, true], [96, 200, true]])
+  expect((await drawn('Five for the mosaic')).every((i) => i.w === i.cellW && i.h === i.cellH)).toBe(true)
+  await shot('Two small shots', 'media-small-pair.png')
   const spoiler = p.locator('.message', { hasText: 'Hidden one' }).locator('.media-cell')
   await expect(spoiler.getAttribute('class')).resolves.toMatch(/spoiler/)
   await shot('Hidden one', 'media-spoiler.png')
@@ -895,7 +997,7 @@ test.skipIf(!ready)('relays and tool lines: Kimaki-injected prompt stays quiet, 
   await page.goto(`${origin}/#/c/${demo.thread.id}`)
   const m = page.locator('.message', { hasText: 'Now the composer tools.' }).last()
   await m.locator('.relay').waitFor()
-  const tools = page.locator('.message', { hasText: 'Build the docs site' }).last()
+  const tools = page.locator('.message', { hasText: 'Tidy the changelog' }).last()
   await page.locator('.relay-toggle').last().click()
   await m.locator('.relay.open li').first().waitFor()
   const a = await tools.boundingBox()
@@ -903,9 +1005,21 @@ test.skipIf(!ready)('relays and tool lines: Kimaki-injected prompt stays quiet, 
   await page.screenshot({ path: path.join(shots, 'relay-tools.png'), clip: { x: a!.x, y: a!.y, width: 900, height: b!.y + b!.height - a!.y + 8 } })
 })
 
+test.skipIf(!ready)('tool lines from older Kimaki fold into steps like current ones', async () => {
+  const fixture: Record<string, string[]> = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, 'fixtures/kimaki-steps.json'), 'utf8'))
+  for (const content of fixture['before September 2026']!) await demo.thread.send(content)
+  await page.goto(`${origin}/#/c/${demo.thread.id}`)
+  const steps = page.locator('button.steps').filter({ hasText: 'Run the map check again' })
+  await expect.poll(() => steps.innerText()).toMatch(/^6 steps\s+Run the map check again$/)
+  expect(await page.locator('.message', { hasText: 'List the survey files' }).count()).toBe(0)
+  await steps.click()
+  expect(await page.locator('.steps-list .subtext').count()).toBeGreaterThanOrEqual(6)
+})
+
 test.skipIf(!ready)('a handoff uses the message width and can be read to the end on a phone', async () => {
   const text = 'The survey crew labelled the gate, the footbridge and the trees by the station. '.repeat(2) + 'The map is ready.'
   const msg = await demo.thread.send(`-# » **CLI:** ${text}`)
+  await demo.thread.send(`-# ┣ read _Survey the footbridge. ${text}_`)
   const p = await page.context().newPage()
   try {
     await p.setViewportSize({ width: 1800, height: 1100 })
@@ -918,6 +1032,13 @@ test.skipIf(!ready)('a handoff uses the message width and can be read to the end
       return row.getBoundingClientRect().right - parseFloat(getComputedStyle(row).paddingRight) - el.getBoundingClientRect().right
     })
     expect(Math.abs(await rightGap())).toBeLessThan(2)
+    const disclosure = p.locator('button.steps').filter({ hasText: 'Survey the footbridge.' })
+    await disclosure.click()
+    const step = p.locator('.steps-list .markdown').filter({ hasText: 'Survey the footbridge.' })
+    expect(Math.abs(await step.evaluate(el => {
+      const row = el.closest('.message')!
+      return row.getBoundingClientRect().right - parseFloat(getComputedStyle(row).paddingRight) - el.getBoundingClientRect().right
+    }))).toBeLessThan(2)
     expect(await relay.getByRole('button', { name: 'Show all' }).count()).toBe(0)
     await p.setViewportSize({ width: 390, height: 844 })
     await relay.getByRole('button', { name: 'Show all' }).click()
@@ -1019,6 +1140,9 @@ test.skipIf(!ready)('command results: private receipt, paged picker, edited next
       return { bottom: Math.round(r.bottom), x: r.left, scroll: list.scrollHeight > list.clientHeight, spill: document.documentElement.scrollWidth > innerWidth }
     })
     expect(geometry).toEqual({ bottom: 844, x: 0, scroll: true, spill: false })
+    // Discord on iPhone: 54px for a label, 62 with a description, 16px over 12px.
+    const rows = await choices.evaluate((el) => [...el.querySelectorAll('[role=option]')].slice(0, 2).map((n) => [Math.round(n.getBoundingClientRect().height), getComputedStyle(n).fontSize, getComputedStyle(n.querySelector('.sheet-sub-label') ?? n).fontSize]))
+    expect(rows).toEqual([[54, '16px', '16px'], [62, '16px', '12px']])
     await screen.screenshot({ path: path.join(shots, 'command-sheet-phone.png'), animations: 'disabled' })
     await choices.getByRole('option', { name: /^Studio 21 / }).click()
     const level = prompt.getByRole('button', { name: 'Select a thinking level' })
@@ -1036,6 +1160,10 @@ test.skipIf(!ready)('command results: private receipt, paged picker, edited next
     expect(Math.abs(field.x - popup.x)).toBeLessThan(1)
     expect(Math.abs(field.width - popup.width)).toBeLessThan(1)
     expect(Math.min(Math.abs(popup.y - field.y - field.height - 8), Math.abs(field.y - popup.y - popup.height - 8))).toBeLessThan(1)
+    // Discord's rows: edge to edge, 38px, 16px text 8px in from the list's border.
+    const option = (await menu.getByRole('option', { name: 'Standard' }).boundingBox())!
+    expect([Math.round(option.height), Math.round(option.x - popup.x), Math.round(option.width - popup.width)]).toEqual([38, 1, -2])
+    expect(await menu.getByRole('option', { name: 'Standard' }).evaluate((el) => getComputedStyle(el).fontSize)).toBe('16px')
     await screen.screenshot({ path: path.join(shots, 'command-menu-desktop.png') })
     await screen.keyboard.press('Escape')
     await menu.waitFor({ state: 'detached' })
@@ -1192,6 +1320,34 @@ test.skipIf(!ready)('spacing: every block kind sits where Discord puts it', asyn
     return { quote: color('.message blockquote') === want, subtext: color('.message .subtext') === want }
   })
   expect.soft(tones).toEqual({ quote: true, subtext: true })
+})
+
+test.skipIf(!ready)('code block: the copy button and language tag never cover the first line', async () => {
+  const long = 'if (zzcopy.parts.length === 0) return { ...view, footer: footerFor(turn), label: labelFor(turn), extra: [1, 2, 3, 4, 5, 6, 7, 8, 9] }'
+  await demo.thread.send(['```ts', long, 'second line', '```'].join('\n'))
+  const block = page.locator('.message .codeblock', { hasText: 'zzcopy' }).last()
+  try {
+    for (const width of [390, 1280]) {
+      await page.setViewportSize({ width, height: 844 })
+      await page.goto(`${origin}/#/c/${demo.thread.id}`)
+      await page.reload()
+      await block.scrollIntoViewIfNeeded()
+      if (width > 767) await block.hover()
+      const boxes = await block.evaluate((el) => {
+        const range = document.createRange()
+        range.selectNodeContents(el.querySelector('pre code')!)
+        const rects = [...range.getClientRects()].filter((r) => r.width > 0)
+        const line = rects.filter((r) => Math.abs(r.top - rects[0]!.top) < 2)
+        const text = { left: Math.min(...line.map((r) => r.left)), right: Math.max(...line.map((r) => r.right)), top: line[0]!.top, bottom: line[0]!.bottom }
+        const box = (sel: string) => { const r = el.querySelector(sel)!.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom } }
+        return { text, copy: box('.codeblock-copy'), lang: box('.codeblock-lang'), wrapped: rects.some((r) => r.top > rects[0]!.top + 2 && r.top < rects[0]!.top + 30) }
+      })
+      const hits = (a: typeof boxes.text, b: typeof boxes.text) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
+      expect(boxes.wrapped, `${width}: the long first line wraps`).toBe(true)
+      expect(hits(boxes.copy, boxes.text), `${width}: copy over code ${JSON.stringify(boxes)}`).toBe(false)
+      expect(hits(boxes.lang, boxes.text), `${width}: language over code ${JSON.stringify(boxes)}`).toBe(false)
+    }
+  } finally { await page.setViewportSize({ width: 1280, height: 800 }) }
 })
 
 test.skipIf(!ready)('image clicks preview once, zoom doubles a small image and only Download saves it', async () => {
@@ -1529,7 +1685,8 @@ test.skipIf(!ready)('thread cards: the meta line starts under the name, in the c
   await page.locator('.chat-header button[aria-label="Threads"]').click()
   const row = page.locator('.side-panel .thread-row').first()
   await row.waitFor()
-  expect(await textLeft(row.locator('.result-where'))).toBe(await textLeft(row.locator('.link-title')))
+  // The meta line now leads with the count's icon: its box starts under the name.
+  expect(Math.round((await row.locator('.result-where').boundingBox())!.x)).toBe(await textLeft(row.locator('.link-title')))
   await page.keyboard.press('Escape')
 }, 30_000)
 
@@ -1654,6 +1811,8 @@ test.skipIf(!ready)('keyboard: Ctrl+K switcher, Enter on empty goes back, Alt+ar
   await page.locator('.shortcuts').screenshot({ path: path.join(shots, 'shortcuts.png') })
   await page.keyboard.press('Escape')
   await page.locator('.shortcuts').waitFor({ state: 'detached' })
+  // Drain this test's delayed bot echo before the next test bookmarks the shared thread.
+  await page.getByText('Got it: zz-edit-me', { exact: true }).waitFor()
 }, 60_000)
 
 test.skipIf(!ready)('a catch-up banner excludes arrivals already read and clears when replying at the latest', async () => {
@@ -1699,7 +1858,8 @@ test.skipIf(!ready)('a slow send keeps the draft and uploads until acknowledged;
   const sent=p.waitForResponse(r=>r.request().method()==='POST'&&r.url().endsWith(`/client/channels/${demo.website.id}/messages`));await box.press('Enter');const m=await(await sent).json();expect(m.attachments).toHaveLength(1);await p.locator(`#m-${m.id}`).waitFor();expect(await p.locator(`#m-${m.id}`).count()).toBe(1);await expect.poll(()=>box.inputValue()).toBe('')
 },30000)
 
-test.skipIf(!ready)('live replies ease to the tail once, and reduced motion settles immediately',async()=>{
+// As Discord's desktop app (60 fps captures): someone else's reply lands at the tail on its first frame.
+test.skipIf(!ready)('live replies land at the tail at once, with or without reduced motion',async()=>{
   const thread=await demo.kimaki.threads.create({name:'Live arrival notes'})
   const seed=await thread.send('A line of the field notes.\n'.repeat(65))
   const p=page;await p.bringToFront();await p.goto(`${origin}/#/c/${thread.id}`);await p.locator(`#m-${seed.id}`).waitFor()
@@ -1710,7 +1870,7 @@ test.skipIf(!ready)('live replies ease to the tail once, and reduced motion sett
     await history.evaluate((el,needle)=>{const a:number[]=[];(window as any).__arrivalGaps=a;const start=performance.now();const sample=()=>{if(el.textContent?.includes(needle))a.push(Math.round(el.scrollHeight-el.clientHeight-el.scrollTop));if(performance.now()-start<1500)requestAnimationFrame(sample)};requestAnimationFrame(sample)},text)
     const m=await thread.send(text+'\n\nLine two.');await p.locator(`#m-${m.id}`).waitFor();await p.waitForTimeout(220)
     const gaps:number[]=await p.evaluate(()=>(window as any).__arrivalGaps);expect(gaps.length).toBeGreaterThan(3);expect(Math.abs(gaps.at(-1)!)).toBeLessThan(2)
-    if(reduced)expect(Math.max(...gaps)).toBeLessThan(2);else expect(new Set(gaps.filter(x=>x>1)).size).toBeGreaterThan(1)
+    expect(Math.max(...gaps)).toBeLessThan(2)
   }
 },20000)
 
@@ -1734,6 +1894,13 @@ test.skipIf(!ready)('mark unread: from the menu or Alt+click, the line moves the
   await page.locator('.sheet-item', { hasText: 'Mark unread' }).click()
   // The line sits right above the message, the hub moved back, and the other tab shows it unread.
   await expect.poll(() => page.evaluate((mid) => document.getElementById(`m-${mid}`)?.previousElementSibling?.classList.contains('new-divider') ?? false, id)).toBe(true)
+  // Discord's form: a 1px rule with a 13px "NEW" flag at its right end, 8px from each neighbour, no centred words.
+  expect(await page.getByRole('separator', { name: 'New messages' }).count()).toBe(1)
+  const line = await page.locator('.new-divider').evaluate((d) => {
+    const r = d.getBoundingClientRect(), f = d.querySelector('span')!.getBoundingClientRect()
+    return { h: r.height, text: (d as HTMLElement).innerText.trim(), flagH: f.height, flagEnd: f.right - r.right, flagMid: f.top + f.height / 2 - r.top, above: r.top - d.previousElementSibling!.getBoundingClientRect().bottom, below: d.nextElementSibling!.getBoundingClientRect().top - r.bottom }
+  })
+  expect(line).toEqual({ h: 1, text: 'NEW', flagH: 13, flagEnd: 0, flagMid: 0.5, above: 8, below: 8 })
   await expect.poll(async () => (await hub.store.readState(hub.options.config.ownerUserId))[demo.thread.id]).toBe(String(BigInt(id) - 1n))
   await expect.poll(() => otherRow.evaluate((e) => e.classList.contains('unread'))).toBe(true)
   // Still unread while open: reading it again needs leaving or Mark as read.
@@ -1811,14 +1978,36 @@ test.skipIf(!ready)('scheduled messages: right-click Send to schedule, the chann
   await p.close()
 }, 60_000)
 
-test.skipIf(!ready)('members: a machine in the member list has a menu, without Message', async () => {
+test.skipIf(!ready)('members: a machine in the member list opens its profile card, without Message', async () => {
   const p = await page.context().newPage()
   await p.goto(`${origin}/#/c/${demo.kimaki.id}`)
   await p.getByRole('button', { name: 'Members' }).click()
-  await p.locator('button.member', { hasText: 'Workstation' }).first().click()
-  // Agents work in project channels: a machine's menu has no Message.
-  await p.locator('.sheet-item', { hasText: 'Copy machine name' }).waitFor()
-  await expect(p.locator('.sheet-item', { hasText: 'Message' }).count()).resolves.toBe(0)
+  const row = p.locator('button.member', { hasText: 'Workstation' }).first()
+  await row.click()
+  // Discord's popout: 300 wide, left of the list, top level with the row; the machine where roles go.
+  const card = p.getByRole('dialog', { name: 'Workstation' })
+  await card.locator('.profile-chip', { hasText: 'workstation' }).waitFor()
+  const [r, c, list] = [(await row.boundingBox())!, (await card.boundingBox())!, (await p.locator('.side-panel').boundingBox())!]
+  expect(Math.round(c.width)).toBe(300)
+  expect(Math.round(c.y)).toBe(Math.round(r.y))
+  expect(Math.round(list.x - (c.x + c.width))).toBe(8)
+  await expect(card.locator('.profile-banner').evaluate((e) => e.getBoundingClientRect().height)).resolves.toBe(105)
+  await expect(card.locator('.profile-avatar .avatar').evaluate((e) => e.getBoundingClientRect().width)).resolves.toBe(80)
+  // Agents work in project channels: a machine's card has no Message.
+  await card.getByRole('button', { name: 'Copy machine name' }).waitFor()
+  await expect(card.getByRole('button', { name: 'Message' }).count()).resolves.toBe(0)
+  await p.keyboard.press('Escape')
+  await card.waitFor({ state: 'detached' })
+  // A message author's name opens the same card; a click outside closes it.
+  const fresh = await p.evaluate((g) => fetch(`/client/guilds/${g}/channels`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'profile-check' }) }).then((r) => r.json()), hub.options.config.guildId)
+  await hub.twin.simulateUserMessage({ channelId: fresh.id, userId: hub.options.config.ownerUserId, content: 'zz-profile-author' })
+  await p.goto(`${origin}/#/c/${fresh.id}`)
+  await p.locator('.message', { hasText: 'zz-profile-author' }).locator('.author').click()
+  const mine = p.locator('.profile-sheet')
+  await mine.getByRole('button', { name: 'Copy user ID' }).waitFor()
+  await expect(mine.locator('.profile-presence').textContent()).resolves.toBe('Online')
+  await p.mouse.click(5, 500)
+  await mine.waitFor({ state: 'detached' })
   await p.close()
 }, 60_000)
 
@@ -1923,7 +2112,7 @@ test.skipIf(!ready)('a friend (no manage rights): Devices opens, panels close, c
   await p.keyboard.press('Escape')
   await p.getByRole('button', { name: 'Members' }).click({ timeout: 5000 })
   await p.locator('.side-panel').waitFor()
-  await p.locator('.side-panel').getByRole('button', { name: 'Close', exact: true }).click({ timeout: 5000 })
+  await p.getByRole('button', { name: 'Members' }).click({ timeout: 5000 })
   await p.locator('.side-panel').waitFor({ state: 'detached', timeout: 5000 })
   await p.locator('.chat-header button[aria-label="More"]').click()
   await p.locator('.sheet-item', { hasText: 'Edit channel' }).click()
@@ -2144,4 +2333,22 @@ test.skipIf(!ready)('in-app notification: a mention elsewhere drops in, and a ta
   await p.waitForURL(new RegExp(demo.website.id))
   await notice.waitFor({ state: 'detached' })
   await p.close()
+}, 60_000)
+
+test.skipIf(!ready)('a menu opened from the channel list closes on a click in the chat', async () => {
+  await page.goto(`${origin}/#/c/${demo.kimaki.id}`)
+  await page.locator('.chat-title', { hasText: 'kimaki' }).waitFor()
+  while (await page.locator('.side-panel').count()) await page.locator('.side-panel .panel-close').first().click()
+  await page.locator('.sidebar .channel', { hasText: 'website' }).click({ button: 'right' })
+  const sheet = page.locator('.sheet')
+  await sheet.getByRole('menuitem').first().waitFor()
+  // Its backdrop is the whole window, so a click anywhere outside the menu lands on it.
+  const { width, height } = page.viewportSize()!
+  await expect(page.locator('.sheet-layer').boundingBox()).resolves.toEqual({ x: 0, y: 0, width, height })
+  // No label wraps: the menu is as wide as its longest row.
+  const rows = await sheet.locator('.sheet-item-text').evaluateAll((els) => els.map((el) => el.getBoundingClientRect().height))
+  expect(rows.every((h) => h <= 20)).toBe(true)
+  await page.mouse.click(width - 320, height / 2)
+  await sheet.waitFor({ state: 'detached' })
+  await page.locator('.chat-title', { hasText: 'kimaki' }).waitFor()
 }, 60_000)

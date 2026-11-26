@@ -2,12 +2,16 @@
 // REST API and the event socket.
 
 import { useSyncExternalStore } from 'react'
+import { eventApplied, eventSettled } from './perf.ts'
 import { BOARD_UPDATED } from './board-document.ts'
 import { forgetMissingImages } from './Avatar.tsx'
+import { forgetRunClocks, sampleRun } from './run-clock.ts'
 import { displayName, machineLabel } from './text.ts'
 import { api, type HubRequest, type MachineRoutines, type Reminder, type Schedule, toReminder, type Channel, type HubState, type MachineSummary, type Message, type Command, type Guild, type Service, type SessionLink, type SessionSummary, type User, type Role, type GuildMember, type Overwrite } from './api.ts'
 
-export type ChannelMessages = { list: Message[]; hasMore: boolean; loading: boolean; arrival?: string }
+// Messages not loaded between two loaded ones: more than a page arrived while this view slept.
+export type Gap = { after: string; before: string }
+export type ChannelMessages = { list: Message[]; hasMore: boolean; loading: boolean; arrival?: string; gaps?: Gap[] }
 
 // Messages a channel keeps once no view shows it, and once its reader is back at the newest.
 export const KEEP_HIDDEN = 100
@@ -59,7 +63,7 @@ export function dmUser(c: Channel, me: string) {
 }
 // A DM is named after the person, or after the machine for one with a machine's agent.
 export function dmName(c: Channel, me: string) {
-  if (c.machine) return machineLabel(c.machine)
+  if (c.machine) return agentName(store.data.state?.machine_bots, c.machine)
   const u = dmUser(c, me)
   return u ? displayName(u) : 'Direct message'
 }
@@ -143,9 +147,23 @@ class Store {
     } else this.set({ services: null, requests: [] })
   }
 
+  private loadingOverview: Set<string> | null = null
+
   async loadOverview() {
+    const changed = this.loadingOverview = new Set<string>()
     const overview = await api.overview().catch(() => null)
-    if (overview) this.set({ sessions: Object.fromEntries(overview.sessions.map((s) => [s.id, s])), machines: overview.machines })
+    if (this.loadingOverview !== changed) return
+    this.loadingOverview = null
+    if (!overview) return
+    const sampleTime = this.data.online ? overview.server_time_ms : undefined
+    const sessions = Object.fromEntries(overview.sessions.map((s) => [s.id, sampleRun(s, sampleTime)]))
+    // An end/start frame received during reconnect wins over an older response.
+    for (const id of changed) {
+      const current = this.data.sessions[id]
+      if (current) sessions[id] = current
+      else delete sessions[id]
+    }
+    this.set({ sessions, machines: overview.machines })
   }
 
   async setNotification(scopeId: string, body: { level?: 'all' | 'mentions' | 'nothing' | null; muted_until?: number | null }) {
@@ -170,10 +188,17 @@ class Store {
   }
 
   setOnline(online: boolean) {
-    this.set({ online })
+    if (online) return this.set({ online })
+    this.loadingOverview = null
+    forgetRunClocks()
+    const sessions = Object.fromEntries(Object.entries(this.data.sessions).map(([id, s]) => [id, s.runStartedAt == null ? s : { ...s, runStartedAt: null }]))
+    this.set({ online, sessions })
   }
 
-  async loadMessages(channelId: string, { older = false, refresh = false } = {}) {
+  // `inPlace`: a view showing this channel catches up (a reconnect or wake) and keeps what it
+  // shows. Discord's way: only the newest page is fetched, and if it does not reach the loaded
+  // messages the space between them is a gap the reader loads on request.
+  async loadMessages(channelId: string, { older = false, refresh = false, inPlace = false } = {}) {
     const current = this.data.messages[channelId]
     // A cached list older than the channel's last message (opened mid-import, or missed
     // events while away) is refreshed on open instead of shown stale or empty.
@@ -181,17 +206,50 @@ class Store {
     if (current && !older && !refresh && !current.loading && last && snowflakeGt(last, current.list.at(-1)?.id ?? '0')) refresh = true
     if (current?.loading || (current && !older && !refresh)) return
     if (older && (!current || !current.hasMore)) return
-    this.setMessages(channelId, { list: current?.list ?? [], hasMore: current?.hasMore ?? true, loading: true })
+    const keep = inPlace && !older && Boolean(current?.list.length)
+    this.setMessages(channelId, { ...current, list: current?.list ?? [], hasMore: current?.hasMore ?? true, loading: true })
     try {
       const before = older ? current?.list[0]?.id : undefined
       const priorPrivate = this.data.privateReplies[channelId]
       const page = await api.messages(channelId, before)
       if (page.privateReplies && this.data.privateReplies[channelId] === priorPrivate) this.set({ privateReplies: { ...this.data.privateReplies, [channelId]: page.privateReplies.map((m) => ({ ...m, private_reply: true })) } })
-      const latest = this.data.messages[channelId]?.list ?? []
-      const list = older ? [...page.messages, ...latest] : mergeById(page.messages, refresh ? latest.filter((m) => snowflakeGt(m.id, page.messages.at(-1)?.id)) : [])
-      this.setMessages(channelId, { list, hasMore: page.hasMore, loading: false })
+      const now = this.data.messages[channelId]
+      const latest = now?.list ?? []
+      const first = page.messages[0]?.id, end = page.messages.at(-1)?.id
+      const newer = latest.filter((m) => snowflakeGt(m.id, end))
+      if (older) this.setMessages(channelId, { ...now, list: [...page.messages, ...latest], hasMore: page.hasMore, loading: false })
+      else if (!keep || !first) this.setMessages(channelId, { list: mergeById(page.messages, refresh ? newer : []), hasMore: page.hasMore, loading: false })
+      else {
+        // What is loaded stays; the page replaces its own span (so deletions there show).
+        const kept = page.hasMore ? latest.filter((m) => snowflakeGt(first, m.id)) : []
+        const list = mergeById(kept, [...page.messages, ...newer])
+        // A gap only when the newest page starts after everything loaded: it does not overlap.
+        const tail = kept.length && kept.length === latest.length - newer.length ? kept.at(-1)?.id : undefined
+        const gaps = [...(now?.gaps ?? []).map((g) => ({ after: g.after, before: snowflakeGt(g.before, first) ? first : g.before })), ...(tail && !(now?.gaps ?? []).some((g) => g.after === tail) ? [{ after: tail, before: first }] : [])]
+        this.setMessages(channelId, { ...now, list, hasMore: page.hasMore && (now?.hasMore ?? true), loading: false, gaps: openGaps(list, gaps) })
+      }
     } catch (error) {
-      this.setMessages(channelId, { list: this.data.messages[channelId]?.list ?? current?.list ?? [], hasMore: current?.hasMore ?? false, loading: false })
+      const now = this.data.messages[channelId]
+      this.setMessages(channelId, { ...now, list: now?.list ?? current?.list ?? [], hasMore: current?.hasMore ?? false, loading: false })
+      throw error
+    }
+  }
+
+  // Loads the next page into a gap; the gap closes when that page reaches the messages after it.
+  async fillGap(channelId: string, after: string) {
+    const current = this.data.messages[channelId]
+    if (!current || current.loading || !current.gaps?.some((g) => g.after === after)) return
+    this.setMessages(channelId, { ...current, loading: true })
+    try {
+      const page = await api.messagesAfter(channelId, after)
+      const now = this.data.messages[channelId]!
+      const end = page.messages.at(-1)?.id
+      const gaps = (now.gaps ?? []).flatMap((g) => (g.after !== after ? [g] : page.hasMore && end && snowflakeGt(g.before, end) ? [{ after: end, before: g.before }] : []))
+      const list = mergeById(now.list, page.messages)
+      this.setMessages(channelId, { ...now, list, loading: false, gaps: openGaps(list, gaps) })
+    } catch (error) {
+      const now = this.data.messages[channelId]
+      if (now) this.setMessages(channelId, { ...now, loading: false })
       throw error
     }
   }
@@ -202,7 +260,28 @@ class Store {
 
   // The POST and gateway acknowledge the same row in either order. A late
   // HTTP receipt must never overwrite a newer edit or create a second row.
-  confirmSent(m: Message) {
+  // The owner's message shows as soon as they press Enter, as on Discord; the hub's copy
+  // replaces it when it comes back (the reply to the send or its live event, whichever is first).
+  sendLocal(channelId: string, content: string, replyTo?: string) {
+    const page = this.data.messages[channelId], state = this.data.state
+    // The owner's name and picture come from their own last message here, else the user list.
+    const me = state && (page?.list.findLast((m) => m.author.id === state.me.id && !m.local)?.author ?? state.users.find((u) => u.id === state.me.id))
+    if (!page || !me) return undefined
+    const now = (BigInt(Date.now()) - 1420070400000n) << 22n
+    const tail = BigInt(page.list.at(-1)?.id ?? '0') + 1n
+    const id = String(now > tail ? now : tail)
+    const m: Message = { id, channel_id: channelId, author: me, content, timestamp: new Date().toISOString(), edited_timestamp: null, type: replyTo ? 19 : 0, attachments: [], embeds: [], ...(replyTo && { message_reference: { message_id: replyTo, channel_id: channelId } }), local: true }
+    this.setMessages(channelId, { ...page, list: [...page.list, m], arrival: id })
+    return id
+  }
+
+  dropLocal(channelId: string, id: string) {
+    const page = this.data.messages[channelId]
+    if (page?.list.some((m) => m.id === id && m.local)) this.setMessages(channelId, { ...page, list: page.list.filter((m) => m.id !== id) })
+  }
+
+  confirmSent(m: Message, local?: string) {
+    if (local) this.dropLocal(m.channel_id, local)
     const page = this.data.messages[m.channel_id]
     if (page && !page.list.some(row => row.id === m.id)) this.receiveMessage(m)
   }
@@ -210,10 +289,13 @@ class Store {
   private receiveMessage(m: Message) {
     const page = this.data.messages[m.channel_id]
     if (!page) return
-    const last = page.list.at(-1)
+    // The hub's copy of a message shown locally takes its place.
+    const local = m.author.id === this.data.state?.me.id ? page.list.find((row) => row.local && row.content === m.content) : undefined
+    const list = local ? page.list.filter((row) => row !== local) : page.list
+    const last = list.at(-1)
     const elapsed = Date.now() - Date.parse(m.timestamp)
     const fresh = !page.loading && last && snowflakeGt(m.id, last.id) && elapsed >= -5000 && elapsed < 60000
-    this.setMessages(m.channel_id, { ...page, list: mergeById(page.list, [m]), ...(fresh && { arrival: m.id }) })
+    this.setMessages(m.channel_id, { ...page, list: mergeById(list, [m]), ...(fresh && !local && { arrival: m.id }) })
   }
 
   dismissPrivateReply(channelId: string, id: string) {
@@ -232,12 +314,24 @@ class Store {
   // Long history scrolled back through costs memory in every view of it: a channel
   // nobody shows keeps only its newest messages, and loads older ones again on scroll.
   private shown = new Map<string, number>()
+  // Chats whose reader is at the newest message with the window in front. A message there is
+  // read in the same update that adds it, so nothing (the sidebar above all) draws it as
+  // unread for a moment and then as read again.
+  private readers = new Map<string, () => boolean>()
+  follow(channelId: string, atEnd: () => boolean) {
+    this.readers.set(channelId, atEnd)
+    return () => { if (this.readers.get(channelId) === atEnd) this.readers.delete(channelId) }
+  }
   show(channelId: string) {
     this.shown.set(channelId, (this.shown.get(channelId) ?? 0) + 1)
     return () => {
       const left = (this.shown.get(channelId) ?? 1) - 1
       if (left > 0) return void this.shown.set(channelId, left)
       this.shown.delete(channelId)
+      // Gaps belong to the view that slept: opening the channel again starts from the newest.
+      const current = this.data.messages[channelId]
+      const cut = current?.gaps?.at(-1)?.before
+      if (current && cut && !current.loading) this.setMessages(channelId, { ...current, list: current.list.filter((m) => !snowflakeGt(cut, m.id)), hasMore: true, gaps: undefined })
       this.trimMessages(channelId, KEEP_HIDDEN)
     }
   }
@@ -245,7 +339,8 @@ class Store {
   trimMessages(channelId: string, keep: number) {
     const current = this.data.messages[channelId]
     if (!current || current.loading || current.list.length <= keep) return
-    this.setMessages(channelId, { ...current, list: current.list.slice(-keep), hasMore: true })
+    const list = current.list.slice(-keep)
+    this.setMessages(channelId, { ...current, list, hasMore: true, gaps: openGaps(list, current.gaps) })
   }
 
   // Leaving a channel marked unread lets reading it count again.
@@ -269,8 +364,10 @@ class Store {
     if (!last || !snowflakeGt(last, this.data.seen[channelId])) return
     const seen = { ...this.data.seen, [channelId]: last }
     localStorage.setItem('seen', JSON.stringify(seen))
+    // The mention counts stay the same object unless this chat had some: every view of them
+    // (the sidebar among them) would be drawn again for nothing.
     const { [channelId]: _, ...mentions } = this.data.mentions
-    this.set({ seen, mentions })
+    this.set(channelId in this.data.mentions ? { seen, mentions } : { seen })
     // Sent 400 ms later, batched, so a quick pass through threads costs one request.
     this.unsentRead[channelId] = last
     window.clearTimeout(this.readTimer)
@@ -343,6 +440,7 @@ class Store {
 
   // Applies one gateway dispatch from the event socket.
   apply(t: string, d: any) {
+    eventApplied(t)
     if (this.loading && REPLAYED.has(t)) this.late.push([t, d])
     switch (t) {
       case 'HUB_UPDATE':
@@ -395,6 +493,7 @@ class Store {
           this.set({ mentions: { ...this.data.mentions, [message.channel_id]: (this.data.mentions[message.channel_id] ?? 0) + 1 } })
         this.receiveMessage(message)
         this.bumpLastMessage(message.channel_id, message.id)
+        if (this.readers.get(message.channel_id)?.()) this.markSeen(message.channel_id, message.id)
         const typing = this.data.typing[message.channel_id]
         if (typing?.[message.author.id]) {
           const { [message.author.id]: _, ...rest } = typing
@@ -529,8 +628,9 @@ class Store {
         break
       }
       case 'SESSION_STATE': {
+        this.loadingOverview?.add(d.id)
         const { [d.id]: _, ...rest } = this.data.sessions
-        this.set({ sessions: d.removed ? rest : { ...this.data.sessions, [d.id]: d as SessionSummary } })
+        this.set({ sessions: d.removed ? rest : { ...this.data.sessions, [d.id]: sampleRun(d as SessionSummary, this.data.online ? d.server_time_ms : undefined) } })
         break
       }
       case 'VOICE_STATE_UPDATE': {
@@ -565,6 +665,7 @@ class Store {
       }
     }
     this.emit(t, d)
+    eventSettled()
   }
 
   // After a reconnect: refetch state and every loaded channel.
@@ -652,7 +753,7 @@ class Store {
     this.emit('RESYNC', null)
     await this.loadState()
     if (this.data.services) void this.loadServices().catch(() => {})
-    await Promise.all(Object.keys(this.data.messages).map((id) => this.loadMessages(id, { refresh: true }).catch(() => {})))
+    await Promise.all(Object.keys(this.data.messages).map((id) => this.loadMessages(id, { refresh: true, inPlace: this.shown.has(id) }).catch(() => {})))
   }
 }
 
@@ -677,6 +778,14 @@ function mergeSeen(a: Record<string, string>, b: Record<string, string>) {
   return out
 }
 
+// Gaps whose earlier side is still loaded and whose later side is not reached yet.
+function openGaps(list: Message[], gaps: Gap[] | undefined) {
+  if (!gaps?.length) return undefined
+  const ids = new Set(list.map((m) => m.id))
+  const open = gaps.filter((g) => ids.has(g.after) && snowflakeGt(g.before, g.after) && !list.some((m) => snowflakeGt(m.id, g.after) && snowflakeGt(g.before, m.id)))
+  return open.length ? open : undefined
+}
+
 function mergeById(base: Message[], incoming: Message[]) {
   const map = new Map(base.map((m) => [m.id, m]))
   for (const m of incoming) map.set(m.id, { ...map.get(m.id), ...m })
@@ -694,7 +803,22 @@ export function useStore<T>(select: (data: Data) => T): T {
 export function machineOf(state: HubState, channel: Channel): string | null {
   const project = THREAD_TYPES.has(channel.type) ? (state.channels.find((c) => c.id === channel.parent_id) ?? channel) : channel
   const category = state.channels.find((c) => c.id === project.parent_id)
-  if (!category) return null
-  const name = (category.name ?? '').toLowerCase()
-  return state.machines.find((m) => m.toLowerCase() === name || `kimaki ${m.toLowerCase()}` === name) ?? null
+  return category ? machineNamed(state, category.name ?? '') : null
+}
+
+// The machine a category stands for: "<machine>" or "Kimaki <machine>", where a mirrored
+// server names the machine by its Discord bot ("Kimaki Desk PC" for "desk-pc").
+export function machineNamed(state: HubState, category: string): string | null {
+  const name = category.toLowerCase()
+  const names = (m: string) => m.toLowerCase() === name || `kimaki ${m.toLowerCase()}` === name
+  return state.machines.find(names) ?? Object.entries(state.machine_bots ?? {}).find(([, bot]) => names(bot.name))?.[0] ?? null
+}
+
+// How a machine's agent is named: its Discord bot's name ("Desk PC"), else the machine's.
+export const agentName = (bots: HubState['machine_bots'], machine: string) => bots?.[machine]?.name ?? machineLabel(machine)
+// A machine named as its messages show it: once, from the loaded state, or in a component that follows changes.
+export const machineName = (machine: string) => agentName(store.data.state?.machine_bots, machine)
+export function useMachineName() {
+  const bots = useStore((d) => d.state?.machine_bots)
+  return (machine: string) => agentName(bots, machine)
 }

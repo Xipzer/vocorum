@@ -116,7 +116,8 @@ export function snippet(body: string, query: SearchQuery, words = 16): string | 
   // Markdown marks would clash with the hit marks and show as stars: drop them first.
   body = body.replace(/\*\*|__|~~|`+/g, '')
   const fold = (s: string) => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
-  const tokens = [...body.matchAll(/[\p{L}\p{N}_]+/gu)].map((m) => ({ start: m.index!, end: m.index! + m[0].length, text: fold(m[0]) }))
+  // A mention (<@id>, <#id>) is one token, so a cut never leaves half of one for the reader.
+  const tokens = [...body.matchAll(/<(?:@[!&]?|#)\d+>|[\p{L}\p{N}_]+/gu)].map((m) => ({ start: m.index!, end: m.index! + m[0].length, text: fold(m[0]) }))
   if (!tokens.length) return null
   const split = (s: string) => [...fold(s).matchAll(/[\p{L}\p{N}_]+/gu)].map((m) => m[0])
   const prefixes = query.text.flatMap(split)
@@ -132,14 +133,15 @@ export function snippet(body: string, query: SearchQuery, words = 16): string | 
   const first = hits[0]?.[0] ?? 0
   const from = Math.max(0, Math.min(first - Math.floor(words / 4), tokens.length - words))
   const to = Math.min(tokens.length - 1, from + words - 1)
+  // Uncut ends keep what stands before the first word and after the last one.
   let out = from > 0 ? '…' : ''
-  let at = tokens[from]!.start
+  let at = from > 0 ? tokens[from]!.start : 0
   for (const [a, b] of hits) {
     if (b < from || a > to) continue
     out += body.slice(at, tokens[a]!.start) + '**' + body.slice(tokens[a]!.start, tokens[b]!.end) + '**'
     at = tokens[b]!.end
   }
-  out += body.slice(at, tokens[to]!.end) + (to < tokens.length - 1 ? '…' : '')
+  out += to < tokens.length - 1 ? body.slice(at, tokens[to]!.end) + '…' : body.slice(at)
   return out
 }
 

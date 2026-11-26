@@ -156,6 +156,27 @@ test('only people who may: no session, a foreign page, a hidden channel, no Conn
   await owner.fetch(`/client/channels/${room}/permissions/${robinId}`, { method: 'DELETE' })
 })
 
+test("a voice channel's chat takes messages from people who may send them, and only from them", async () => {
+  const sent = await sam.json(`/client/channels/${room}/messages`, { method: 'POST', json: { content: 'Is the build green?' } })
+  expect(sent).toMatchObject({ channel_id: room, content: 'Is the build green?', author: { id: samId } })
+  // It is the room's own history: readable without joining, by anyone who can see the room.
+  const page = await robin.json(`/client/channels/${room}/messages?limit=5`)
+  expect(page.messages.map((m: { content: string }) => m.content)).toEqual(['Is the build green?'])
+  // Without Send Messages the chat is read-only; joining and speaking are separate permissions.
+  await owner.json(`/client/channels/${room}/permissions/${samId}`, { method: 'PUT', json: { type: 1, allow: '0', deny: String(P.SEND_MESSAGES) } })
+  expect((await sam.fetch(`/client/channels/${room}/messages`, { method: 'POST', json: { content: 'Still there?' } })).status).toBe(403)
+  const a = await join(sam, room, 'sam@example.com')
+  a.ws.close()
+  await owner.fetch(`/client/channels/${room}/permissions/${samId}`, { method: 'DELETE' })
+  // The other checks hold: nothing empty, nothing in a channel the person cannot see, nothing in a category.
+  expect((await sam.fetch(`/client/channels/${room}/messages`, { method: 'POST', json: { content: ' ' } })).status).toBe(400)
+  await owner.json(`/client/channels/${room}/permissions/${robinId}`, { method: 'PUT', json: { type: 1, allow: '0', deny: String(P.VIEW_CHANNEL) } })
+  expect((await robin.fetch(`/client/channels/${room}/messages`, { method: 'POST', json: { content: 'Hello' } })).status).toBe(404)
+  await owner.fetch(`/client/channels/${room}/permissions/${robinId}`, { method: 'DELETE' })
+  const category = (await owner.json(`/client/guilds/${t.config.guildId}/channels`, { method: 'POST', json: { name: 'Rooms', type: 4 } })).id
+  expect((await owner.fetch(`/client/channels/${category}/messages`, { method: 'POST', json: { content: 'Hello' } })).status).toBe(400)
+})
+
 test('a bot in the voice channel hears people, and people hear the bot', async () => {
   const bot = await t.hub.store.addBot('desk-pc')
   await t.hub.reload()

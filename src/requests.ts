@@ -70,7 +70,7 @@ export class Requests {
   }
 
   private owner(): Viewer {
-    return { userId: this.hub.options.config.ownerUserId, device: { id: 'request', name: 'request', userId: null, kind: 'web', createdAt: 0, lastSeenAt: null, revokedAt: null } }
+    return { userId: this.hub.options.config.ownerUserId, device: { id: 'request', name: 'request', userId: null, kind: 'web', createdAt: 0, lastSeenAt: null, revokedAt: null, local: false } }
   }
 
   // POST /admin/requests { method, route, body, summary, reason, origin }

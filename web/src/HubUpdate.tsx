@@ -88,32 +88,34 @@ export function HubUpdateGroup() {
         label={running ? 'Updating…' : releases.length ? (releases.length === 1 ? 'A new version is ready' : `${releases.length} new versions are ready`) : checked ? 'Up to date' : 'Not checked yet'}
         note={running ? 'The hub backs itself up, installs the new version and restarts. This app reconnects by itself.' : checked?.supported ? `You have: ${checked.current.title} (${day(checked.current.date)}).${checked.blocked ? ` ${checked.blocked}` : ''}` : 'The hub checks every six hours.'}
       >
-        <div className="hub-update-actions">
+        <div className="settings-actions">
           {releases.length > 0 && (
-            <button className="button primary" disabled={running} onClick={() => act('install', () => api.hubUpdateInstall())}>
+            <button className="button medium primary" disabled={running} onClick={() => act('install', () => api.hubUpdateInstall())}>
               Update now
             </button>
           )}
-          <button className="button" disabled={busy !== null || running} onClick={() => act('check', () => api.hubUpdateCheck().then(set))}>
+          <button className="button medium" disabled={busy !== null || running} onClick={() => act('check', () => api.hubUpdateCheck().then(set))}>
             {busy === 'check' ? 'Checking…' : 'Check now'}
           </button>
         </div>
       </Item>
-      {(error || failed) && <p className="hub-update-error" role="alert">{error ?? `The last update did not install, and the hub went back to the version it had. ${failed}`}</p>}
+      {(error || failed) && <p className="settings-feedback bad" role="alert">{error ?? `The last update did not install, and the hub went back to the version it had. ${failed}`}</p>}
       {releases.length > 0 && (
-        <div className="hub-update-notes">
+        <div className="settings-list">
           {releases.map((r) => (
-            <section key={r.commit}>
-              <h4>
-                {r.title} <small>{day(r.date)}</small>
-              </h4>
-              {r.notes.length > 0 && (
-                <ul>
-                  {r.notes.map((note) => (
-                    <li key={note}>{note}</li>
-                  ))}
-                </ul>
-              )}
+            <section key={r.commit} className="settings-list-row">
+              <div className="settings-item-text">
+                <h4 className="settings-label hub-update-title">
+                  {r.title} <span className="settings-tag">{day(r.date)}</span>
+                </h4>
+                {r.notes.length > 0 && (
+                  <ul className="settings-item-note hub-update-notes">
+                    {r.notes.map((note) => (
+                      <li key={note}>{note}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </section>
           ))}
         </div>

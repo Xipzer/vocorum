@@ -18,6 +18,8 @@ export type VoiceUi = {
   output: string
   // The microphone or its capture pipeline is unavailable for this call.
   listenOnly: boolean
+  // When this device's call connected, for the elapsed time (ms since the epoch).
+  since: number | null
 }
 
 const saved = (key: string, fallback: string) => localStorage.getItem(`voice:${key}`) ?? fallback
@@ -31,6 +33,7 @@ let ui: VoiceUi = {
   noise: saved('noise', 'standard') as NoiseMode,
   output: saved('output', ''),
   listenOnly: false,
+  since: null,
 }
 const listeners = new Set<() => void>()
 const set = (patch: Partial<VoiceUi>) => {
@@ -47,7 +50,7 @@ const hasEncoder = typeof window !== 'undefined' && 'AudioEncoder' in window
 const hasDecoder = typeof window !== 'undefined' && 'AudioDecoder' in window
 const SPEAKING_LEVEL = 0.02
 
-type Peer = { decoder: AudioDecoder | null; next: number }
+type Peer = { decoder: AudioDecoder | null; next: number; out: GainNode; analyser: AnalyserNode | null }
 type Session = {
   ws: WebSocket
   ctx: AudioContext
@@ -75,6 +78,22 @@ const CLOSED: Record<number, string> = {
 function sendState() {
   if (session?.ws.readyState === WebSocket.OPEN) session.ws.send(JSON.stringify({ op: 'state', self_mute: ui.mute || ui.listenOnly, self_deaf: ui.deaf }))
 }
+
+// For drawing live sound: one person's audio as it plays on this device, and this device's
+// own microphone level (0 to 1; 0 while muted or not capturing). Null until their audio arrives.
+export function analyser(userId: string): AnalyserNode | null {
+  const peer = session?.peers.get(userId)
+  if (!session || !peer) return null
+  if (!peer.analyser) {
+    peer.analyser = session.ctx.createAnalyser()
+    peer.analyser.fftSize = 256
+    peer.analyser.smoothingTimeConstant = 0.7
+    peer.out.connect(peer.analyser)
+  }
+  return peer.analyser
+}
+let mic = 0
+export const micLevel = () => (session?.capture && !ui.mute && !ui.listenOnly ? mic : 0)
 
 export function setMute(mute: boolean) {
   localStorage.setItem('voice:mute', mute ? '1' : '0')
@@ -150,7 +169,7 @@ export function leave() {
     for (const p of s.peers.values()) if (p.decoder?.state !== 'closed') p.decoder?.close()
     stopOutput(s)
   }
-  set({ channelId: null, status: 'idle', error: null, speaking: {}, listenOnly: false })
+  set({ channelId: null, status: 'idle', error: null, speaking: {}, listenOnly: false, since: null })
 }
 
 export async function join(channelId: string, meId: string) {
@@ -190,7 +209,7 @@ export async function join(channelId: string, meId: string) {
 
   ws.onopen = () => {
     if (session !== s) return
-    set({ status: 'connected' })
+    set({ status: 'connected', since: Date.now() })
     sendState()
   }
   ws.onclose = (e) => {
@@ -238,6 +257,7 @@ async function startCapture(s: Session, stream: MediaStream) {
   }
   capture.port.onmessage = (e: MessageEvent<{ pcm: Float32Array<ArrayBuffer>; level: number }>) => {
     if (session !== s || s.capture !== capture) return
+    mic = e.data.level
     const talking = !ui.mute && !ui.listenOnly && e.data.level > SPEAKING_LEVEL
     s.quietFrames = talking ? 0 : s.quietFrames + 1
     // The ring stays on through short pauses between words (300 ms).
@@ -265,7 +285,8 @@ function receive(s: Session, data: Uint8Array) {
   const payload = data.subarray(1 + idLength)
   let peer = s.peers.get(userId)
   if (!peer) {
-    peer = { decoder: null, next: 0 }
+    peer = { decoder: null, next: 0, out: s.ctx.createGain(), analyser: null }
+    peer.out.connect(s.mix)
     if (hasDecoder) {
       const p = peer
       p.decoder = new AudioDecoder({ output: (audio) => play(s, p, audio), error: () => (p.decoder = null) })
@@ -297,7 +318,7 @@ function schedule(s: Session, peer: Peer, samples: Float32Array<ArrayBuffer>) {
   buffer.copyToChannel(samples, 0)
   const source = s.ctx.createBufferSource()
   source.buffer = buffer
-  source.connect(s.mix)
+  source.connect(peer.out)
   const now = s.ctx.currentTime
   if (peer.next < now || peer.next > now + 0.5) peer.next = now + 0.06
   source.start(peer.next)

@@ -73,7 +73,7 @@ export function CodeCard({ code, expires, note, qr }: { code: string; expires: n
       <div className="settings-code-row">
         <code aria-label="Pairing code">{code}</code>
         <button
-          className="button"
+          className="button small"
           onClick={() =>
             void navigator.clipboard?.writeText(code).then(() => {
               setCopied(true)
@@ -145,12 +145,12 @@ function RoleEditor({ state, ctx, role, onBack }: { state: HubState; ctx: GuildC
               <div className="settings-actions">
                 <input className="settings-color" type="color" disabled={!editable} value={color ?? current ?? '#a3a3ae'} aria-label="Role colour" onChange={(e) => setColor(e.target.value)} />
                 {color !== null && color !== current && (
-                  <button className="button primary" onClick={() => (patch({ color: parseInt(color.slice(1), 16) }), setColor(null))}>
+                  <button className="button medium primary" onClick={() => (patch({ color: parseInt(color.slice(1), 16) }), setColor(null))}>
                     Save colour
                   </button>
                 )}
                 {current && editable && (
-                  <button className="button" onClick={() => (patch({ color: 0 }), setColor(null))}>
+                  <button className="button medium" onClick={() => (patch({ color: 0 }), setColor(null))}>
                     No colour
                   </button>
                 )}
@@ -176,7 +176,7 @@ function RoleEditor({ state, ctx, role, onBack }: { state: HubState; ctx: GuildC
                     <div className="settings-label">{nameOf(user(m.user_id))}</div>
                   </div>
                   {editable && (
-                    <button className="button" onClick={() => setHolder(m, false)}>
+                    <button className="button small" onClick={() => setHolder(m, false)}>
                       Remove
                     </button>
                   )}
@@ -204,7 +204,7 @@ function RoleEditor({ state, ctx, role, onBack }: { state: HubState; ctx: GuildC
                 onBack()
               })} />
             ) : (
-              <button className="button danger" onClick={() => setDeleting(true)}>
+              <button className="button medium soft-danger" onClick={() => setDeleting(true)}>
                 Delete role
               </button>
             )}
@@ -267,7 +267,7 @@ export function RolesPage({ state }: { state: HubState }) {
     <Page title="Roles">
       <Group note="Roles group people and bots and decide what they can do. Higher roles come first; you can manage the ones below your own highest role.">
         <div className="settings-actions">
-          <button className="button primary" disabled={!ctx.canRoles} onClick={create}>
+          <button className="button small primary" disabled={!ctx.canRoles} onClick={create}>
             Create role
           </button>
         </div>
@@ -337,17 +337,17 @@ function InvitePerson({ ctx, state }: { ctx: GuildCtx; state: HubState }) {
           </div>
           <Feedback text={feedback.text} />
           <div className="settings-actions">
-            <button type="button" className="button" onClick={() => setOpen(false)}>
+            <button type="button" className="button medium" onClick={() => setOpen(false)}>
               Cancel
             </button>
-            <button type="submit" className="button primary" disabled={username.trim().length < 2}>
+            <button type="submit" className="button medium primary" disabled={username.trim().length < 2}>
               Create invite
             </button>
           </div>
         </form>
       ) : (
         <div className="settings-actions">
-          <button className="button primary" onClick={() => (setOpen(true), setResult(null))}>
+          <button className="button medium primary" onClick={() => (setOpen(true), setResult(null))}>
             Invite a person
           </button>
           {candidates.length > 0 && (
@@ -420,12 +420,12 @@ function MemberRow({ state, ctx, member }: { state: HubState; ctx: GuildCtx; mem
           <div className="settings-item-note">{user?.pending ? `${user.username} · Not joined yet` : user?.username}</div>
         </div>
         {canWelcome && !welcome && (
-          <button className="button primary" onClick={sendWelcome}>
+          <button className="button small primary" onClick={sendWelcome}>
             Welcome
           </button>
         )}
         {canRemove && !removing && (
-          <button className="button danger" onClick={() => setRemoving(true)}>
+          <button className="button small soft-danger" onClick={() => setRemoving(true)}>
             {me ? 'Leave' : 'Remove'}
           </button>
         )}
@@ -564,7 +564,7 @@ export function ChannelPermissionsPage({ state, channel }: { state: HubState; ch
       <Page title="Permissions">
         <Group note={`Threads follow the permissions of ${parent ? `#${parent.name}` : 'their channel'}.`}>
           {parent && (
-            <button className="button" onClick={() => sessionActions.channelSettings?.(parent.id)}>
+            <button className="button medium" onClick={() => sessionActions.channelSettings?.(parent.id)}>
               Open #{parent.name} permissions
             </button>
           )}
@@ -656,7 +656,7 @@ export function ChannelPermissionsPage({ state, channel }: { state: HubState; ch
             <div className="settings-overwrite-head">
               <span className="settings-heading">{label(target)}</span>
               {editable && target.id !== guildId && (
-                <button className="button danger" onClick={() => void feedback.run(async () => {
+                <button className="button small soft-danger" onClick={() => void feedback.run(async () => {
                   await api.setOverwrite(channel.id, target.id, null).then(applyResult)
                   setSelected(guildId)
                 })}>
@@ -704,16 +704,16 @@ export function PairDevice() {
           }}
         >
           <input className="settings-input" value={name} autoFocus maxLength={64} placeholder="Device name, like Laptop" aria-label="New device name" onChange={(e) => setName(e.target.value)} />
-          <button type="button" className="button" onClick={() => setOpen(false)}>
+          <button type="button" className="button medium" onClick={() => setOpen(false)}>
             Cancel
           </button>
-          <button type="submit" className="button primary">
+          <button type="submit" className="button medium primary">
             Get a code
           </button>
         </form>
       ) : (
         <div className="settings-actions">
-          <button className="button primary" onClick={() => (setOpen(true), setCode(null))}>
+          <button className="button medium primary" onClick={() => (setOpen(true), setCode(null))}>
             Pair another device
           </button>
         </div>

@@ -1,6 +1,7 @@
-/* One insert inside the neutral outline. Its outer corners round, its inner
-   face stays flat. Empty space at either end makes the edge look detached. */
-.container.accented, .approval.open, .request-card.pending, .reminder-row.due, .ws-row.ws-waiting, .embed-card {
+/* The accent is the card's left edge, as on Discord: it starts at the outer
+   edge and takes the outer radius, so no neutral outline wraps around it. Its
+   inner face stays flat and where it was (5px in). */
+.container.accented, .approval.open, .request-card.pending, .reminder-row.due, .ws-row.ws-waiting, .embed-card, .panel-thread[data-edge] {
   position: relative;
 }
 .ws-row.ws-waiting, .reminder-row.due {
@@ -11,10 +12,10 @@
 }
 .ws-row.ws-waiting { padding-block: 6px; }
 .ws-waiting .ws-row-text { white-space: normal; overflow-wrap: anywhere; }
-.container.accented::before, .approval.open::before, .request-card.pending::before, .reminder-row.due::before, .ws-row.ws-waiting::before, .embed-card::before {
+.container.accented::before, .approval.open::before, .request-card.pending::before, .reminder-row.due::before, .ws-row.ws-waiting::before, .embed-card::before, .panel-thread[data-edge]::before {
   content: ''; position: absolute; pointer-events: none;
-  left: 0; top: 0; bottom: 0; width: 4px;
-  border-radius: calc(var(--r-control) - 1px) 0 0 calc(var(--r-control) - 1px);
+  left: -1px; top: -1px; bottom: -1px; width: 5px;
+  border-radius: var(--r-control) 0 0 var(--r-control);
   background: var(--warn);
 }
 .container.accented::before { background: var(--bar); }

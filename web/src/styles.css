@@ -1,6 +1,22 @@
 /* Tokens: plans/design-audit.md section 5 (rich dark, cyber cyan accent, hyper pink option). */
+/* Inter at Discord's optical size. Inter's lowercase stands 0.546em tall and gg sans's 0.484em
+   (measured on Discord's own screens), so at the same font size Inter looks a step larger and
+   sets about 12% wider. Scaling the face to 88.6% matches the lowercase height, and string
+   widths land within 2% of Discord's at every size and weight in use. Done on the face, not
+   with font-size-adjust: the font shorthand resets that property on every rule that uses it.
+   It reaches every Inter run and nothing else: code, emoji and system fallback faces keep their
+   own size. Engines without size-adjust ignore the descriptor and draw Inter as before. */
 @font-face {
   font-family: 'Inter Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('/fonts/inter-latin-wght.woff2') format('woff2-variations');
+  size-adjust: 88.6%;
+}
+/* The same face at its own size, for glyphs used as icons (the channel "#"). */
+@font-face {
+  font-family: 'Inter Glyph';
   font-style: normal;
   font-display: swap;
   font-weight: 100 900;
@@ -26,8 +42,10 @@
   --fill-press: rgb(255 255 255 / 0.13);
   --fill-control-hover: rgb(255 255 255 / 0.1);
   --fill-control-press: rgb(255 255 255 / 0.16);
-  --fill-menu-hover: rgb(255 255 255 / 0.08);
-  --disabled-opacity: 0.4;
+  --fill-menu-hover: rgb(255 255 255 / 0.065);
+  /* A hovered message row: Discord's band is 1.20:1 against its chat; 8% white gives 1.19:1 on ours. */
+  --fill-row-hover: rgb(255 255 255 / 0.08);
+  --disabled-opacity: 0.5;
   --hover: var(--fill-hover);
   --active: var(--fill-press);
   /* Rules sit a small, even step above the surface they're on (Discord's ratio,
@@ -46,9 +64,12 @@
   --text-strong: #ffffff;
   --text-muted: #a3a3ae;
   --text-faint: #8e8e9a;
+  /* Channel list rows at rest: 4.9:1 on --bg-1, the step Discord's channel names keep on its list. */
+  --text-quiet: #7c7c88;
   --pink: #ff2e88;
   --cyan: #00d2ff;
   --accent: var(--cyan);
+  --vocorum-accent: var(--cyan);
   --accent-rgb: 0 210 255;
   --accent-ink: #0a0a0d;
   --busy: var(--pink);
@@ -56,10 +77,13 @@
   --link: #ff7ab8;
   --ok: #3fb68b;
   --success-button: #028546;
+  /* Discord's filled buttons carry a 1px inner ring: the fill plus 8% white. */
+  --button-ring: inset 0 0 0 1px rgb(255 255 255 / 0.08);
   --warn: #e5a50a;
   --danger: #ff4d5e;
   --emoji-font: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', Twemoji;
   --font: 'Inter Variable', Inter, system-ui, -apple-system, 'Segoe UI', Roboto, var(--emoji-font), sans-serif;
+  --font-glyph: 'Inter Glyph', var(--font);
   --mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, var(--emoji-font), monospace;
   /* One radius scale: inline bits 4, controls and cards 8, floating surfaces 12
      (so an 8px item sits concentric in a 12px menu with 4px padding), sheets 20. */
@@ -69,8 +93,10 @@
   --r-float: 12px;
   --r-group: var(--r-float);
   --r-sheet: 20px;
-  /* One control height: buttons, fields, selects, menu rows (44 on phones). */
+  /* One control height: buttons, fields, selects, menu rows (44 on phones), and one side
+     padding for text buttons (16 on phones). */
   --control: 32px;
+  --control-pad: 12px;
   --dock-h: 58px;
   /* One card padding: callouts, code, files, embeds. */
   --card-pad: 10px 12px;
@@ -89,6 +115,15 @@
   --fast: 120ms;
   --move: 220ms;
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  /* Measured from Discord desktop at 60 fps: popups that animate do so briefly and decelerate. */
+  --pop-ease: cubic-bezier(0, 0, 0.2, 1);
+  --backdrop-in: 100ms;
+  --backdrop-out: 100ms;
+  --card-in: 120ms;
+  --card-out: 50ms;
+  --menu-in: 130ms;
+  --tip-in: 50ms;
+  --tip-out: 50ms;
   color-scheme: dark;
   font-family: var(--font);
   font-feature-settings: 'cv11', 'ss01';
@@ -98,6 +133,7 @@
 }
 :root[data-accent='pink'] {
   --accent: var(--pink);
+  --vocorum-accent: var(--pink);
   --accent-rgb: 255 46 136;
   --busy: var(--cyan);
   --busy-rgb: 0 210 255;
@@ -114,12 +150,20 @@
     --body-line: 24px;
     --hit: 44px;
     --control: 44px;
+    --control-pad: 16px;
   }
 }
 @media (prefers-reduced-motion: reduce) {
   :root {
     --fast: 0ms;
     --move: 0ms;
+    --backdrop-in: 0ms;
+    --backdrop-out: 0ms;
+    --card-in: 0ms;
+    --card-out: 0ms;
+    --menu-in: 0ms;
+    --tip-in: 0ms;
+    --tip-out: 0ms;
   }
 }
 
@@ -215,17 +259,20 @@ html[data-keyboard='open'] .footer {
   display: grid;
   place-items: center;
   background: var(--bg-3);
-  color: var(--text-strong);
-  font: 600 15px/1 var(--font);
-  letter-spacing: 0.02em;
+  color: var(--text);
+  font: 600 18px/1 var(--font);
   transition:
     border-radius var(--move) var(--ease-out),
     background var(--move);
 }
+/* Three initials keep the size that fits the 40px tile. */
+.rail-guild[data-long] {
+  font-size: 15px;
+}
 .rail-item.active .rail-guild {
   border-radius: 12px;
   background: var(--accent);
-  color: #000;
+  color: var(--rail-active-ink, #000);
 }
 @media (hover: hover) {
   .rail-item:hover .rail-guild {
@@ -359,11 +406,8 @@ html[data-keyboard='open'] .footer {
   width: 100%;
   padding: 0 8px 4px;
   font: 600 12px/16px var(--font);
-  color: var(--text-faint);
+  color: var(--text-quiet);
   text-align: left;
-}
-.category-name svg {
-  transition: transform var(--fast) var(--ease-out);
 }
 .category-name.collapsed svg {
   transform: rotate(-90deg);
@@ -382,11 +426,10 @@ html[data-keyboard='open'] .footer {
   height: var(--row);
   padding: 0 8px;
   border-radius: var(--r-control);
-  color: var(--text-muted);
+  color: var(--text-quiet);
   font: 500 var(--row-font) / var(--row-line) var(--font);
   text-align: left;
   white-space: nowrap;
-  transition: background var(--fast) var(--ease-out);
 }
 @media (hover: hover) {
   .channel:hover {
@@ -412,7 +455,7 @@ html[data-keyboard='open'] .footer {
   color: var(--text-strong);
   font-weight: 600;
 }
-.channel[data-thread-row].active:not(.unread) .channel-name { color: var(--text-muted); }
+.channel[data-thread-row].active:not(.unread) .channel-name { color: var(--selected-thread-text, var(--text-muted)); }
 .channel.unread::after,
 .channel[data-thread-activity]::after {
   content: '';
@@ -427,7 +470,6 @@ html[data-keyboard='open'] .footer {
   pointer-events: none;
 }
 .channel .hash {
-  color: var(--text-faint);
   width: 14px;
   text-align: center;
   flex: none;
@@ -440,7 +482,7 @@ html[data-keyboard='open'] .footer {
 }
 .channel .meta {
   font: 500 12px/16px var(--font);
-  color: var(--text-faint);
+  color: var(--text-quiet);
   font-variant-numeric: tabular-nums;
 }
 .tree {
@@ -480,11 +522,11 @@ html[data-keyboard='open'] .footer {
   border-bottom-left-radius: 6px;
 }
 .tree .channel.older {
-  color: var(--text-faint);
+  color: var(--text-quiet);
   font: 400 13px/18px var(--font);
 }
 .tree .channel.dim {
-  color: var(--text-faint);
+  color: color-mix(in srgb, var(--text-quiet) 80%, transparent);
 }
 /* ===== Dock =====
    The user panel and the desktop composer float as one pair: the same height
@@ -516,7 +558,7 @@ html[data-keyboard='open'] .footer {
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: 0 9px;
   border-radius: var(--r-inline);
   text-align: left;
@@ -537,12 +579,12 @@ html[data-keyboard='open'] .footer {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  font: 600 14px/18px var(--font);
+  font: 500 16px/20px var(--font);
   color: var(--text-strong);
 }
 .user-panel-name small {
   font: 400 12px/16px var(--font);
-  color: var(--text-muted);
+  color: var(--panel-sub, var(--text-muted));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -579,6 +621,15 @@ html[data-keyboard='open'] .footer {
   box-shadow: var(--shadow-float);
   padding: 8px;
   z-index: 40;
+  /* Discord's server dropdown grows out of its trigger over ~130 ms. */
+  transform-origin: bottom center;
+  animation: menu-in var(--menu-in) var(--pop-ease);
+}
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    scale: 0.1;
+  }
 }
 .menu-pop .menu-label {
   font: 600 12px/16px var(--font);
@@ -591,9 +642,9 @@ html[data-keyboard='open'] .footer {
   gap: 10px;
   width: 100%;
   height: var(--control);
-  padding: 0 8px;
+  padding: 8px;
   border-radius: var(--r-control);
-  font: 500 14px/20px var(--font);
+  font: 500 14px/18px var(--font);
   color: var(--text);
   text-align: left;
 }
@@ -759,13 +810,13 @@ html[data-keyboard='open'] .footer {
   max-width: var(--measure-wide);
 }
 .message.needs {
-  background: linear-gradient(90deg, rgb(var(--accent-rgb) / 0.09), transparent 85%);
-  box-shadow: inset 2px 0 0 var(--accent);
+  background: var(--needs-bg, linear-gradient(90deg, rgb(var(--accent-rgb) / 0.09), transparent 85%));
+  box-shadow: inset 2px 0 0 var(--needs-bar, var(--accent));
   padding-top: 8px;
   padding-bottom: 8px;
 }
 .message.highlight {
-  background: rgb(var(--accent-rgb) / 0.12);
+  background: var(--highlight-bg, rgb(var(--accent-rgb) / 0.12));
 }
 @media (hover: hover) {
   .message:not(.needs):hover {
@@ -788,7 +839,7 @@ html[data-keyboard='open'] .footer {
 }
 .message-time {
   font: 400 12px/16px var(--font);
-  color: var(--text-faint);
+  color: var(--time-text, var(--text-faint));
   font-variant-numeric: tabular-nums;
 }
 .edited {
@@ -899,6 +950,12 @@ html[data-keyboard='open'] .footer {
 .steps-list .subtext {
   line-height: 18px;
 }
+.steps-live {
+  padding: 0 0 2px 20px;
+}
+.steps-live .subtext {
+  line-height: 18px;
+}
 
 /* Markdown */
 .markdown {
@@ -954,15 +1011,16 @@ html[data-keyboard='open'] .footer {
   margin: 4px 0;
   padding-left: 12px;
   /* Discord's quote bar: 4px, rounded, clearly visible. */
-  box-shadow: inset 4px 0 0 #3a3a42;
+  box-shadow: inset 4px 0 0 var(--quote-bar, #3a3a42);
   border-radius: var(--r-inline);
 }
 .markdown code {
-  background: var(--bg-3);
+  background: var(--code-bg, var(--bg-3));
   border-radius: var(--r-inline);
   padding: 1px 4px;
   font-family: var(--mono);
-  font-size: 85%;
+  /* 14px in 16px text: Discord's inline code, the same 8.4px character pitch as its code blocks. */
+  font-size: 87.5%;
   font-variant-ligatures: none;
 }
 .codeblock {
@@ -972,7 +1030,7 @@ html[data-keyboard='open'] .footer {
 }
 .codeblock pre {
   margin: 0;
-  background: #050507;
+  background: var(--code-bg, #050507);
   border-radius: var(--r-control);
   padding: var(--card-pad);
   overflow-x: auto;
@@ -1029,7 +1087,15 @@ html[data-keyboard='open'] .footer {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin: 10px 0 4px;
+  margin: 2px 0 4px;
+}
+.action-row + .action-row {
+  margin-top: 6px;
+}
+.action-row .button.primary,
+.action-row .button.primary:hover:not(:disabled),
+.action-row .button.danger {
+  box-shadow: var(--button-ring);
 }
 .button {
   display: inline-flex;
@@ -1037,9 +1103,7 @@ html[data-keyboard='open'] .footer {
   justify-content: center;
   gap: 6px;
   height: var(--control);
-  padding: 0 14px;
   border-radius: var(--r-control);
-  font: 500 14px/20px var(--font);
   color: var(--text-strong);
   /* Filled like fields and the search box: one surface language for controls. */
   background: var(--bg-3);
@@ -1078,6 +1142,27 @@ html[data-keyboard='open'] .footer {
   width: 100%;
   height: 44px;
 }
+/* Discord's two button sizes. Small is for buttons inside cards, lists and tables; medium is for
+   a setting's own action, a page's main action and a dialog's footer. Phones keep one touch
+   size, so both apply from the desktop width up. */
+@media (min-width: 768px) {
+  .button.small {
+    height: 32px;
+    padding: 0 12px;
+    font-size: 14px;
+  }
+  .button.medium {
+    height: 40px;
+    min-width: 100px;
+    padding: 0 16px;
+    font-size: 16px;
+  }
+}
+/* A destructive step that still asks first, or can be undone: neutral fill, red label.
+   Filled red (.danger, .danger-fill) is for the final confirmation. */
+.button.soft-danger {
+  color: var(--danger-text);
+}
 .select {
   position: relative;
   width: 100%;
@@ -1092,11 +1177,11 @@ html[data-keyboard='open'] .footer {
   justify-content: space-between;
   gap: 8px;
   padding: 0 10px 0 12px;
-  background: var(--bg-3);
+  background: var(--select-bg, var(--bg-3));
   border-radius: var(--r-field);
   text-align: left;
-  font: 400 14px/20px var(--font);
-  box-shadow: inset 0 0 0 1px transparent;
+  font: 400 16px/22px var(--font);
+  box-shadow: inset 0 0 0 1px var(--select-line, transparent);
   transition: box-shadow var(--fast);
 }
 .select.open .select-trigger {
@@ -1106,8 +1191,7 @@ html[data-keyboard='open'] .footer {
 .select-trigger > svg { flex: none; }
 .select-trigger[aria-busy=true] { opacity: var(--disabled-opacity); cursor: progress; }
 .action-row > .select:only-child { margin: 0; }
-.message-body > .action-row:has(> .select:only-child) { margin: 8px 0 2px; }
-.message-body > .action-row:first-child:has(> .select), .message-body > .message-head + .action-row:has(> .select) { margin-top: 2px; }
+.message-body > .action-row:has(> .select:only-child) { margin: 2px 0; }
 /* Components V2 container: a content-width card, Discord's geometry (r8, 1px rule,
    16px inset, 8px between children), accent as a 4px bar on the left. */
 .container {
@@ -1120,8 +1204,8 @@ html[data-keyboard='open'] .footer {
   margin: 4px 0;
   padding: 12px 16px;
   border-radius: 8px;
-  border: 1px solid rgb(255 255 255 / 0.08);
-  background: rgb(255 255 255 / 0.03);
+  border: 1px solid var(--card-surface-line, rgb(255 255 255 / 0.08));
+  background: var(--card-surface, rgb(255 255 255 / 0.03));
 }
 .container.accented {
   border-left: 4px solid var(--bar);
@@ -1361,6 +1445,45 @@ html[data-keyboard='open'] .footer {
     animation: none;
   }
 }
+/* Discord's typing dots: three dots rising and brightening in turn. */
+.working-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 8px;
+  flex: none;
+}
+.working-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--busy);
+  opacity: 0.4;
+  animation: working-dot 1.2s ease-in-out infinite;
+}
+.working-dots i:nth-child(2) { animation-delay: 0.15s; }
+.working-dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes working-dot {
+  0%, 60%, 100% { transform: none; opacity: 0.4; }
+  30% { transform: translateY(-2px); opacity: 1; }
+}
+[data-lowfps] .working-dots i {
+  animation-timing-function: steps(3);
+}
+@media (prefers-reduced-motion: reduce) {
+  .working-dots i {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+.working-tail {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
+  font: 400 12px/16px var(--font);
+  color: var(--text-faint);
+}
 .composer {
   display: flex;
   align-items: flex-end;
@@ -1380,7 +1503,7 @@ html[data-keyboard='open'] .footer {
   min-width: 0;
 }
 .composer textarea::placeholder {
-  color: var(--text-faint);
+  color: var(--composer-placeholder, var(--text-faint));
   /* One line, cut with an ellipsis, as Discord's: a long name never wraps under the field. */
   white-space: nowrap;
   overflow: hidden;
@@ -1406,9 +1529,12 @@ html[data-keyboard='open'] .footer {
   .footer:focus-within {
     border-color: rgb(var(--accent-rgb) / 0.45);
   }
+  /* Discord's composer: the + and the last icon are centred 28px from the box's edges,
+     and the text starts on the message column (--gutter from the chat's edge). */
   .composer {
     min-height: calc(var(--dock-h) - 10px);
     gap: 0;
+    padding: 0 3px;
   }
   .composer .icon-button {
     width: 32px;
@@ -1417,7 +1543,7 @@ html[data-keyboard='open'] .footer {
     border-radius: var(--r-control);
   }
   .composer textarea {
-    padding: 13px 8px;
+    padding: 13px 8px 13px 16px;
   }
   /* Only the rail showing: the panel shrinks to your avatar. */
   html[data-side-collapsed='true'] .user-panel-name,
@@ -1631,19 +1757,50 @@ html[data-keyboard='open'] .footer {
   place-items: center;
   z-index: 50;
   padding: 16px;
-  animation: fade var(--fast) var(--ease-out);
+  animation: fade var(--backdrop-in) var(--pop-ease);
 }
 @keyframes fade {
   from {
     opacity: 0;
   }
 }
+/* Discord's modal: the card grows from 0.9 as it fades in; on close it shrinks and fades
+   quickly while the backdrop follows. data-leaving is set by leave() in text.ts. */
+.overlay[data-leaving] {
+  pointer-events: none;
+  animation: fade-out var(--backdrop-out) var(--pop-ease) forwards;
+}
+.overlay[data-leaving] > * {
+  animation: card-out var(--card-out) var(--pop-ease) forwards;
+}
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes card-in {
+  from {
+    opacity: 0;
+    scale: 0.9;
+  }
+}
+@keyframes card-out {
+  to {
+    opacity: 0;
+    scale: 0.85;
+  }
+}
+/* The quick switcher opens on one frame, as in Discord. */
+.switcher-overlay {
+  animation: none;
+}
 .modal {
+  animation: card-in var(--card-in) var(--pop-ease);
   width: 100%;
-  max-width: 460px;
-  background: var(--sheet);
+  max-width: 480px;
+  background: var(--float-bg, var(--sheet));
   border-radius: var(--r-float);
-  box-shadow: var(--shadow-float);
+  box-shadow: inset 0 0 0 1px var(--float-line, var(--line-card)), var(--shadow-float);
   overflow: hidden;
   max-height: 90dvh;
   display: flex;
@@ -1653,39 +1810,40 @@ html[data-keyboard='open'] .footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 12px 4px 16px;
+  padding: 24px 16px 0 24px;
 }
 .modal-header h2 {
   margin: 0;
-  font: 600 17px/22px var(--font);
+  font: 600 20px/24px var(--font);
   color: var(--text-strong);
 }
 .modal-body {
-  padding: 8px 16px 8px;
+  padding: 16px 24px 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 .field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 .field-label {
-  font: 500 13px/18px var(--font);
-  color: var(--text-muted);
+  font: 500 16px/20px var(--font);
+  color: var(--text);
 }
 .field-description {
-  font-size: 12px;
-  color: var(--text-faint);
+  font-size: 14px;
+  line-height: 18px;
+  color: var(--text-muted);
 }
 .field input,
 .field textarea {
   background: var(--bg-3);
   border: 0;
   border-radius: var(--r-field);
-  padding: 10px 12px;
+  padding: 9px 12px;
   outline: none;
   font-size: 16px;
   box-shadow: inset 0 0 0 1px transparent;
@@ -1693,13 +1851,13 @@ html[data-keyboard='open'] .footer {
 }
 .field input:focus,
 .field textarea:focus {
-  box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / 0.55);
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 .modal-footer {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  padding: 12px 16px 16px;
+  padding: 24px;
 }
 .grab {
   display: none;
@@ -1791,12 +1949,13 @@ html[data-keyboard='open'] .footer {
     transform: translateX(0);
   }
   .side-title {
-    font-size: 22px;
+    font-size: 20px;
     line-height: 28px;
   }
   .search {
-    height: 36px;
+    height: 32px;
   }
+  /* Discord's search reads 14pt, but iOS zooms the page into any field under 16px. */
   .search input {
     font-size: 16px;
   }
@@ -1837,7 +1996,7 @@ html[data-keyboard='open'] .footer {
   }
   .action-row .button {
     height: var(--control);
-    font-size: 15px;
+    font-size: 14px;
   }
   .select-trigger {
     height: var(--control);
@@ -1855,10 +2014,41 @@ html[data-keyboard='open'] .footer {
     max-width: none;
     border-radius: var(--r-sheet) var(--r-sheet) 0 0;
     padding-bottom: env(safe-area-inset-bottom);
+    box-shadow: var(--shadow-float);
     animation: sheet-in 280ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  /* The sheet keeps its own compact metrics; the centred dialog above follows Discord's. */
+  .modal-header {
+    padding: 14px 12px 4px 16px;
+  }
+  .modal-header h2 {
+    font: 600 17px/22px var(--font);
   }
   .modal-header .icon-button {
     display: none;
+  }
+  .modal-body {
+    padding: 8px 16px 8px;
+    gap: 14px;
+  }
+  .field {
+    gap: 6px;
+  }
+  .field-label {
+    font: 500 13px/18px var(--font);
+    color: var(--text-muted);
+  }
+  .field-description {
+    font-size: 12px;
+    line-height: normal;
+    color: var(--text-faint);
+  }
+  .field input,
+  .field textarea {
+    padding: 10px 12px;
+  }
+  .modal-footer {
+    padding: 12px 16px 16px;
   }
   .grab {
     display: block;
@@ -1921,7 +2111,6 @@ html[data-keyboard='open'] .footer {
   margin-bottom: 4px;
 }
 .overview-row svg {
-  color: var(--text-faint);
   flex: none;
 }
 .channel .meta.need {
@@ -1979,7 +2168,7 @@ html[data-keyboard='open'] .footer {
 }
 .sheet {
   position: fixed;
-  min-width: 240px;
+  min-width: 160px;
   max-width: 320px;
   background: var(--sheet);
   border-radius: var(--r-float);
@@ -2020,7 +2209,7 @@ html[data-keyboard='open'] .footer {
 .sheet-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
   height: var(--control);
   padding: 0 8px;
@@ -2125,11 +2314,18 @@ html[data-keyboard='open'] .footer {
    scrolls: the title, drag handle and multi-select Done stay in reach. */
 .sheet.choice-sheet { display: flex; flex-direction: column; max-height: min(400px, calc(100dvh - 16px)); }
 .sheet-layer:not(.phone) .choice-sheet { min-width: 0; max-width: none; overflow: hidden; }
-.sheet-layer:not(.phone) .choice-sheet .sheet-item.two-line { height: auto; min-height: 52px; }
-.sheet-layer:not(.phone) .choice-sheet .sheet-sub-label { font: 400 14px/18px var(--font); }
+/* Discord's select list: rows run edge to edge with 8px around 16px text, 38px for
+   a label, 56 with a description under it. */
+.sheet-layer:not(.phone) .choice-sheet { padding: 0; }
+.sheet-layer:not(.phone) .choice-sheet .choice-options .sheet-item { min-height: 38px; padding: 8px; border-radius: 0; font-size: 16px; line-height: 22px; }
+.sheet-layer:not(.phone) .choice-sheet .sheet-item.two-line { height: auto; min-height: 56px; }
+.sheet-layer:not(.phone) .choice-sheet .sheet-sub-label { font: 400 16px/18px var(--font); }
+.sheet-layer:not(.phone) .choice-sheet > :is(.choice-foot, .choice-cancel) { margin: 0 8px 8px; }
 @media (min-width: 768px) {
-  .select-trigger { height: 40px; box-shadow: inset 0 0 0 1px var(--line-raised); }
+  /* Discord's select: 40px tall, 16px text, 2px under the line it answers. */
+  .select-trigger { height: 40px; font-size: 16px; line-height: 22px; box-shadow: inset 0 0 0 1px var(--line-raised); }
   .select.open .select-trigger > svg { transform: rotate(180deg); }
+  .message-body > .action-row:has(> .select:only-child) { margin-top: 2px; }
 }
 .choice-sheet .choice-options { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .choice-sheet .sheet-item { height: auto; min-height: 32px; padding-block: 6px; }
@@ -2150,10 +2346,15 @@ html[data-keyboard='open'] .footer {
 .sheet-layer.phone .choice-sheet .sheet-head { position: relative; justify-content: center; padding-inline: 32px; text-align: center; }
 .choice-close { position: absolute; right: 0; top: -10px; display: grid; place-items: center; width: 44px; height: 44px; color: var(--text-faint); }
 .sheet-layer.phone .choice-options { margin: 0; touch-action: pan-y; }
-.sheet-layer.phone .choice-options .sheet-item { height: auto; min-height: 52px; padding: 10px 12px; }
-.sheet-layer.phone .choice-options .two-line { min-height: 58px; }
-.sheet-layer.phone .choice-options .sheet-sub-label { font: 400 13px/18px var(--font); }
+/* Discord on iPhone: a 36px handle, 16px labels over 12px descriptions, rows of 54 and 62. */
+.sheet-layer.phone .choice-sheet .grab { width: 36px; }
+.sheet-layer.phone .choice-sheet .sheet-head { padding-bottom: 18px; }
+.sheet-layer.phone .choice-options .sheet-item { height: auto; min-height: 54px; padding: 12px; font-size: 16px; line-height: 20px; }
+.sheet-layer.phone .choice-options .two-line { min-height: 62px; }
+.sheet-layer.phone .choice-options .sheet-sub-label { margin-top: 2px; font: 400 12px/16px var(--font); }
 .sheet-layer.phone .choice-options .sheet-item + .sheet-item::before { left: 12px; }
+/* Discord's select options: the name in bold over a regular description, desktop and phone. */
+.choice-options .sheet-item-text > :first-child { font-weight: 600; }
 @media (prefers-reduced-motion: reduce) {
   .sheet-layer.phone, .sheet-layer.phone .sheet { animation: none; transition: none; }
 }
@@ -2198,8 +2399,8 @@ html[data-keyboard='open'] .footer {
   background: var(--text-faint);
 }
 .ov-section h3 {
-  font: 600 12px/16px var(--font);
-  color: var(--text-faint);
+  font: 500 14px/18px var(--font);
+  color: var(--text);
   margin: 24px 0 6px;
 }
 .ov-item {
@@ -2224,7 +2425,7 @@ html[data-keyboard='open'] .footer {
   transform: translateY(-1px);
 }
 .ov-title {
-  font: 500 14px/20px var(--font);
+  font: 600 16px/20px var(--font);
   color: var(--text-strong);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2241,7 +2442,7 @@ html[data-keyboard='open'] .footer {
 }
 .ov-line {
   margin: 2px 0 0 28px;
-  font: 400 13px/18px var(--font);
+  font: 400 14px/18px var(--font);
   color: var(--text-muted);
   overflow-wrap: anywhere;
 }
@@ -2413,10 +2614,6 @@ mark {
   margin-left: auto;
   display: flex;
 }
-.pin-actions .icon-button {
-  width: 28px;
-  height: 28px;
-}
 .pin-body {
   margin-top: 4px;
   max-height: 220px;
@@ -2426,11 +2623,17 @@ mark {
   font-size: 14px;
   line-height: 20px;
 }
+/* A mention count: Discord's red pill, the same as the rail's and the inbox bell's. */
 .badge {
-  font: 600 12px/16px var(--font);
-  color: var(--danger);
-  min-width: 14px;
-  text-align: right;
+  flex: none;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--danger-fill);
+  color: #fff;
+  font: 700 12px/16px var(--font);
+  text-align: center;
 }
 .channel .badge + .st {
   margin-left: 0;
@@ -2446,6 +2649,13 @@ mark {
   display: block;
   width: calc(100% + 24px);
   text-align: left;
+}
+/* In a side panel the row keeps to the panel's 8px insets, like the cards above it, and
+   its text starts under the section label. */
+.side-panel .mention-row {
+  width: 100%;
+  margin: 0;
+  padding-inline: 8px;
 }
 .mention-row.unread .ov-title {
   font-weight: 600;
@@ -2512,11 +2722,10 @@ mark {
   width: calc(100% - var(--link-branch, 18px));
   gap: 8px;
   font: 400 13px/18px var(--font);
-  color: var(--text-muted);
+  color: var(--text-quiet);
 }
 .channel.linked-row svg {
   flex: none;
-  color: var(--text-faint);
 }
 .more-links .channel-name {
   color: var(--text-faint);
@@ -2686,7 +2895,8 @@ mark {
   align-items: center;
   gap: 6px;
   width: 100%;
-  margin: 14px 8px 4px;
+  margin: 14px 0 8px;
+  padding: 0 8px;
   font: 600 12px/16px var(--font);
   color: var(--text-muted);
   text-align: left;
@@ -2751,7 +2961,7 @@ mark {
   margin: 4px 0 8px;
 }
 .service-detail .panel-section {
-  margin-left: 0;
+  padding-left: 0;
 }
 .service-detail .channel.linked-row {
   margin-left: 0;
@@ -2807,22 +3017,32 @@ mark {
 .markdown a {
   -webkit-touch-callout: none;
 }
+/* Discord's: a 1px rule across the lane with a "NEW" flag at its right end, 8px from each neighbour. */
 .new-divider {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 12px 16px 4px;
-  font: 600 11px/14px var(--font);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--danger-text);
-}
-.new-divider::before,
-.new-divider::after {
-  content: '';
-  flex: 1;
+  position: relative;
   height: 1px;
-  background: rgb(255 77 94 / 0.45);
+  margin: 8px 16px;
+  background: var(--new-line, var(--danger));
+}
+.chat-history .new-divider + * {
+  margin-top: 8px;
+}
+/* Ends 30px from the pane edge on desktop: the 10px scrollbar gutter plus this. */
+@media (min-width: 768px) {
+  .chat-history .new-divider { margin-right: 20px; }
+}
+.new-divider span {
+  position: absolute;
+  right: 0;
+  top: -6px;
+  height: 13px;
+  padding: 0 4px 0 9px;
+  border-radius: 0 3px 3px 0;
+  background: var(--danger-fill);
+  clip-path: polygon(6px 0, 100% 0, 100% 100%, 6px 100%, 0 50%);
+  color: #fff;
+  font: 700 10px/13px var(--font);
+  text-transform: uppercase;
 }
 .icon-button.menu {
   position: relative;
@@ -3091,7 +3311,7 @@ mark {
   padding: 0 8px;
   border-radius: var(--r-control);
   background: var(--bg-3);
-  color: var(--text-faint);
+  color: var(--search-text, var(--text-faint));
   font: 400 13px/16px var(--font);
   transition: width var(--move) var(--ease-out), background var(--fast);
 }
@@ -3208,7 +3428,7 @@ a.crumb-parent:hover {
   margin-left: auto;
   padding-left: 12px;
   font: 600 13px/18px var(--font);
-  color: var(--accent);
+  color: var(--thread-count, var(--accent));
 }
 .thread-card-meta {
   display: flex;
@@ -3244,13 +3464,13 @@ a.crumb-parent:hover {
 }
 .presence {
   position: absolute;
-  right: -2px;
-  bottom: -2px;
-  width: 12px;
-  height: 12px;
+  right: 0;
+  bottom: 0;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   background: var(--text-faint);
-  box-shadow: 0 0 0 3px var(--bg-1);
+  box-shadow: 0 0 0 3px var(--backdrop, var(--bg-1));
 }
 .presence.online {
   background: var(--ok);
@@ -3305,8 +3525,8 @@ a.crumb-parent:hover {
   }
   .side-main {
     background: var(--bg-1);
-    border-top: 1px solid var(--line-strong);
-    border-left: 1px solid var(--line-strong);
+    border-top: 1px solid var(--frame-line, var(--line-strong));
+    border-left: 1px solid var(--frame-line, var(--line-strong));
     border-top-left-radius: var(--r-control);
   }
   .sidebar:not(.with-rail) .side-main {
@@ -3314,10 +3534,10 @@ a.crumb-parent:hover {
     border-top-left-radius: 0;
   }
   .chat {
-    border-top: 1px solid var(--line-strong);
+    border-top: 1px solid var(--frame-line, var(--line-strong));
   }
   html[data-side-collapsed='true'] .chat {
-    border-left: 1px solid var(--line-strong);
+    border-left: 1px solid var(--frame-line, var(--line-strong));
     border-top-left-radius: var(--r-control);
   }
   html[data-side-collapsed='true'] .side-main {
@@ -3399,6 +3619,8 @@ a.crumb-parent:hover {
    Our colours and fonts, Discord's geometry. Desktop unless stated. */
 :root {
   --gutter: 72px; /* message content column: 16 + 40 avatar + 16 */
+  --row-pad: 2px; /* inside a message's hover band, above and below: a one-line row is 26px */
+  --group-gap: 17px; /* between one author's group and the next */
 }
 .app {
   background: var(--bg-1);
@@ -3415,7 +3637,7 @@ a.crumb-parent:hover {
   }
   .side-title {
     font: 700 16px/20px var(--font);
-    border-bottom-color: var(--line-strong);
+    border-bottom-color: var(--frame-line, var(--line-strong));
   }
   .chat-header {
     border-bottom: 1px solid var(--line-strong);
@@ -3433,8 +3655,25 @@ a.crumb-parent:hover {
     padding: 0 8px;
     font: 500 16px/20px var(--font);
   }
+  /* Row glyphs at Discord's ink in the 20px box: an 18px "#", a 17x14 speaker, 20px nav icons
+     (so every label starts 44px in). */
+  .channel .hash {
+    font: 400 25px/20px var(--font-glyph);
+  }
+  .channel[data-voice-channel] .hash > svg {
+    width: 18px;
+    height: 18px;
+  }
+  .overview-row > svg {
+    width: 20px;
+    height: 20px;
+  }
   .tree .channel {
-    font: 400 14px/18px var(--font);
+    font: 500 14px/18px var(--font);
+  }
+  /* Thread names start in the channel names' column. */
+  .tree .channel:not(.linked-row) {
+    padding-left: 10px;
   }
   .tree .channel.unread {
     font-weight: 600;
@@ -3442,11 +3681,13 @@ a.crumb-parent:hover {
   .category-name {
     padding: 0 8px 6px;
     font: 500 14px/18px var(--font);
-    color: var(--text-muted);
   }
 
-  /* Header: 16px semibold title, 32px tool buttons 8px apart, 20px glyphs, 244x32 search. */
+  /* Header: 16px semibold title 8px after its icon, 32px tool buttons 8px apart, 20px glyphs,
+     244x32 search. Topic and tool glyphs sit at Discord's secondary step (5.96:1 there,
+     --text-faint is 5.99:1 here); hover and pressed still go to full strength. */
   .chat-title {
+    gap: 8px;
     font: 600 16px/20px var(--font);
   }
   .crumb-parent {
@@ -3454,6 +3695,7 @@ a.crumb-parent:hover {
   }
   .chat-sub {
     font: 400 14px/18px var(--font);
+    color: var(--text-faint);
   }
   .chat-actions {
     gap: 8px;
@@ -3461,12 +3703,13 @@ a.crumb-parent:hover {
   .chat-actions .icon-button {
     width: 32px;
     height: 32px;
+    color: var(--text-faint);
   }
   .search-field {
     width: 244px;
     height: 32px;
     margin-left: 8px;
-    background: var(--bg-1);
+    background: var(--search-bg, var(--bg-1));
     border: 1px solid var(--line-strong);
     font: 400 14px/18px var(--font);
   }
@@ -3478,8 +3721,9 @@ a.crumb-parent:hover {
   padding: 2px 16px 2px var(--gutter);
   margin-top: 16px;
 }
+/* Text ends 40px from the pane edge, as in Discord: the 10px scrollbar gutter plus this. */
 @media (min-width: 768px) {
-  .message:not(.system) { padding-right: 32px; }
+  .message:not(.system) { padding-right: 30px; }
 }
 .message.compact {
   margin-top: 0;
@@ -3493,7 +3737,7 @@ a.crumb-parent:hover {
   font-size: 16px;
 }
 .message:has(.reply-preview) .message-head .avatar.inline {
-  top: 27px;
+  top: calc(var(--row-pad) + 24px);
 }
 .author {
   font: 500 16px/22px var(--font);
@@ -3501,6 +3745,15 @@ a.crumb-parent:hover {
 .message-head {
   line-height: 22px;
   margin-bottom: 0;
+}
+/* The tag sits 4px after the name; the time 8px after whichever comes last. */
+@media (min-width: 768px) {
+  .message-head {
+    gap: 4px;
+  }
+  .message-head .message-time {
+    margin-left: 4px;
+  }
 }
 .message-time {
   font: 400 12px/16px var(--font);
@@ -3516,15 +3769,43 @@ a.crumb-parent:hover {
 .message > .reply-preview,
 .message.system > .clip,
 .message > .steps-list,
-.message .steps-list > .markdown,
+.message .steps-list .markdown,
 .message blockquote > .markdown,
 .message .forwarded-body > .markdown,
 .message .section-body > .markdown,
-.message .codeblock,
 .message .edit-box textarea {
   max-width: none;
 }
 .message blockquote > .markdown { font-size: inherit; line-height: inherit; }
+/* A follow-up row shows its time in the avatar gutter while the pointer is on it, as in
+   Discord: 11px, ending at the avatar's right edge, on the row's first line. */
+.row-time {
+  display: none;
+}
+@media (min-width: 768px) and (hover: hover) {
+  .chat:not(.picking) .message.compact:not(.needs):hover > .row-time {
+    display: block;
+    position: absolute;
+    left: 0;
+    top: var(--row-pad);
+    width: 56px;
+    font: 400 11px/22px var(--font);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    white-space: nowrap;
+    color: var(--text-faint);
+  }
+}
+/* Discord holds a quote and a code block to 90% of the text column (quote text 8px inside that). */
+@media (min-width: 768px) {
+  .message-body > .markdown > blockquote,
+  .message-body > .markdown > .codeblock {
+    max-width: 90%;
+  }
+  .message-body > .markdown > blockquote {
+    padding-right: 8px;
+  }
+}
 @media (hover: hover) {
   .message:not(.needs):hover {
     background: rgb(255 255 255 / 0.035);
@@ -3579,17 +3860,49 @@ a.crumb-parent:hover {
 .thread-card-meta {
   font: 400 14px/20px var(--font);
 }
+/* Desktop, as measured in Discord: system rows read at 16px with the names at full strength,
+   a 20px glyph centred on the avatar column, and the same gap as any new group. The thread
+   card is 56px (7px inside its 1px rule, two 20px lines), 4px under its line, 5px clear
+   below, with the count straight after the title. Phones keep the compact row and card. */
+@media (min-width: 768px) {
+  .message.system {
+    margin-top: var(--group-gap);
+    font: 400 16px/22px var(--font);
+  }
+  .message.system strong {
+    color: var(--text-strong);
+  }
+  .message.system > svg {
+    left: 26px;
+    width: 20px;
+    height: 20px;
+  }
+  .thread-card {
+    gap: 0;
+    margin-top: 4px;
+    padding: 7px 8px;
+  }
+  .message.thread-created .thread-card {
+    margin-bottom: 5px;
+  }
+  .thread-card-count {
+    margin-left: 0;
+    padding-left: 0;
+  }
+}
 
-/* Menus (desktop): 1px rule, 8px corners and padding, 34px items, 4px item corners. */
+/* Menus (desktop): 1px rule, 8px corners and padding, 4px item corners. Rows are 8px of
+   padding around their content: 34 for a label, 36 with a 20px icon or radio, 52 with a sublabel. */
 @media (min-width: 768px) {
   .sheet {
+    /* As wide as its longest label (160 to 320), wherever it opens. */
+    width: max-content;
     border: 1px solid var(--line-strong);
     border-radius: var(--r-control);
     padding: 8px;
   }
   .sheet-item {
-    height: 34px;
-    padding: 0 8px;
+    padding: 8px;
     border-radius: var(--r-inline);
     font: 500 14px/18px var(--font);
   }
@@ -3642,19 +3955,58 @@ a.crumb-parent:hover {
   vertical-align: 2px;
 }
 
-/* Phones keep their own spacing; only the gutter narrows. */
+/* Phones keep their own spacing; the avatar and gutter are Discord's on iPhone (40pt at 16, text at 68). */
 @media (max-width: 767px) {
   :root {
-    --gutter: 60px;
+    --gutter: 68px;
+    --row-pad: 3px;
+    --group-gap: 13px;
   }
   .message {
     padding-left: var(--gutter);
     padding-right: 16px;
   }
   .message-head .avatar.inline {
-    left: 12px;
-    width: 36px;
-    height: 36px;
+    left: 16px;
+    width: 40px;
+    height: 40px;
+  }
+}
+
+/* Phone type and sizes, measured from Discord on iPhone (1pt = 1 CSS px): 14pt categories
+   44.8pt below the row above and 39pt above the next, a 14.7pt "#", 48pt server icons 12pt
+   apart, a 56pt user panel, a 57pt composer and a 13pt header subtitle. */
+@media (max-width: 767px) {
+  :root {
+    --dock-h: 56px;
+  }
+  .category {
+    margin-top: 17px;
+  }
+  .category-name {
+    padding: 0 8px 11px;
+    font: 600 14px/18px var(--font);
+  }
+  .category-name > svg {
+    width: 11px;
+    height: 11px;
+  }
+  .channel .hash {
+    font: 400 20px/22px var(--font-glyph);
+  }
+  .rail {
+    gap: 12px;
+  }
+  .rail-guild {
+    width: 48px;
+    height: 48px;
+  }
+  .chat-sub {
+    font-size: 13px;
+  }
+  .footer {
+    padding-top: 6px;
+    padding-bottom: calc(6px + env(safe-area-inset-bottom));
   }
 }
 
@@ -3755,6 +4107,7 @@ a.crumb-parent:hover {
 }
 .message-actions > button.quick {
   width: 28px;
+  margin: 0;
   font-size: 18px;
   line-height: 1;
 }
@@ -3782,6 +4135,9 @@ a.crumb-parent:hover {
 }
 .side-title svg {
   flex: none;
+  color: var(--text-strong);
+}
+.side-title .admin-mark {
   color: var(--text-muted);
 }
 
@@ -3801,6 +4157,11 @@ a.crumb-parent:hover {
   .panel-title {
     font: 600 16px/20px var(--font);
   }
+  /* Pinned and Inbox carry Discord's larger popout title. */
+  .pins-panel .panel-title,
+  .inbox-panel .panel-title {
+    font: 700 20px/24px var(--font);
+  }
   .chat-header {
     padding-right: 8px;
   }
@@ -3819,7 +4180,7 @@ a.crumb-parent:hover {
   .sheet,
   .menu-pop,
   .system-pop {
-    background: var(--bg-4);
+    background: var(--menu-bg, var(--bg-4));
   }
   .sheet .sheet-head {
     display: none;
@@ -3878,23 +4239,54 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
     left: -11px;
     width: 8px;
   }
+  /* Discord's ticks are straight; only the last thread's turns the corner. */
+  .tree > div > .channel:not(:last-child)::before {
+    border-bottom-left-radius: 0;
+  }
 }
-/* Members in the side panel: rows grow for a note line, 8px insets. */
+/* Members in the side panel: 40px rows, with or without a note line, 8px insets. */
 .side-panel .member {
   margin: 0 0 2px;
   min-height: 40px;
   height: auto;
-  padding: 4px 8px;
+  padding: 3px 8px;
 }
 .panel-section {
   font: 500 14px/18px var(--font);
 }
-/* Threads panel rows are cards, as in Discord's Threads popout. */
+/* Discord's Threads popout heads its lists in semibold body colour; its member list in a dim grey. */
+.threads-panel .panel-section {
+  font-weight: 600;
+  color: var(--text);
+}
+.members-panel .panel-section {
+  color: var(--members-head, var(--text-faint));
+}
+/* Desktop, as Discord: the member list is a 264px column with no head of its own; the chat
+   header runs on over it, so the toolbar and search keep the window's right edge. */
+@media (min-width: 1101px) {
+  .side-panel.members-panel {
+    width: 264px;
+  }
+  .members-panel > .panel-head {
+    display: none;
+  }
+  .app:has(> .chat > .chat-header) > .members-panel {
+    padding-top: var(--header);
+  }
+  .app:has(> .chat > .chat-header) > .members-panel::before {
+    top: var(--header);
+  }
+  .app:has(> .members-panel) > .chat > .chat-header {
+    margin-right: -264px;
+  }
+}
+/* Threads panel rows are cards, as in Discord's Threads popout: 72px with a one-line name. */
 .side-panel .thread-row {
   background: var(--bg-3);
   border: 1px solid var(--line-strong);
   border-radius: var(--r-control);
-  padding: 12px;
+  padding: 14px 16px;
   margin-bottom: 8px;
 }
 @media (hover: hover) {
@@ -3902,7 +4294,7 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
     background: var(--bg-4);
   }
   .message:not(.needs):hover {
-    background: var(--active);
+    background: var(--fill-row-hover);
   }
 }
 .thread-card:hover {
@@ -3914,6 +4306,13 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
 /* One rule colour on dark surfaces. */
 .day-divider {
   color: var(--text-muted);
+}
+/* Discord's date label: 4px from its rules, at the secondary step (5.96:1 there, 5.99:1 here). */
+@media (min-width: 768px) {
+  .day-divider {
+    gap: 4px;
+    color: var(--text-faint);
+  }
 }
 .day-divider::before,
 .day-divider::after {
@@ -3960,11 +4359,8 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
 }
 .sheet-item .sheet-sub-label {
   display: block;
-  font: 400 12px/14px var(--font);
-  color: var(--text-muted);
-}
-.sheet-item.two-line {
-  height: 44px;
+  font: 400 12px/18px var(--font);
+  color: var(--text-faint);
 }
 .sheet-item-text {
   display: flex;
@@ -3982,7 +4378,8 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
   border-radius: var(--r-inline);
   color: var(--text-muted);
 }
-.row-gear:hover {
+.row-gear:hover,
+.channel.active .row-gear {
   color: var(--text-strong);
 }
 @media (min-width: 768px) {
@@ -4007,11 +4404,17 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
 .output-bar {
   border-color: var(--line-card);
 }
+.search-field {
+  border-color: var(--search-line, var(--line-card));
+}
 .sheet,
 .menu-pop,
 .system-pop,
 .message-actions {
   border-color: var(--line-raised);
+}
+.message-actions {
+  border-color: var(--toolbar-line, var(--line-raised));
 }
 .sheet-group + .sheet-group {
   border-top-color: var(--line-raised);
@@ -4081,21 +4484,24 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
 .chat {
   --backdrop: var(--bg-2);
 }
-.user-panel,
+.user-panel {
+  background: var(--panel-bg, color-mix(in srgb, var(--backdrop, var(--bg-1)), #fff 5%));
+  border-color: var(--panel-line, color-mix(in srgb, var(--backdrop, var(--bg-1)), #fff 9%));
+}
 .output-bar {
-  background: color-mix(in srgb, var(--backdrop, var(--bg-1)), #fff 5%);
-  border-color: color-mix(in srgb, var(--backdrop, var(--bg-1)), #fff 9%);
+  background: var(--composer-bg, color-mix(in srgb, var(--backdrop, var(--bg-1)), #fff 5%));
+  border-color: var(--composer-line, color-mix(in srgb, var(--backdrop, var(--bg-1)), #fff 9%));
 }
 .system-light {
   background: color-mix(in srgb, var(--backdrop, var(--bg-1)), #fff 5%);
 }
 @media (min-width: 768px) {
   .footer {
-    background: color-mix(in srgb, var(--backdrop), #fff 5%);
-    border-color: color-mix(in srgb, var(--backdrop), #fff 9%);
+    background: var(--composer-bg, color-mix(in srgb, var(--backdrop), #fff 5%));
+    border-color: var(--composer-line, color-mix(in srgb, var(--backdrop), #fff 9%));
   }
   .footer:focus-within {
-    border-color: rgb(var(--accent-rgb) / 0.45);
+    border-color: var(--composer-focus-line, rgb(var(--accent-rgb) / 0.45));
   }
 }
 
@@ -4156,6 +4562,13 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
   width: 22px;
   height: 22px;
 }
+/* Discord's header glyphs are 20px on desktop. */
+@media (min-width: 768px) {
+  .chat-actions .icon-button > svg {
+    width: 20px;
+    height: 20px;
+  }
+}
 .message-actions > button > svg,
 .sheet-item > svg {
   width: 20px;
@@ -4210,12 +4623,6 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
 .category-name {
   border-radius: var(--r-inline);
 }
-/* Members don't open anything yet: no hover promise. */
-@media (hover: hover) {
-  .member:hover {
-    background: none;
-  }
-}
 /* Cards: a lift on hover, more when pressed. */
 @media (hover: hover) {
   .thread-card:hover,
@@ -4230,7 +4637,8 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
 /* Menu items: hover and keyboard focus look the same; icons follow the label. */
 .sheet-item,
 .menu-item {
-  height: 34px;
+  height: auto;
+  min-height: 34px;
   border-radius: var(--r-inline);
 }
 @media (hover: hover) {
@@ -4266,12 +4674,12 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
   margin: 0 4px;
 }
 .menu-pop .menu-item {
-  gap: 12px;
+  gap: 8px;
 }
 /* Fields: darker than their surface with a 1px rule; the rule brightens on hover and turns accent on focus. */
 .search {
-  background: color-mix(in srgb, var(--backdrop, var(--bg-1)), #000 30%);
-  border: 1px solid var(--line-raised);
+  background: var(--search-bg, color-mix(in srgb, var(--backdrop, var(--bg-1)), #000 30%));
+  border: 1px solid var(--search-line, var(--line-raised));
 }
 @media (hover: hover) {
   .search:hover {
@@ -4279,21 +4687,23 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
   }
 }
 .search:focus-within {
-  border-color: rgb(var(--accent-rgb) / 0.6);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 .side-panel {
   --backdrop: var(--bg-2);
 }
 @media (min-width: 768px) {
   .footer:focus-within {
-    border-color: rgb(var(--accent-rgb) / 0.6);
+    border-color: var(--composer-focus-line, rgb(var(--accent-rgb) / 0.6));
   }
 }
-/* Buttons: one weight; secondary is a white overlay (not a field); primary darkens. */
+/* Buttons: one height (32), 12px sides, one semibold weight; secondary is a white overlay
+   (not a field); primary darkens. */
 .button {
-  padding: 0 16px;
-  font: 500 14px/20px var(--font);
-  background: var(--fill-control-hover);
+  padding: 0 var(--control-pad);
+  font: 600 14px/20px var(--font);
+  background: var(--button-fill, var(--fill-control-hover));
 }
 @media (hover: hover) {
   .button:hover:not(:disabled) {
@@ -4306,9 +4716,6 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
 .button:active:not(:disabled) {
   background: rgb(255 255 255 / 0.18);
 }
-.button.primary {
-  font-weight: 500;
-}
 .button.primary:active:not(:disabled) {
   background: color-mix(in srgb, var(--accent), #000 20%);
 }
@@ -4319,17 +4726,18 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
 .button:disabled {
   opacity: var(--disabled-opacity);
 }
-/* One radio: 20px, filled accent disc with a dark centre when on. */
+/* One radio: 20px. Off is a thin ring over a slightly sunk well; on is a filled accent
+   disc with an 8px dark centre. */
 .sheet-item .sheet-radio {
   width: 20px;
   height: 20px;
   border: 0;
-  box-shadow: inset 0 0 0 2px var(--text-muted);
-  background: none;
+  box-shadow: inset 0 0 0 1px var(--radio-ring, #63636b);
+  background: rgb(0 0 0 / 0.15);
 }
 .sheet-item .sheet-radio.on {
   background: var(--accent);
-  box-shadow: inset 0 0 0 5px var(--accent), inset 0 0 0 10px var(--accent-ink);
+  box-shadow: inset 0 0 0 6px var(--accent), inset 0 0 0 10px var(--accent-ink);
 }
 /* Server rail: a 20px pip and a lighter icon on hover; pressed nudges; focus ring on the icon. */
 @media (hover: hover) {
@@ -4387,13 +4795,29 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
   pointer-events: none;
   padding: 6px 10px;
   border-radius: var(--r-control);
-  border: 1px solid var(--line-raised);
-  background: var(--bg-4);
+  border: 1px solid var(--float-line, var(--line-raised));
+  background: var(--float-bg, var(--bg-4));
   box-shadow: 0 4px 16px rgb(0 0 0 / 0.4);
   font: 500 14px/18px var(--font);
-  color: var(--text-strong);
+  color: var(--tip-text, var(--text-strong));
   white-space: nowrap;
   transform: translate(-50%, calc(-100% - 8px));
+  animation: tip-in var(--tip-in) var(--pop-ease);
+}
+.tip.out {
+  animation: tip-out var(--tip-out) var(--pop-ease) forwards;
+}
+@keyframes tip-in {
+  from {
+    opacity: 0;
+    scale: 0.95;
+  }
+}
+@keyframes tip-out {
+  to {
+    opacity: 0;
+    scale: 0.95;
+  }
 }
 .tip::after {
   content: '';
@@ -4403,7 +4827,7 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
   width: 8px;
   height: 8px;
   margin-left: calc(var(--arrow, 0px) - 4px);
-  background: var(--bg-4);
+  background: var(--float-bg, var(--bg-4));
   border-right: 1px solid var(--line-raised);
   border-bottom: 1px solid var(--line-raised);
   transform: rotate(45deg);
@@ -4436,14 +4860,16 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
 .panel-head .panel-icon {
   flex: none;
   color: var(--text-muted);
-  margin-right: 2px;
+}
+.inbox-panel .panel-icon {
+  color: var(--text);
 }
 .panel-title {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
-  font: 600 16px/20px var(--font);
+  font: 700 16px/20px var(--font);
   color: var(--text-strong);
 }
 .panel-count {
@@ -4466,8 +4892,8 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
   color: var(--text-muted);
 }
 .empty b {
-  font: 600 15px/20px var(--font);
-  color: var(--text-strong);
+  font: 600 16px/20px var(--font);
+  color: var(--text);
 }
 .empty-icon {
   display: grid;
@@ -4508,7 +4934,7 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
 .button.success {
   background: var(--success-button);
   color: #fff;
-  box-shadow: inset 0 0 0 1px #298f55;
+  box-shadow: inset 0 0 0 1px var(--success-ring, #298f55);
 }
 .button.danger {
   background: var(--danger);
@@ -4522,26 +4948,27 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
     background: color-mix(in srgb, var(--danger), #000 12%);
   }
 }
-/* Messages: every row, first or follow-up, has the same 3px inside the hover band above
-   and below, so lines in a group are evenly spaced and every band has the same breathing
-   room. The last thing in a message adds no margin of its own below the band. */
+/* Messages: every row, first or follow-up, has the same --row-pad inside the hover band
+   above and below (Discord's 2px on desktop), so lines in a group are evenly spaced and
+   every band has the same breathing room. The last thing in a message adds no margin of
+   its own below the band. */
 .message:not(.needs),
 .message.compact:not(.needs),
 .message.system {
-  padding-top: 3px;
-  padding-bottom: 3px;
+  padding-top: var(--row-pad);
+  padding-bottom: var(--row-pad);
 }
 .message {
-  margin-top: 13px;
+  margin-top: var(--group-gap);
 }
 .message.compact {
   margin-top: 0;
 }
 .message-head .avatar.inline {
-  top: 5px;
+  top: calc(var(--row-pad) + 2px);
 }
 .message.system > svg {
-  top: 5px;
+  top: calc(var(--row-pad) + 2px);
 }
 .message-body > :last-child,
 .message-body > :last-child > :last-child,
@@ -4579,13 +5006,13 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
 }
 
 /* A first message is never shorter than its avatar: the band always holds the 40px
-   picture plus the same 3px below it (Discord's row min-height). With a reply line
+   picture plus the same --row-pad below it (Discord's row min-height). With a reply line
    above, the picture sits 22px lower, so the row grows by that much. */
 .message:not(.compact):not(.system):not(.needs) {
-  min-height: calc(5px + 40px + 3px);
+  min-height: calc(var(--row-pad) * 2 + 42px);
 }
 .message:not(.compact):not(.system):not(.needs):has(.reply-preview) {
-  min-height: calc(27px + 40px + 3px);
+  min-height: calc(var(--row-pad) * 2 + 64px);
 }
 
 /* Reactions: Discord's chips. Yours carries the accent; click to add or remove yours. */
@@ -4599,23 +5026,23 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 28px;
-  padding: 0 8px;
+  height: 30px;
+  padding: 0 6px;
   border-radius: var(--r-control);
   border: 1px solid transparent;
   background: var(--fill-hover);
   color: var(--text-muted);
-  font: 600 14px/18px var(--font);
+  font: 600 16px/20px var(--font);
   transition: background-color var(--t-fast), border-color var(--t-fast), color var(--t-fast);
 }
 .reaction-emoji {
-  font-size: 16px;
+  font-size: 20px;
   line-height: 1;
   font-family: var(--emoji-font), sans-serif;
 }
 .reaction.me {
-  background: rgb(var(--accent-rgb) / 0.14);
-  border-color: rgb(var(--accent-rgb) / 0.55);
+  background: rgb(var(--accent-rgb) / 0.2);
+  border-color: var(--accent);
   color: var(--accent);
 }
 @media (hover: hover) {
@@ -4643,20 +5070,33 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
 .message-actions > button.quick.on {
   background: rgb(var(--accent-rgb) / 0.16);
 }
-/* Emoji picker: a raised popover with search, groups and a name strip. */
+/* Emoji picker: a raised popover with search, a category rail, groups and a name strip,
+   at Discord's 498 x 486. The rail and the strip sit one step darker than the body. */
 .emoji-picker {
   position: fixed;
   z-index: 80;
-  width: 352px;
-  height: 400px;
+  width: min(498px, calc(100vw - 16px));
+  height: min(486px, calc(100dvh - 16px));
   display: flex;
   flex-direction: column;
-  padding: 8px;
-  gap: 8px;
-  background: var(--bg-4);
-  border: 1px solid var(--line-raised);
+  overflow: hidden;
+  background: var(--float-bg, var(--bg-4));
+  border: 1px solid var(--float-line, var(--line-raised));
   border-radius: var(--r-control);
   box-shadow: var(--shadow-float);
+}
+.emoji-head {
+  flex: none;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--float-line, var(--line-raised));
+}
+.emoji-picker .search {
+  flex: none;
+  height: 40px;
+}
+.emoji-picker .search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 .emoji-picker .search input {
   flex: 1;
@@ -4664,26 +5104,98 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
   border: 0;
   outline: none;
   color: var(--text);
-  font: 400 14px/20px var(--font);
+  font: 400 16px/22px var(--font);
+}
+.emoji-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.emoji-rail {
+  flex: none;
+  width: 48px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+  background: var(--float-well, var(--bg-3));
+}
+.emoji-rail-item {
+  position: relative;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-inline);
+  color: var(--text-muted);
+}
+.emoji-rail-item img.emoji {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  filter: grayscale(1);
+  opacity: 0.6;
+}
+.emoji-rail-item .emoji-rail-server {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-control);
+}
+/* The 4px marker on the rail's left edge, like the server rail's pip. */
+.emoji-rail-item[aria-current]::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 4px;
+  width: 4px;
+  height: 24px;
+  border-radius: 0 4px 4px 0;
+  background: var(--text-strong);
+}
+.emoji-rail-item[aria-current] {
+  background: var(--fill-hover);
+  color: var(--text-strong);
+}
+.emoji-rail-item[aria-current] img.emoji {
+  filter: none;
+  opacity: 1;
+}
+@media (hover: hover) {
+  .emoji-rail-item:hover {
+    background: var(--fill-hover);
+    color: var(--text-strong);
+  }
+  .emoji-rail-item:hover img.emoji {
+    filter: none;
+    opacity: 1;
+  }
 }
 .emoji-scroll {
+  position: relative;
   flex: 1;
   overflow-y: auto;
   min-height: 0;
+  padding: 0 0 8px 8px;
 }
 .emoji-scroll h4 {
-  margin: 8px 4px 4px;
-  font: 600 12px/16px var(--font);
-  color: var(--text-muted);
+  margin: 0;
+  padding: 12px 4px 8px;
+  font: 600 14px/18px var(--font);
+  color: var(--text);
 }
+/* Discord's 48px cells with a 40px emoji, nine across. */
 .emoji-grid {
   display: grid;
-  grid-template-columns: repeat(9, 1fr);
+  grid-template-columns: repeat(auto-fill, 48px);
 }
 .emoji-cell {
-  height: 36px;
+  height: 48px;
   border-radius: var(--r-inline);
-  font: 22px/1 var(--emoji-font), sans-serif;
+  font: 40px/1 var(--emoji-font), sans-serif;
 }
 @media (hover: hover) {
   .emoji-cell:hover {
@@ -4691,23 +5203,52 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
   }
 }
 .emoji-foot {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 32px;
-  padding: 0 4px;
-  border-top: 1px solid var(--line-raised);
-  font: 500 13px/18px var(--font);
-  color: var(--text-muted);
+  height: 48px;
+  padding: 0 16px;
+  border-top: 1px solid var(--float-line, var(--line-raised));
+  background: var(--float-well, var(--bg-3));
+  font: 600 16px/20px var(--font);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
 }
 .emoji-big {
-  font: 22px/1 var(--emoji-font), sans-serif;
+  font: 28px/1 var(--emoji-font), sans-serif;
 }
+/* Phones keep the plain sheet: no rail (eleven 40px stops do not fit across), inset parts. */
 @media (max-width: 767px) {
   .emoji-picker {
     left: 8px !important;
     right: 8px;
     width: auto;
+    padding: 8px;
+    gap: 8px;
+  }
+  .emoji-head,
+  .emoji-body {
+    display: contents;
+  }
+  .emoji-rail {
+    display: none;
+  }
+  .emoji-scroll {
+    padding: 0;
+  }
+  .emoji-grid {
+    grid-template-columns: repeat(auto-fill, minmax(48px, 1fr));
+  }
+  .emoji-scroll h4 {
+    margin: 8px 4px 4px;
+    padding: 0;
+  }
+  .emoji-foot {
+    padding: 0 8px;
+    border-top: 1px solid var(--line-raised);
+    background: none;
   }
 }
 
@@ -4808,6 +5349,7 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
 
 .tip.right {
   transform: translate(12px, -50%);
+  white-space: pre;
 }
 .tip.right::after {
   left: -5px;
@@ -4843,7 +5385,7 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
   border-radius: 8px;
   background: var(--danger);
   color: #fff;
-  font: 700 11px/16px var(--font);
+  font: 700 12px/16px var(--font);
   text-align: center;
 }
 html[data-side-collapsed='true'] .user-panel > .inbox-button {
@@ -5160,8 +5702,8 @@ html[data-side-collapsed='true'] .user-panel > .inbox-button {
 .markdown .mention {
   padding: 0 2px;
   border-radius: 3px;
-  color: var(--accent);
-  background: rgb(var(--accent-rgb) / 0.14);
+  color: var(--mention-text, var(--accent));
+  background: var(--mention-bg, rgb(var(--accent-rgb) / 0.14));
   transition: background var(--t-fast), color var(--t-fast);
 }
 .markdown .mention:hover {
@@ -5191,7 +5733,7 @@ html[data-side-collapsed='true'] .user-panel > .inbox-button {
   flex: none;
 }
 .markdown code {
-  border: 1px solid var(--line-raised);
+  border: 1px solid var(--code-line, var(--line-raised));
   padding: 0 3px;
 }
 .markdown pre code {
@@ -5227,8 +5769,8 @@ img.emoji {
 }
 .reaction-emoji img.emoji {
   display: block;
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
   margin: 0;
 }
 .message-actions > button.quick img.emoji,
@@ -5243,14 +5785,14 @@ img.emoji {
   place-items: center;
 }
 .emoji-cell img.emoji {
-  width: 26px;
-  height: 26px;
+  width: 40px;
+  height: 40px;
   margin: 0;
 }
 .emoji-big img.emoji {
   display: block;
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
   margin: 0;
 }
 .markdown.jumbo .paragraph {
@@ -5294,8 +5836,8 @@ img.emoji.jumbo {
 /* Code block: Discord wraps long lines in a hairline card; ours adds the language,
    an icon copy button and a fold for long pastes. */
 .codeblock pre {
-  background: rgb(255 255 255 / 0.03);
-  border: 1px solid rgb(255 255 255 / 0.08);
+  background: var(--code-bg, rgb(255 255 255 / 0.03));
+  border: 1px solid var(--code-line, rgb(255 255 255 / 0.08));
   border-radius: 8px;
   padding: 8px 12px;
 }
@@ -5303,10 +5845,12 @@ img.emoji.jumbo {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* A right float 5px inside the card's corner: the code wraps around it, so it never covers a line,
+   and its space stays reserved while it is hidden so hovering doesn't reflow the block. */
 .codeblock-tools {
-  position: absolute;
-  top: 5px;
-  right: 5px;
+  float: right;
+  margin: -3px -3px -3px 4px;
+  user-select: none;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -5460,8 +6004,8 @@ img.emoji.jumbo {
   z-index: 60;
   width: 280px;
   padding: 8px;
-  background: var(--bg-4);
-  border: 1px solid var(--line-raised);
+  background: var(--float-bg, var(--bg-4));
+  border: 1px solid var(--popout-line, var(--line-raised));
   border-radius: 8px;
   box-shadow: var(--shadow-float);
 }
@@ -5633,6 +6177,16 @@ img.emoji.jumbo {
   font: 400 12px/16px var(--font);
   color: var(--text-faint);
 }
+/* Reasoning (opt-in): Kimaki's thinking headlines, newest thought first. */
+.ws-reasoning-head { display: flex; align-items: center; justify-content: space-between; padding-right: 8px; --set-switch: 40px; --set-knob: 16px; }
+.ws-reasoning-head .ws-label { margin: 0; }
+.ws-thoughts { list-style: none; margin: 4px 0 0; padding: 0 8px; display: flex; flex-direction: column; gap: 10px; }
+.ws-thought { display: flex; flex-direction: column; gap: 4px; padding-left: 10px; border-left: 2px solid var(--line-raised); }
+.ws-thought.live { border-left-color: var(--accent); }
+.ws-thought ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.ws-thought ul li { font: 400 13px/18px var(--font); color: var(--text-muted); }
+.ws-thought ul li.latest { color: var(--text-strong); }
+.ws-thought:not(.live) ul li.latest { color: var(--text); }
 .ws-pad {
   padding: 8px;
 }
@@ -5967,7 +6521,7 @@ svg.flip {
 .container.accented {
   margin: 2px 0 0;
   padding: 16px;
-  border: 1px solid rgb(255 255 255 / 0.08);
+  border: 1px solid var(--card-surface-line, rgb(255 255 255 / 0.08));
   max-width: min(100%, 600px);
 }
 .container.accented {
@@ -5998,6 +6552,17 @@ svg.flip {
 .message-body .markdown > .subtext:only-child {
   line-height: 22px;
 }
+/* On iPhone Discord sets subtext at 14pt on a 21pt step. */
+@media (max-width: 767px) {
+  .subtext,
+  .relay,
+  .meta-line,
+  .steps-list .subtext,
+  .steps-live .subtext {
+    font-size: 14px;
+    line-height: 20px;
+  }
+}
 
 /* Cards in messages are solid (one raised step over the chat, --card-bg/--card-line from
    media.css), and an accent is a straight 4px bar: the left corners are square so the bar
@@ -6006,6 +6571,10 @@ svg.flip {
 .codeblock pre {
   background: var(--card-bg, var(--bg-3));
   border-color: var(--card-line, var(--line-raised));
+}
+.codeblock pre {
+  background: var(--code-bg, var(--card-bg, var(--bg-3)));
+  border-color: var(--code-line, var(--card-line, var(--line-raised)));
 }
 .container.accented {
   box-shadow: none;
@@ -6031,7 +6600,7 @@ svg.flip {
   bottom: 0;
   width: 4px;
   border-radius: 4px;
-  background: #45454d;
+  background: var(--quote-bar, #45454d);
 }
 
 /* Markdown source (```md blocks, .md file previews): JetBrains' editor look. */
@@ -6117,6 +6686,12 @@ svg.flip {
 }
 .model-receipt { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 2px; }
 .model-receipt > :last-child { color: var(--text-muted); font: 400 12px/18px var(--font); }
+/* The concluded /model picker: one sentence, the model and effort named once. */
+.model-conclusion { gap: 4px 6px; color: var(--text); font: 400 14px/20px var(--font); }
+.model-conclusion > .model-conclusion-mark { flex: none; color: var(--ok); }
+.model-conclusion > .model-conclusion-tail { color: var(--text-muted); font: 400 14px/20px var(--font); }
+.model-conclusion .model-badge { font-size: 13px; line-height: 18px; }
+.model-conclusion .model-name, .model-conclusion .model-effort { white-space: nowrap; max-width: none; }
 
 /* Discord parity, from a side-by-side comparison: */
 .md-gap {
@@ -6182,8 +6757,7 @@ svg.flip {
   right: 0;
   height: 24px;
   border-radius: 12px;
-  font: 700 11px/24px var(--font);
-  letter-spacing: 0.02em;
+  font: 700 12px/24px var(--font);
   text-transform: uppercase;
   text-align: center;
   cursor: pointer;
@@ -6202,9 +6776,9 @@ svg.flip {
   border: 0;
 }
 .list-pill.unreads {
-  background: var(--bg-4);
+  background: var(--pill-bg, var(--bg-4));
   color: var(--text-strong);
-  border: 1px solid var(--line-raised);
+  border: 1px solid var(--pill-line, var(--line-raised));
 }
 .list-pill:hover {
   filter: brightness(1.15);
@@ -6219,6 +6793,7 @@ svg.flip {
 .step-line.tool-read { --tool: #8ab4ff; }
 .step-line.tool-web { --tool: #e5a50a; }
 .step-line.tool-agent { --tool: #ff7ab8; }
+.step-line.failed .step-glyph { color: var(--danger-text); }
 .step-glyph {
   color: var(--tool);
   white-space: pre;
@@ -6314,9 +6889,16 @@ svg.flip {
   opacity: 0.7;
 }
 
-/* Threads panel cards: the meta line starts under the name, not under the status dot. */
+/* Threads panel cards: a 16px name over a 14px meta line, both in the body colour. The meta
+   line starts under the name, not under the status dot. */
+.side-panel .thread-row .link-title {
+  font: 600 16px/20px var(--font);
+  color: var(--text);
+}
 .side-panel .thread-row .result-where {
   padding-left: 16px;
+  font: 400 14px/18px var(--font);
+  color: var(--text);
 }
 
 /* A confirming menu keeps its question on desktop: the title says what the one item does. */
@@ -6509,9 +7091,9 @@ svg.flip {
   padding-top: min(18vh, 160px);
 }
 .switcher {
-  width: min(560px, 100%);
-  background: var(--sheet);
-  border: 1px solid var(--line-raised);
+  width: min(680px, 100%);
+  background: var(--float-bg, var(--sheet));
+  border: 1px solid var(--float-line, var(--line-raised));
   border-radius: var(--r-float);
   box-shadow: var(--shadow-float);
   display: flex;
@@ -6523,11 +7105,12 @@ svg.flip {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 16px 16px 8px;
+  margin: 20px 20px 16px;
   padding: 0 12px;
-  height: 48px;
+  height: 70px;
+  border: 1px solid var(--switcher-field-line, var(--line-raised));
   border-radius: var(--r-control);
-  background: var(--bg-0);
+  background: var(--switcher-field-bg, color-mix(in srgb, var(--sheet), #000 30%));
   color: var(--text-muted);
 }
 .switcher-field input {
@@ -6537,15 +7120,18 @@ svg.flip {
   outline: 0;
   background: transparent;
   color: var(--text-strong);
-  font: 400 18px/24px var(--font);
+  font: 400 20px/26px var(--font);
+}
+.switcher-field input::placeholder {
+  color: var(--text-faint);
 }
 .switcher-list {
   overflow-y: auto;
-  padding: 0 8px 8px;
+  padding: 0 20px 12px;
 }
 .switcher-head {
-  padding: 8px 8px 4px;
-  font: 600 12px/16px var(--font);
+  padding: 10px 10px 6px;
+  font: 600 14px/18px var(--font);
   color: var(--text-faint);
   text-transform: uppercase;
   letter-spacing: 0.02em;
@@ -6553,15 +7139,15 @@ svg.flip {
 .switcher-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
-  height: 36px;
-  padding: 0 8px;
+  height: 34px;
+  padding: 0 12px;
   border: 0;
-  border-radius: var(--r-control);
+  border-radius: var(--r-inline);
   background: transparent;
   color: var(--text-muted);
-  font: 500 15px/20px var(--font);
+  font: 500 16px/20px var(--font);
   text-align: left;
   cursor: pointer;
 }
@@ -6577,28 +7163,52 @@ svg.flip {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.switcher-hint {
+/* As Discord: the parent in small type beside the name, the server at the right edge.
+   A row that needs the owner says why in the space between. */
+.switcher-item > svg {
+  flex: none;
+}
+.switcher-label {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.switcher-sub {
+  flex: none;
+  position: relative;
+  top: 2px;
+  margin-left: -2px;
+  color: var(--text-faint);
+  font: 400 11px/14px var(--font);
+  white-space: nowrap;
+}
+.switcher-why,
+.switcher-gap {
   flex: 1;
   min-width: 0;
+}
+.switcher-why,
+.switcher-side {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-faint);
-  font: 400 13px/16px var(--font);
+  font: 400 14px/18px var(--font);
+}
+.switcher-side {
+  flex: none;
+  max-width: 160px;
 }
 .switcher-empty {
-  padding: 16px 8px;
+  padding: 16px 10px;
   color: var(--text-faint);
   font: 400 14px/18px var(--font);
 }
 .switcher-tip {
-  padding: 10px 16px 12px;
-  border-top: 1px solid var(--line-card);
+  padding: 10px 20px 12px 30px;
   color: var(--text-faint);
   font: 400 12px/16px var(--font);
 }
-.switcher-tip kbd,
-.shortcut-row kbd {
+.switcher-tip kbd {
   display: inline-block;
   padding: 1px 6px;
   border-radius: 4px;
@@ -6606,9 +7216,31 @@ svg.flip {
   color: var(--text);
   font: 600 12px/16px var(--font);
 }
+/* Shortcut sheet: one raised cap per key, capitals, with a lower lip. */
+.shortcut-row .keys {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-muted);
+  font: 400 12px/16px var(--font);
+}
+.shortcut-row kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 21px;
+  height: 23px;
+  padding: 0 6px 4px;
+  border-radius: 4px;
+  background: var(--bg-4);
+  box-shadow: inset 0 0 0 1px var(--line-raised), inset 0 -4px 0 var(--line-raised);
+  color: var(--text-strong);
+  font: 700 11px/15px var(--font);
+  text-transform: uppercase;
+}
 .shortcuts .modal-body {
   gap: 0;
-  padding-bottom: 16px;
+  padding-bottom: 24px;
 }
 .shortcut-row {
   display: flex;
@@ -6627,6 +7259,9 @@ svg.flip {
   .switcher-overlay {
     padding-top: max(12px, env(safe-area-inset-top));
   }
+  .switcher-item {
+    height: 36px;
+  }
 }
 
 /* Direct messages. The rail's Home button and a line under it; unread DMs as avatars. */
@@ -6644,9 +7279,8 @@ svg.flip {
 .rail-line {
   flex: none;
   width: 32px;
-  height: 2px;
-  border-radius: 1px;
-  background: var(--line-raised);
+  height: 1px;
+  background: var(--line-strong);
 }
 .side-title.static {
   cursor: default;
@@ -6854,13 +7488,13 @@ svg.flip {
   padding: 0 12px;
   color: var(--text);
 }
-/* Member rows are buttons: Discord's 42px rows, 8px in from the panel's edges. */
+/* Member rows are buttons: Discord's 40px rows on a 42px pitch, 8px in from the panel's edges. */
 button.member {
-  width: calc(100% - 16px);
+  width: 100%;
   min-height: 42px;
   margin: 1px 8px;
   padding: 4px 8px;
-  border-radius: 4px;
+  border-radius: var(--r-control);
   text-align: left;
   color: inherit;
   cursor: pointer;
@@ -7231,16 +7865,33 @@ html[data-chrome] :is(.overlay, .sheet-layer, .lightbox, .settings-layer) {
    bars with arrows otherwise). Lists that hide theirs keep scrollbar-width: none. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #2e2e36 transparent;
+  scrollbar-color: var(--scrollbar, #2e2e36) transparent;
 }
 
 /* Offline: a pill at the top of the window, over the header, never moving the layout. */
 .chat-history { scrollbar-gutter: stable; scrollbar-color: transparent transparent; }
-.chat-history[data-scrolling] { scrollbar-color: #44444c transparent; }
+.chat-history[data-scrolling] { scrollbar-color: var(--scrollbar-active, #44444c) transparent; }
 .chat-history[data-prepending] { overflow-anchor: none; }
 .history-edge { display: flex; justify-content: center; }
 .history-edge button { display: inline-flex; align-items: center; gap: 4px; min-height: var(--control); color: var(--text-muted); font: 500 13px/18px var(--font); }
 .history-edge svg { transform: rotate(90deg); }
+/* Discord's loading skeleton above the oldest message (f-09): an avatar circle, a name bar,
+   text bars and now and then an attachment block, in a flat grey that breathes gently. */
+.history-skeleton { padding-bottom: 16px; }
+.skeleton-message { position: relative; display: flex; flex-direction: column; gap: 8px; margin-top: 16px; padding: 2px 16px 2px var(--gutter); max-width: none; }
+.skeleton-message > i { display: block; background: var(--skeleton, rgb(255 255 255 / 0.06)); }
+.skeleton-avatar { position: absolute; left: 16px; top: 2px; width: 40px; height: 40px; border-radius: 50%; }
+.skeleton-bar { height: 14px; max-width: 480px; border-radius: 7px; }
+.skeleton-bar.name { height: 16px; border-radius: 8px; margin-top: 2px; }
+.skeleton-block { width: min(384px, 70%); height: 200px; border-radius: 8px; }
+@media (prefers-reduced-motion: no-preference) {
+  .skeleton-message > i { animation: skeleton-breathe 1.6s ease-in-out infinite; }
+  @keyframes skeleton-breathe { 50% { opacity: 0.55; } }
+}
+/* Discord's gap after a wake: the messages between two loaded stretches, loaded on request. */
+.gap-bar { display: flex; justify-content: center; margin: 8px 16px; }
+.gap-bar button { flex: 1; min-height: var(--control); border-radius: 8px; background: var(--bg-3); color: var(--text-muted); font: 600 14px/18px var(--font); }
+.gap-bar button:hover:not(:disabled) { color: var(--text); }
 @media (prefers-reduced-motion: no-preference) {
   .history-edge button:disabled svg { animation: history-edge-pull 360ms ease-out; }
   @keyframes history-edge-pull { 0% { transform: translateY(4px) rotate(90deg); } 55% { transform: translateY(-1px) rotate(90deg); } }
@@ -7332,10 +7983,10 @@ html[data-chrome] :is(.overlay, .sheet-layer, .lightbox, .settings-layer) {
 /* A forum's row: its icon centred where a channel's # sits. */
 .channel[data-nav] > .hash { width: 20px; display: inline-grid; place-items: center; }
 @media (min-width: 768px) {
-  /* Optical match to the reference at the same 32px row height. */
-  .channel[data-voice-channel] .channel-name { font-size: 15px; letter-spacing: -.22px; }
   .chat-header .crumbs:has(.crumb-parent) { flex: 1 1 auto; gap: 8px; }
-  .chat-header .crumb-parent { flex: 0 1 auto; max-width: min(18rem, 50%); min-width: 0; gap: 8px; padding: 0; margin: 0; color: var(--text-strong); }
+  /* The channel reads at body strength beside the brighter thread title (Discord: 15.1:1 beside 16.8:1; --text is 15.2:1). */
+  .chat-header .crumb-parent { flex: 0 1 auto; max-width: min(18rem, 50%); min-width: 0; gap: 8px; padding: 0; margin: 0; color: var(--text); }
+  .chat-title .title-icon { color: var(--text-faint); }
   .chat-header:has(.crumb-parent) .search-field { transition-property: background-color, border-color; }
   .crumb-parent-label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .chat-header .crumbs:has(.crumb-parent) .chat-title { flex: 1 1 0; min-width: 0; gap: 8px; }
@@ -7511,7 +8162,7 @@ html[data-chrome] :is(.overlay, .sheet-layer, .lightbox, .settings-layer) {
   height: 56px;
   border-radius: 16px;
   background: var(--ok);
-  color: #04130d;
+  color: var(--on-ok, #04130d);
   font: 600 16px/20px var(--font);
 }
 .voice-join:disabled {
@@ -7541,7 +8192,7 @@ html[data-chrome] :is(.overlay, .sheet-layer, .lightbox, .settings-layer) {
   padding: 0 8px;
   border-radius: var(--r-control);
   font: 500 14px/18px var(--font);
-  color: var(--text-muted);
+  color: var(--text-quiet);
   min-width: 0;
 }
 .voice-person .avatar {
@@ -7895,3 +8546,66 @@ html[data-voice='on'] .side-main {
   .selection-controls .button, .delete-review .button { min-height: 44px; }
 }
 @media (max-width: 767px) { .selection-dock { margin-bottom: max(8px, env(safe-area-inset-bottom)); } }
+
+/* A message on its way to the hub: dimmed, as on Discord, and not yet something to act on. */
+.message.sending { opacity: 0.5; pointer-events: none; }
+/* Threads, Pinned and Inbox float on desktop as Discord's popouts, hung from their trigger
+   (Panels.tsx places them): height follows the content, the chat keeps its width underneath. */
+@media (min-width: 768px) {
+  .side-panel.popout {
+    position: fixed;
+    right: auto;
+    z-index: 35;
+    width: min(var(--pop-w), calc(100vw - 16px));
+    max-height: min(730px, var(--pop-room, 100dvh));
+    border: 1px solid var(--popout-line, var(--line-raised));
+    border-radius: var(--r-control);
+    box-shadow: var(--shadow-float);
+    overflow: hidden;
+  }
+  .side-panel.popout::before,
+  .popout .panel-close {
+    display: none;
+  }
+  .threads-panel.popout {
+    --pop-w: 556px;
+  }
+  .pins-panel.popout {
+    --pop-w: 422px;
+  }
+  .inbox-panel.popout {
+    --pop-w: 562px;
+  }
+  .popout .panel-head {
+    padding: 0 16px;
+    gap: 8px;
+    border-bottom-color: var(--line-card);
+  }
+  .pins-panel.popout .panel-head,
+  .inbox-panel.popout .panel-head {
+    height: 56px;
+  }
+  .popout .panel-body {
+    flex: 0 1 auto;
+    min-height: 0;
+    padding: 4px 16px 16px;
+  }
+  .threads-panel.popout .panel-title {
+    flex: none;
+  }
+  /* Discord's Threads header: title, a rule, the search field, Create at the right. */
+  .threads-panel.popout .panel-search {
+    flex: none;
+    width: 296px;
+    margin-left: 8px;
+    padding: 0 0 0 16px;
+    border-left: 1px solid var(--line-card);
+  }
+  .threads-panel.popout .thread-create {
+    margin-left: auto;
+    font: 600 14px/18px var(--font);
+  }
+  .popout .panel-section {
+    padding: 0;
+  }
+}

@@ -220,7 +220,7 @@ export class ClientEvents {
           } catch {
             return
           }
-          if (message.op !== 'focus' || !message.d) return
+          if (message?.op !== 'focus' || !message.d) return
           const channelId = message.d.channel_id
           connection.channelId = typeof channelId === 'string' && /^\d{1,20}$/.test(channelId) ? channelId : null
           connection.visible = message.d.visible !== false

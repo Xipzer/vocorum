@@ -1,10 +1,12 @@
+import { Icon } from './icons.tsx'
+
 // The model and its optional effort travel together. Keep the exact identifier
 // available even when the visible model name is easier to read.
-type Model = { id: string; effort?: string; source: string }
+type Model = { id: string; effort?: string; source: string; name?: string }
 
-export function ModelBadge({ id, effort, source }: Model) {
+export function ModelBadge({ id, effort, source, name: shown }: Model) {
   const gpt = /^gpt-(\d+(?:\.\d+)*)(?:-([a-z][a-z\d-]*))?$/i.exec(id)
-  const name = gpt ? `GPT-${gpt[1]}${gpt[2] ? ' ' + gpt[2].split('-').map((s) => s[0]!.toUpperCase() + s.slice(1)).join(' ') : ''}` : id
+  const name = shown ?? (gpt ? `GPT-${gpt[1]}${gpt[2] ? ' ' + gpt[2].split('-').map((s) => s[0]!.toUpperCase() + s.slice(1)).join(' ') : ''}` : id)
   return <span className="model-badge" title={source}><span className="model-name">{name}</span>{effort && <> <span className="model-effort">{effort}</span></>}</span>
 }
 
@@ -20,14 +22,47 @@ export function footerModel(items: string[]): { at: number; model: Model } | nul
   return { at, model: { id: m[1]!, effort: m[2], source } }
 }
 
-// Recognise only a finished /model reply whose display and raw ID agree.
-// Unknown formats, errors and intermediate wizard steps keep the bot's words.
-export function modelReceipt(text: string) {
+// Kimaki follows a session switch with "-# Switched model to Claude Opus 5.5 (high)".
+export function switchedLine(text: string) {
+  const m = /^-# Switched model to (.+?)(?: \(([\w-]+)\))?$/.exec(text.trim())
+  return m ? { name: m[1]!, effort: m[2] } : null
+}
+
+const SCOPES = {
+  'Model set for this session:': { lead: 'Switched to', tail: 'this session' },
+  'Model preference set for this channel:': { lead: 'New sessions use', tail: 'this channel' },
+  'Model preference set for all channels:': { lead: 'New sessions use', tail: 'all channels' },
+} as const
+
+function parseReceipt(text: string) {
   const lines = text.trim().split('\n')
   if (lines.length !== 4) return null
-  const scope = lines[0] === 'Model set for this session:' ? 'This session' : lines[0] === 'Model preference set for this channel:' ? 'This channel' : lines[0] === 'Model preference set for all channels:' ? 'All channels' : null
+  const scope = SCOPES[lines[0] as keyof typeof SCOPES]
   const display = /^\*\*([^*]+)\*\* \/ \*\*([^*]+)\*\*(?: \(([\w-]+)\))?$/.exec(lines[1]!)
   const raw = /^`([^`]+)`$/.exec(lines[2]!)?.[1]
   if (!scope || !display || !raw || !raw.endsWith(`/${display[2]}${display[3] ? ` (${display[3]})` : ''}`) || !lines[3]) return null
-  return <div className="model-receipt"><ModelBadge id={display[2]!} effort={display[3]} source={raw} /><span>{scope} · {lines[3] === 'Applies from the next step.' ? 'from the next step' : lines[3]}</span></div>
+  return { scope, id: display[2]!, effort: display[3], raw, note: lines[3], text: lines.join('\n') }
+}
+
+// The /model reply that a matching "Switched model to" line can fold into.
+export function isModelReceipt(text: string) {
+  return parseReceipt(text) !== null
+}
+
+// Recognise only a finished /model reply whose display and raw ID agree.
+// Unknown formats, errors and intermediate wizard steps keep the bot's words.
+// One sentence: what is in use, where, and from when. The friendly name from
+// Kimaki's follow-up line replaces the ID when that line was folded in.
+export function modelReceipt(text: string, switched?: { name: string; effort?: string } | null) {
+  const r = parseReceipt(text)
+  if (!r) return null
+  const name = switched && switched.effort === r.effort ? switched.name : undefined
+  return (
+    <div className="model-receipt model-conclusion" title={`${r.text.replace(/\*\*|`/g, '')}${switched ? `\nSwitched model to ${switched.name}${switched.effort ? ` (${switched.effort})` : ''}` : ''}`}>
+      <Icon name="check" size={16} className="model-conclusion-mark" />
+      <span>{r.scope.lead}</span>
+      <ModelBadge id={r.id} effort={r.effort} source={r.raw} name={name} />
+      <span className="model-conclusion-tail">· {r.scope.tail}</span>
+    </div>
+  )
 }

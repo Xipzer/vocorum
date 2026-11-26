@@ -1,21 +1,53 @@
 // Voice channels, as Discord's: a sidebar row with who is in it, a call screen with one tile
 // per person (a ring while they speak), and a control bar to talk, deafen, set audio and
 // leave. While connected, a strip above the user panel says where, with the same controls.
+// The channel's own chat sits beside the call (Discord's "Show chat"): a pane on desktop, a
+// full-height panel on phones, where a pill under the header keeps the call in reach elsewhere.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Avatar } from './Avatar.tsx'
 import type { Channel, HubState, VoiceState } from './api.ts'
 import { E } from './emoji.tsx'
 import { Icon } from './icons.tsx'
+import { extensions } from './extensions.tsx'
 import { can, P } from './perms.ts'
 import { Sheet, below, type SheetAction, type SheetSpec } from './Sheet.tsx'
 import { canPickOutput, join, leave, outputs, setDeaf, setMute, setNoise, setOutput, useVoice, type VoiceUi } from './voice.ts'
+import './voice-room.css'
 
 export const inVoice = (state: HubState, channelId: string) => (state.voice_states ?? []).filter((v) => v.channel_id === channelId)
 const connectionLabel = (v: VoiceUi) => v.status === 'connecting' ? 'Connecting…' : v.listenOnly ? 'Voice connected · Listen-only' : 'Voice connected'
 const nameOf = (state: HubState, id: string) => {
   const u = state.users.find((x) => x.id === id)
   return u ? (u.global_name ?? u.username) : 'Someone'
+}
+
+function useMedia(query: string) {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches)
+  useEffect(() => {
+    const media = window.matchMedia(query)
+    const change = () => setMatches(media.matches)
+    change()
+    media.addEventListener('change', change)
+    return () => media.removeEventListener('change', change)
+  }, [query])
+  return matches
+}
+
+// How long this device has been in the call.
+function Elapsed({ since }: { since: number }) {
+  const [, tick] = useState(0)
+  useEffect(() => {
+    const id = window.setInterval(() => tick((n) => n + 1), 1000)
+    return () => window.clearInterval(id)
+  }, [])
+  const s = Math.max(0, Math.floor((Date.now() - since) / 1000))
+  const two = (n: number) => String(n).padStart(2, '0')
+  return (
+    <span className="num" role="timer" aria-label="Call time">
+      {s >= 3600 ? `${Math.floor(s / 3600)}:${two(Math.floor((s % 3600) / 60))}` : Math.floor(s / 60)}:{two(s % 60)}
+    </span>
+  )
 }
 
 // Under a voice channel in the sidebar: who is in it.
@@ -81,11 +113,17 @@ async function settingsSheet(at: SheetSpec['at'], voice: VoiceUi): Promise<Sheet
 }
 
 // The controls: mute, deafen, settings, leave; or mute and Join before joining.
-function Controls({ state, channel, here }: { state: HubState; channel: Channel; here: boolean }) {
+function Controls({ state, channel, here, chat }: { state: HubState; channel: Channel; here: boolean; chat?: { open: boolean; toggle: () => void } }) {
   const voice = useVoice()
   const [sheet, setSheet] = useState<SheetSpec | null>(null)
   const canSpeak = can(P.SPEAK, channel)
   const micOff = voice.mute || voice.listenOnly || !canSpeak
+  // Phones only: on desktop the header's button shows the chat.
+  const chatButton = chat && (
+    <button className="voice-button phone-chat" onClick={chat.toggle} aria-label={chat.open ? 'Hide chat' : 'Show chat'}>
+      <Icon name="chat" size={24} />
+    </button>
+  )
   return (
     <div className="voice-controls" role="toolbar" aria-label="Voice controls">
       <button className={`voice-button${micOff ? ' off' : ''}`} onClick={() => setMute(!voice.mute)} aria-pressed={micOff} aria-label={micOff ? 'Unmute' : 'Mute'} title={micOff ? 'Unmute' : 'Mute'} disabled={voice.listenOnly && here}>
@@ -96,6 +134,7 @@ function Controls({ state, channel, here }: { state: HubState; channel: Channel;
           <button className={`voice-button${voice.deaf ? ' off' : ''}`} onClick={() => setDeaf(!voice.deaf)} aria-pressed={voice.deaf} aria-label={voice.deaf ? 'Undeafen' : 'Deafen'} title={voice.deaf ? 'Undeafen' : 'Deafen'}>
             <Icon name={voice.deaf ? 'headphones-off' : 'headphones'} size={24} />
           </button>
+          {chatButton}
           <button className="voice-button" onClick={(e) => void settingsSheet(below(e.currentTarget), voice).then(setSheet)} aria-label="Voice settings" title="Voice settings">
             <Icon name="gear" size={24} />
           </button>
@@ -104,9 +143,12 @@ function Controls({ state, channel, here }: { state: HubState; channel: Channel;
           </button>
         </>
       ) : (
-        <button className="voice-join" onClick={() => void join(channel.id, state.me.id)} disabled={voice.status === 'connecting'}>
+        <>
+          {chatButton}
+          <button className="voice-join" onClick={() => void join(channel.id, state.me.id)} disabled={voice.status === 'connecting'}>
           {voice.channelId && voice.channelId !== channel.id ? 'Move here' : 'Join voice'}
-        </button>
+          </button>
+        </>
       )}
       {sheet && <Sheet spec={sheet} onClose={() => setSheet(null)} />}
     </div>
@@ -114,12 +156,35 @@ function Controls({ state, channel, here }: { state: HubState; channel: Channel;
 }
 
 // The call screen for a voice channel.
-export function VoiceView({ channel, state, onMenu }: { channel: Channel; state: HubState; onMenu: () => void }) {
+const CHAT_KEY = 'voice:chat'
+export function VoiceView({ channel, state, onMenu, chat }: { channel: Channel; state: HubState; onMenu: () => void; chat?: (onClose: () => void) => ReactNode }) {
   const voice = useVoice()
+  // Where side panels lie over the page (phones, narrow windows) the call keeps the screen:
+  // the chat opens over it when asked, and closes again.
+  const over = useMedia('(max-width: 1100px)')
+  const [sheet, setSheet] = useState(false)
+  // Beside the call, the choice is remembered on this device; until one is made, a room
+  // with messages shows them.
+  const [choice, setChoice] = useState(() => localStorage.getItem(CHAT_KEY))
+  const docked = choice ? choice === '1' : Boolean(channel.last_message_id)
+  const chatOpen = Boolean(chat) && (over ? sheet : docked)
+  const showChat = (open: boolean) => {
+    if (over) return setSheet(open)
+    localStorage.setItem(CHAT_KEY, open ? '1' : '0')
+    setChoice(open ? '1' : '0')
+  }
   const here = voice.channelId === channel.id && voice.status !== 'idle'
   const people = inVoice(state, channel.id)
   // Before the hub confirms the join, this device shows itself at once.
   const tiles = here && !people.some((v) => v.user_id === state.me.id) ? [...people, { user_id: state.me.id, channel_id: channel.id, self_mute: voice.mute, self_deaf: voice.deaf }] : people
+  // Every extension's hook runs on every render (the list never changes); the first stage offered wins.
+  const stage =
+    extensions
+      .map((e) => {
+        const node = e.useVoiceStage?.({ channel, state, here }) ?? null
+        return !e.ownerOnly || state.hub_owner === true ? node : null
+      })
+      .find((node) => node !== null) ?? null
   return (
     <section className="chat voice-view">
       <header className="chat-header">
@@ -138,31 +203,61 @@ export function VoiceView({ channel, state, onMenu }: { channel: Channel; state:
           </div>
           <span className="chat-sub">{here ? connectionLabel(voice) : people.length ? `${people.length} in voice` : 'Voice channel'}</span>
         </div>
-      </header>
-      <div className="voice-stage">
-        {tiles.length === 0 ? (
-          <div className="voice-empty">
-            <b>No one’s here yet</b>
-            <span>When you’re ready to talk, just hop in.</span>
-          </div>
-        ) : (
-          <div className={`voice-tiles n${Math.min(tiles.length, 4)}`}>
-            {tiles.map((v) => (
-              <div key={v.user_id} className={`voice-tile${voice.speaking[v.user_id] ? ' speaking' : ''}`}>
-                <Avatar id={v.user_id} name={nameOf(state, v.user_id)} size="panel" version={state.users.find((u) => u.id === v.user_id)?.avatar} />
-                <Activity state={state} id={v.user_id} speaking={Boolean(voice.speaking[v.user_id])} tile />
-                <span className="voice-tile-name">
-                  <StateIcons v={v} />
-                  <E>{nameOf(state, v.user_id)}</E>
-                </span>
-              </div>
-            ))}
-          </div>
+        {chat && (
+          <span className="chat-actions">
+            <button className="icon-button desk-only" onClick={() => showChat(!chatOpen)} aria-pressed={chatOpen} aria-label={chatOpen ? 'Hide chat' : 'Show chat'} title={chatOpen ? 'Hide chat' : 'Show chat'}>
+              <Icon name="chat" />
+            </button>
+          </span>
         )}
-      </div>
+      </header>
+      <div className="voice-room">
+      <div className="voice-main">
+      {stage ?? (
+        <div className="voice-stage">
+          {tiles.length === 0 ? (
+            <div className="voice-empty">
+              <b>No one’s here yet</b>
+              <span>When you’re ready to talk, just hop in.</span>
+            </div>
+          ) : (
+            <div className={`voice-tiles n${Math.min(tiles.length, 4)}`}>
+              {tiles.map((v) => (
+                <div key={v.user_id} className={`voice-tile${voice.speaking[v.user_id] ? ' speaking' : ''}`}>
+                  <Avatar id={v.user_id} name={nameOf(state, v.user_id)} size="panel" version={state.users.find((u) => u.id === v.user_id)?.avatar} />
+                  <Activity state={state} id={v.user_id} speaking={Boolean(voice.speaking[v.user_id])} tile />
+                  <span className="voice-tile-name">
+                    <StateIcons v={v} />
+                    <E>{nameOf(state, v.user_id)}</E>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {voice.error && (voice.channelId === channel.id || !voice.channelId) && <div className="voice-error" role="alert">{voice.error}</div>}
       <div className="voice-dock-bar">
-        <Controls state={state} channel={channel} here={here} />
+        <Controls state={state} channel={channel} here={here} chat={chat && { open: chatOpen, toggle: () => showChat(!chatOpen) }} />
+      </div>
+      </div>
+      {chat && chatOpen && (
+        <aside className="side-panel voice-chat" role="complementary" aria-label="Chat">
+          <header className="panel-head">
+            <button className="icon-button panel-back" onClick={() => showChat(false)} aria-label="Close panel">
+              <Icon name="back" size={22} />
+            </button>
+            <Icon name="speaker" size={20} className="panel-icon" />
+            <div className="panel-title">
+              <E>{channel.name}</E>
+            </div>
+            <button className="icon-button panel-close" onClick={() => showChat(false)} aria-label="Close">
+              <Icon name="close" size={18} />
+            </button>
+          </header>
+          {chat(() => showChat(false))}
+        </aside>
+      )}
       </div>
     </section>
   )
@@ -185,7 +280,10 @@ export function VoiceStrip({ state, onOpen }: { state: HubState; onOpen: (id: st
       <button className="voice-strip-where" onClick={() => channel && onOpen(channel.id)}>
         <span className={`voice-strip-status${voice.status === 'connecting' ? ' connecting' : ''}`}>{connectionLabel(voice)}</span>
         <span className="voice-strip-channel">
-          <E>{channel?.name ?? 'Voice'}</E> / {guild}
+          <span className="voice-strip-place">
+            <E>{channel?.name ?? 'Voice'}</E> / {guild}
+          </span>
+          {voice.since && <span className="voice-strip-time">· <Elapsed since={voice.since} /></span>}
         </span>
       </button>
       <button className={`icon-button${micOff ? ' off' : ''}`} onClick={() => setMute(!voice.mute)} disabled={voice.listenOnly} aria-label={micOff ? 'Unmute' : 'Mute'} title={micOff ? 'Unmute' : 'Mute'}>
@@ -195,6 +293,37 @@ export function VoiceStrip({ state, onOpen }: { state: HubState; onOpen: (id: st
         <Icon name={voice.deaf ? 'headphones-off' : 'headphones'} size={20} />
       </button>
       <button className="icon-button leave" onClick={leave} aria-label="Leave voice" title="Leave voice">
+        <Icon name="hangup" size={20} />
+      </button>
+    </div>
+  )
+}
+
+// Phones, while connected and looking at anything but the room: the call under the header.
+// The room's name returns to it; mute and leave are in reach.
+export function CallPill({ state, current, onOpen }: { state: HubState; current: string | null; onOpen: (id: string) => void }) {
+  const voice = useVoice()
+  const phone = useMedia('(max-width: 767px)')
+  const id = voice.status === 'idle' ? null : voice.channelId
+  if (!phone || !id || id === current) return null
+  const channel = state.channels.find((c) => c.id === id)
+  const micOff = voice.mute || voice.listenOnly
+  return (
+    <div className="voice-strip call-pill" role="group" aria-label="Voice call" data-swipe="off">
+      <button className="voice-strip-where" onClick={() => onOpen(id)} aria-label={`Return to ${channel?.name ?? 'voice'}`}>
+        <span className={`voice-strip-status${voice.status === 'connecting' ? ' connecting' : ''}`}>
+          <E>{channel?.name ?? 'Voice'}</E>
+        </span>
+        {voice.since && (
+          <span className="voice-strip-channel">
+            <Elapsed since={voice.since} />
+          </span>
+        )}
+      </button>
+      <button className={`icon-button${micOff ? ' off' : ''}`} onClick={() => setMute(!voice.mute)} disabled={voice.listenOnly} aria-label={micOff ? 'Unmute' : 'Mute'}>
+        <Icon name={micOff ? 'mic-off' : 'mic'} size={20} />
+      </button>
+      <button className="icon-button leave" onClick={leave} aria-label="Leave voice">
         <Icon name="hangup" size={20} />
       </button>
     </div>

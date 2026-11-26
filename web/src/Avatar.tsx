@@ -2,7 +2,7 @@
 // `version` is the user's avatar hash: a new one refetches. Without one (pictures set
 // before the hub kept hashes) it still tries, and falls back to the initial on a 404.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import { dmName, dmUser, useStore } from './store.ts'
 import type { Channel } from './api.ts'
 
@@ -13,8 +13,24 @@ export function forgetMissingImages() {
   missing.clear()
 }
 
+// Pictures an edition has for a user itself (on this device only), used before the hub's.
+const known = new Map<string, string>()
+const knownListeners = new Set<() => void>()
+export function setKnownPicture(id: string, src: string | null) {
+  if ((known.get(id) ?? null) === src) return
+  if (src) known.set(id, src)
+  else known.delete(id)
+  for (const l of knownListeners) l()
+}
+const useKnownPicture = (id: string) =>
+  useSyncExternalStore(
+    (l) => (knownListeners.add(l), () => knownListeners.delete(l)),
+    () => known.get(id) ?? null,
+  )
+
 export function Avatar({ id, name, size, version, src: override }: { id: string; name: string; size: 'inline' | 'panel'; version?: string | null; src?: string | null }) {
-  const src = override ?? `/client/avatars/${id}${version ? `?v=${version}` : ''}`
+  const mine = useKnownPicture(id)
+  const src = override ?? mine ?? `/client/avatars/${id}${version ? `?v=${version}` : ''}`
   const [failed, setFailed] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [retry, setRetry] = useState(0)

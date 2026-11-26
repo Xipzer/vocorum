@@ -9,8 +9,10 @@ import { highlight } from './highlight.tsx'
 import { Icon } from './icons.tsx'
 import { Markdown, type MarkdownContext } from './markdown.tsx'
 import { bytes, Lightbox } from './Media.tsx'
-import { snowflakeGt, store, useStore } from './store.ts'
+import { machineName, snowflakeGt, store, useStore } from './store.ts'
 import { plain } from './text.ts'
+import { reasoningShown, showReasoning, useThoughts } from './reasoning.ts'
+import { Switch } from './SettingsKit.tsx'
 
 export type Jump = (channelId: string, messageId: string) => void
 
@@ -154,6 +156,7 @@ export function WorkspacePanel({ channelId, ctx, onClose, onJump, onOpen, onServ
       </header>
       <div className="panel-body ws-body">
         {thread && [10, 11, 12].includes(thread.type) && can(P.READ_MESSAGE_HISTORY, thread) ? <AgentBoard key={channelId} thread={channelId} ctx={{ ...ctx, openMessage: onJump }} writable={!outputOnly && !thread.thread_metadata?.archived && !thread.thread_metadata?.locked && can(P.SEND_MESSAGES_IN_THREADS, thread)} onCarrier={setBoardMessage} onCorrect={() => { if (window.matchMedia('(max-width: 767px)').matches) onClose() }}>{derivedNow}</AgentBoard> : derivedNow}
+        {thread && [10, 11, 12].includes(thread.type) && <Reasoning channelId={channelId} />}
         {waiting.length > 0 && (
           <Section title="Waiting on you" count={waiting.length}>
             {waiting.slice(0, 6).map((m) => (
@@ -202,7 +205,7 @@ export function WorkspacePanel({ channelId, ctx, onClose, onJump, onOpen, onServ
                 <button key={link.id} className="ws-row" onClick={() => onOpen(link.id)}>
                   <i className={`st ${s?.state ?? 'idle'}`} />
                   <span className="ws-row-text">{t ? plain(t.name ?? '') : 'A thread not on this hub'}</span>
-                  <span className="ws-meta">{s?.machine ?? ''}</span>
+                  <span className="ws-meta">{s?.machine ? machineName(s.machine) : ''}</span>
                 </button>
               )
             })}
@@ -221,6 +224,38 @@ export function WorkspacePanel({ channelId, ctx, onClose, onJump, onOpen, onServ
         )}
       </div>
     </aside>
+  )
+}
+
+// Opt-in: the agent's thinking headlines as Kimaki streams them. Off by default,
+// because it is a running commentary, not a result.
+function Reasoning({ channelId }: { channelId: string }) {
+  const thoughts = useThoughts(channelId)
+  const on = reasoningShown()
+  const live = thoughts.findLast((t) => t.live)
+  return (
+    <section className={`ws-section ws-reasoning${on ? ' on' : ''}`}>
+      <div className="ws-reasoning-head">
+        <h3 className="ws-label">Reasoning</h3>
+        <Switch label="Show reasoning" checked={on} onChange={showReasoning} />
+      </div>
+      {!on ? (
+        <div className="ws-meta ws-pad">{live ? `Thinking for ${live.seconds}s. ` : ''}Turn on to follow the agent's thinking headlines.</div>
+      ) : thoughts.length === 0 ? (
+        <div className="ws-meta ws-pad">Nothing yet. Kimaki shares a headline while the model thinks and removes it when the thought ends, so only what arrives while this page is open appears here.</div>
+      ) : (
+        <ol className="ws-thoughts">
+          {[...thoughts].reverse().map((t) => (
+            <li key={t.id} className={`ws-thought${t.live ? ' live' : ''}`}>
+              <span className="ws-meta">{t.live ? `Thinking · ${t.seconds}s` : `Thought for ${t.seconds}s`} · {ago(t.id)}</span>
+              {t.headlines.length ? (
+                <ul>{t.headlines.map((h, i) => <li key={i} className={i === t.headlines.length - 1 ? 'latest' : undefined}>{h}</li>)}</ul>
+              ) : <span className="ws-meta">No headline shared</span>}
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
   )
 }
 
