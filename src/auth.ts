@@ -105,7 +105,7 @@ export class HubAuth {
   checkTailscale(req: http.IncomingMessage): string {
     const login = req.headers['tailscale-user-login']
     if (typeof login !== 'string' || !this.options.tailscaleLogins().has(login)) {
-      throw new HttpError(403, 'Forbidden: this hub is only reachable through tailscale serve by its people')
+      throw new HttpError(403, 'Forbidden: this hub only opens on a paired device, at its app address')
     }
     return login
   }

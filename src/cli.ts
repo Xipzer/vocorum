@@ -500,7 +500,8 @@ async function main() {
       return
     }
     case 'private off': {
-      requireConfig()
+      // Without the listener, only localhost reaches the hub: unless it is open there, nobody could get in.
+      if (requireConfig().localAccess !== 'open') throw new Error('Nothing changed: without the private listener no browser could reach this hub. Open it on this computer first: vocorum config set localAccess open')
       initHub(paths, { privateListener: null })
       console.log('Private listener off. Restart the hub to apply. The CA stays in place for a later setup.')
       return

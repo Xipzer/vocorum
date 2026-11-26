@@ -7,7 +7,7 @@ import http from 'node:http'
 import { afterAll, beforeAll, expect, test } from 'vitest'
 import { initHub } from '../src/config.ts'
 import { Hub } from '../src/hub.ts'
-import { LOGIN, startTestHub } from './helpers.ts'
+import { LOGIN, pairedDevice, startTestHub } from './helpers.ts'
 
 let t: Awaited<ReturnType<typeof startTestHub>>
 let closed: Awaited<ReturnType<typeof startTestHub>>
@@ -113,4 +113,38 @@ test('turning open access off is refused while no device could reach the hub', a
   expect(await cli(['config', 'set', 'localAccess', 'off'])).toMatch(/refused: .*no browser could reach this hub/s)
   expect(await cli(['config', 'get', 'localAccess'])).toBe('open\n')
   expect(await cli(['config', 'set', 'localAccess', 'sometimes'])).toMatch(/refused: .*open .* or off/s)
+})
+
+test('doctor names the security level, and the listener cannot be removed from a hub that would lock everyone out', async () => {
+  const { securityLevel } = await import('../src/doctor.ts')
+  const base = { localAccess: null, tailscaleLogin: null, privateListener: null } as const
+  const listener = (address: string) => ({ address, port: 47443, httpPort: null, names: ['hub.home.arpa'], allowedCidrs: [] })
+  expect(securityLevel({ ...t.config, ...base, localAccess: 'open' })).toMatch(/^level 1 of 4/)
+  expect(securityLevel({ ...t.config, ...base, localAccess: 'open', privateListener: listener('100.101.102.103') })).toMatch(/^level 2 of 4/)
+  expect(securityLevel({ ...t.config, ...base, privateListener: listener('100.101.102.103') })).toMatch(/^level 3 of 4.*tailscaleLogin/)
+  expect(securityLevel({ ...t.config, ...base, privateListener: listener('10.0.0.5') })).toBe('level 3 of 4, every browser pairs')
+  expect(securityLevel({ ...t.config, ...base, tailscaleLogin: 'me@example.org', privateListener: listener('100.101.102.103') })).toMatch(/^level 4 of 4/)
+
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const cli = (args: string[]) => promisify(execFile)(process.execPath, ['bin/vocorum.js', ...args], { env: { ...process.env, VOCORUM_DIR: closed.paths.root } }).then((r) => r.stdout, (e: { stderr: string }) => `refused: ${e.stderr}`)
+  expect(await cli(['private', 'off'])).toMatch(/refused: .*localAccess open/s)
+})
+
+test('this computer is not closed before one of the owner\'s devices has finished pairing', async () => {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const u = await startTestHub()
+  try {
+    initHub(u.paths, { localAccess: 'open', privateListener: { address: '127.0.0.1', port: 0, httpPort: 0, names: ['hub.home.arpa'], allowedCidrs: ['127.0.0.0/8'] } })
+    const cli = (args: string[]) => promisify(execFile)(process.execPath, ['bin/vocorum.js', ...args], { env: { ...process.env, VOCORUM_DIR: u.paths.root } }).then((r) => r.stdout, (e: { stderr: string }) => `refused: ${e.stderr}`)
+    // A code issued but never used, and this computer's own shared device, do not count.
+    await u.hub.store.createPairing('laptop')
+    await u.hub.auth.localSession(u.config.ownerUserId)
+    expect(await cli(['config', 'set', 'localAccess', 'off'])).toMatch(/refused: .*finished pairing/s)
+    await pairedDevice(u.hub, 'laptop')
+    expect(await cli(['config', 'set', 'localAccess', 'off'])).toMatch(/localAccess set/)
+  } finally {
+    await u.cleanup()
+  }
 })

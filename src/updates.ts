@@ -133,6 +133,16 @@ async function pnpmPath(repo: string): Promise<string> {
   throw new Error('pnpm is not installed where the hub can find it. Run: corepack enable')
 }
 
+// The checkout has a commit newer than its build (pulled by hand without building), so the
+// hub would run old code. A folder without git, or not built at all, is not "stale".
+export async function staleBuild(repo: string): Promise<boolean> {
+  if (!fs.existsSync(path.join(repo, '.git'))) return false
+  const times = ['dist/hub.mjs', 'web/dist/index.html'].map((f) => fs.statSync(path.join(repo, f), { throwIfNoEntry: false })?.mtimeMs)
+  if (times.some((t) => t === undefined)) return false
+  const committed = Number(await git(repo, ['log', '-1', '--format=%ct']).catch(() => '0')) * 1000
+  return committed > Math.min(...(times as number[]))
+}
+
 // Builds the app and the hub bundle (vocorum setup on a fresh clone, and every update).
 export async function build(repo: string, { install = true } = {}) {
   const searchPath = await pnpmPath(repo)
@@ -217,6 +227,8 @@ export class Updates {
     // A restart from the app's own update can end the updater before it wrote its last line.
     const last = load(this.paths).run
     if (last?.status === 'running' && last.step === 'restart') void git(this.repo, ['rev-parse', 'HEAD']).then((head) => head === last.to && save(this.paths, { run: { ...last, status: 'done', step: 'done', finished_at: Date.now() } }), () => {})
+    // The admin agent's rules and limits belong to the version that runs: an update brings new ones.
+    if (this.hub.options.config.adminGuildId) void import('./admin.ts').then(({ writeWorkspace }) => writeWorkspace(this.paths)).catch(() => {})
     if (this.mode === 'off') return
     // Shortly after start, then every six hours. One request each; never keeps the process alive.
     const tick = () => void this.check().catch(() => {})

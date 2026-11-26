@@ -36,6 +36,8 @@ Every command is safe to run twice.
   `vocorum discord status`. A job in your shell dies when your session ends.
 - **Run `vocorum doctor --json` after every step.** It names each problem and
   the command that fixes it.
+- **Security levels.** To check or change how locked down a hub is, follow
+  `.agents/skills/vocorum-security/SKILL.md`.
 - **Trying it on one computer.** To let someone try Vocorum on one computer, use
   `vocorum setup --open` and first tell them: only this computer can reach it, and
   anyone or any program on this computer can read and post. Never add `--address`

@@ -213,8 +213,10 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
   if (!nodeSupported()) throw new Error(`Vocorum needs Node.js ${NODE_MIN} or newer (this is ${process.versions.node}).`)
   // A fresh clone: setup builds it, so the first command is the only one.
   const unbuilt = !fs.existsSync(path.join(options.repo, 'dist/hub.mjs')) || !fs.existsSync(path.join(options.repo, 'web/dist/index.html'))
-  if (unbuilt && !options.dryRun) {
-    if (!options.json) console.log('First run: building the app. This takes a moment.')
+  // Pulled by hand without building: the running hub would keep the old code.
+  const stale = !unbuilt && (await (await import('./updates.ts')).staleBuild(options.repo))
+  if ((unbuilt || stale) && !options.dryRun) {
+    if (!options.json) console.log(unbuilt ? 'First run: building the app. This takes a moment.' : 'The code is newer than its build: building it again.')
     const { build, CommandError } = await import('./updates.ts')
     await build(options.repo).catch((error: Error) => {
       const tail = error instanceof CommandError ? `\n${error.output.trim().split('\n').slice(-8).join('\n')}\n` : ''
@@ -254,7 +256,7 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
   const publicUrl = listener ? `https://${listener.names[0]}:${listener.port}` : null
 
   const plan = [
-    unbuilt ? 'build the app first (it has not been built in this folder yet)' : '',
+    unbuilt ? 'build the app first (it has not been built in this folder yet)' : stale ? 'build the app again (the code is newer than its build) and restart the hub' : '',
     `state in ${paths.root}${existing ? ' (exists, kept)' : ''}, hub port ${hubPort}`,
     ...notes,
     listener ? `HTTPS for your devices on ${listener.address}:${listener.port} and a setup page on ${listener.address}:${listener.httpPort}, only from ${listener.allowedCidrs.join(', ')} (${['127.0.0.1', '::1'].includes(listener.address) ? 'this computer only' : kept ? 'as before' : network.kind}); never the internet` : localOnly ? '' : 'no private network found: the hub stays on this machine only (pass --address <private ip> to change that)',
@@ -290,7 +292,8 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
 
   // 4. private listener (same as `vocorum private setup`)
   // A running hub reads its settings at start: turning open access on restarts it like a new listener does.
-  let listenerChanged = options.open === true && existing !== null && existing.localAccess !== 'open'
+  // A new build restarts it too.
+  let listenerChanged = stale || (options.open === true && existing !== null && existing.localAccess !== 'open')
   if (listener) {
     const same = JSON.stringify(existing?.privateListener ?? null) === JSON.stringify(listener)
     const { PrivateListener } = await import('./private-listener.ts')

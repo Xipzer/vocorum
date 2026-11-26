@@ -31,7 +31,7 @@ Each step adds to what you have. Your messages stay.
 
 - **Your Discord history:** see [Move from Discord](migrate-from-discord.md). It works the same on an open hub.
 - **Your phone or another computer:** run `vocorum setup`. It shows which private address it will open and asks before it does. Then it prints a pairing link. Each device installs the hub's certificate once and makes its own passkey, as in [Install](install.md). This computer stays open at http://localhost. If this computer is on Tailscale, setup uses its Tailscale address, and your devices must be signed in to the same Tailscale account; the plan says so.
-- **Pairing on this computer too:** run `vocorum config set localAccess off`, then `vocorum restart`. From then on this computer pairs like any other device, at the hub's own address. Add your devices with `vocorum setup` first: until then the command refuses, because no browser could reach the hub.
+- **Pairing on this computer too:** run `vocorum config set localAccess off`, then `vocorum restart`. From then on this computer pairs like any other device, at the hub's own address. Add a device with `vocorum setup` and finish pairing it first: until then the command refuses, because no browser could get in.
 - **Open again:** `vocorum config set localAccess open`, then `vocorum restart`.
 
 [Security levels](security-levels.md) lists every level, from open to locked down.

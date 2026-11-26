@@ -54,6 +54,8 @@ const ALLOW = [
   'vocorum discord status *', 'vocorum discord report *', 'vocorum discord scan *',
   'vocorum projects list *', 'vocorum setup --dry-run *',
   'vocorum backup', 'vocorum backup --json',
+  // Says what is new; installing stays an ask.
+  'vocorum update --check *',
 ]
 
 // Never, not even if the owner clicks Accept: they widen access without a passkey,
@@ -143,7 +145,11 @@ to the owner as a warning and do nothing.
 | Who can see a channel | \`vocorum request channel <channel> <username or role> --allow view,send\` or \`--deny view\` |
 | Who can run agents on my machines | \`vocorum doctor --json\`, the agent-access check |
 | Privacy: what is reachable | \`vocorum private status --json\`, \`vocorum config get --json\` |
-| Turn the private listener off | \`vocorum private off\` (devices lose access until it is on again) |
+| How locked down is it? | \`vocorum doctor --json\`, the security-level check (levels 1 to 4) |
+| Lock it down further, or loosen it | Explain the step and what changes, then the command from the security-level check (\`config set localAccess off\` or \`open\`, then \`vocorum restart\`). Adding the private listener (\`vocorum setup\`) needs the owner at the hub machine |
+| Turn the private listener off | \`vocorum private off\`, then \`vocorum restart\` (devices lose access until it is on again; it refuses unless this computer is open) |
+| Is there an update? | \`vocorum update --check --json\` (what is new, with each version's notes) |
+| Install the update | Say what is new, then \`vocorum update --yes\` (backs up, installs, restarts; goes back by itself if anything fails) |
 | Back up | \`vocorum backup --json\` |
 | Restart | \`vocorum restart\` |
 | Wire a project folder to a channel | \`vocorum projects add <folder>\`; list: \`vocorum projects list --json\` |
@@ -231,12 +237,14 @@ export async function adminSetup(config: HubConfig, paths: HubPaths, options: Ad
   const env: Record<string, string | undefined> = { ...process.env, ...readEnv(p.envFile), ...(config.privateListener && { NODE_EXTRA_CA_CERTS: path.join(paths.ca, 'ca.crt') }) }
   delete env['KIMAKI_DATA_DIR']
   const [bin, ...pre] = command.split(' ')
+  // #admin is one conversation with the owner, not a coordinator that starts threads (upstream's default).
+  const botArgs = ['--data-dir', p.dataDir, '--coordinator', 'false']
   // Kimaki makes its database and saves its login on its first start, then onboards in
   // its server. The admin bot is in no server until the Admin server is named, so that
   // first start stops before onboarding and the only channel it ever has is #admin.
   if (!config.adminBotReady) {
     // It waits for a server; stop it once its login is saved.
-    const first = spawn(bin!, [...pre, '--data-dir', p.dataDir], { env, cwd: p.workspace, stdio: 'ignore' })
+    const first = spawn(bin!, [...pre, ...botArgs], { env, cwd: p.workspace, stdio: 'ignore' })
     const { createClient } = await import('@libsql/client')
     const saved = async () => {
       if (!fs.existsSync(path.join(p.dataDir, 'kimaki.db'))) return false
@@ -277,7 +285,7 @@ Type=simple
 WorkingDirectory=${p.workspace}
 Environment=PATH=${process.env['PATH'] ?? '/usr/local/bin:/usr/bin:/bin'}
 EnvironmentFile=${p.envFile}
-${config.privateListener ? `Environment=NODE_EXTRA_CA_CERTS=${path.join(paths.ca, 'ca.crt')}\n` : ''}ExecStart=${command} --data-dir ${p.dataDir}
+${config.privateListener ? `Environment=NODE_EXTRA_CA_CERTS=${path.join(paths.ca, 'ca.crt')}\n` : ''}ExecStart=${command} ${botArgs.join(' ')}
 Restart=on-failure
 RestartSec=10
 KillMode=mixed
@@ -287,22 +295,25 @@ StandardError=append:${p.log}
 [Install]
 WantedBy=default.target
 `
-    if (!fs.existsSync(unit) || fs.readFileSync(unit, 'utf8') !== body) {
+    const changed = fs.existsSync(unit) && fs.readFileSync(unit, 'utf8') !== body
+    if (!fs.existsSync(unit) || changed) {
       fs.mkdirSync(path.dirname(unit), { recursive: true })
       fs.writeFileSync(unit, body)
       await run('systemctl', ['--user', 'daemon-reload']).catch(() => null)
     }
     await run('systemctl', ['--user', 'enable', '--now', unitName]).catch(() => null)
+    // A unit written by an older setup: the running agent picks up the new arguments.
+    if (changed) await run('systemctl', ['--user', 'restart', unitName]).catch(() => null)
     steps.push({ step: 'agent', detail: `systemd user unit ${unitName}.service (log: ${p.log})` })
   } else if (manager === 'launchd' || manager === 'task') {
     const { installAgentService } = await import('./platform.ts')
     const ca = config.privateListener ? path.join(paths.ca, 'ca.crt') : null
-    const detail = await installAgentService({ name: unitName, description: 'Vocorum admin agent (Kimaki)', command: [...command.split(' '), '--data-dir', p.dataDir], envFile: p.envFile, env: { PATH: process.env['PATH'] ?? '', ...(ca && { NODE_EXTRA_CA_CERTS: ca }) }, cwd: p.workspace, log: p.log }, paths.root)
+    const detail = await installAgentService({ name: unitName, description: 'Vocorum admin agent (Kimaki)', command: [...command.split(' '), ...botArgs], envFile: p.envFile, env: { PATH: process.env['PATH'] ?? '', ...(ca && { NODE_EXTRA_CA_CERTS: ca }) }, cwd: p.workspace, log: p.log }, paths.root)
     steps.push({ step: 'agent', detail: `${detail} (log: ${p.log})` })
   } else {
     if (!adminPid(paths)) {
       const log = fs.openSync(p.log, 'a', 0o600)
-      const child = spawn(bin!, [...pre, '--data-dir', p.dataDir], { cwd: p.workspace, detached: true, stdio: ['ignore', log, log], env })
+      const child = spawn(bin!, [...pre, ...botArgs], { cwd: p.workspace, detached: true, stdio: ['ignore', log, log], env })
       child.unref()
       fs.closeSync(log)
       fs.writeFileSync(p.pid, String(child.pid), { mode: 0o600 })

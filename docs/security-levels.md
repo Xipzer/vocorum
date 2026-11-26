@@ -24,8 +24,9 @@ What you get from level 2 up, without doing anything:
 
 Every step is a command on the hub computer, so only someone at that computer
 can loosen it. `vocorum config set localAccess open` makes this computer open
-again. Removing the device listener is `vocorum private off`. `vocorum doctor`
-always says which level you are on.
+again. To remove the device listener, open this computer first, then run
+`vocorum private off`: it refuses otherwise, because no browser could get in.
+`vocorum doctor` always says which level you are on.
 
 ## What Vocorum does not do yet
 

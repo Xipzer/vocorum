@@ -79,6 +79,9 @@ test('the admin agent may only run vocorum commands, and never those that widen 
   expect(permissions[0]).toEqual({ action: '*', resource: '*', effect: 'deny' })
   expect(permissions).toContainEqual({ action: 'shell', resource: 'vocorum *', effect: 'ask' })
   expect(permissions).toContainEqual({ action: 'shell', resource: 'vocorum request *', effect: 'allow' })
+  // Seeing what is new needs no click; installing it does.
+  expect(permissions).toContainEqual({ action: 'shell', resource: 'vocorum update --check *', effect: 'allow' })
+  expect(permissions.filter((p) => p.effect === 'allow' && p.resource.startsWith('vocorum update') && !p.resource.startsWith('vocorum update --check'))).toEqual([])
   writeWorkspace(t.paths)
   const checks = await adminStatus({ ...t.config, adminGuildId: adminGuild, adminBotReady: true }, t.paths)
   expect(checks.find((c) => c.id === 'admin-limits')?.status).toBe('ok')

@@ -76,6 +76,18 @@ function tlsCheck(address: string, port: number, name: string, ca: Buffer): Prom
   })
 }
 
+// Which of the levels in docs/security-levels.md this hub is on, and the step to the next.
+export function securityLevel(config: HubConfig): string {
+  const listener = config.privateListener
+  const open = config.localAccess === 'open'
+  const tailnet = listener ? /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(listener.address) || /^fd7a:115c:a1e0:/i.test(listener.address) : false
+  if (!listener && open) return 'level 1 of 4, open on this computer: no other device can connect (next: vocorum setup adds your devices)'
+  if (!listener) return 'level 3 of 4, this computer only, and every browser pairs (next: vocorum setup adds your devices)'
+  if (open) return 'level 2 of 4, your paired devices, and this computer with no sign-in (next: vocorum config set localAccess off)'
+  if (config.tailscaleLogin && tailnet) return 'level 4 of 4, paired devices that are also on your Tailscale account (or a friend\'s)'
+  return `level 3 of 4, every browser pairs${tailnet ? ' (next: vocorum config set tailscaleLogin <your Tailscale login>)' : ''}`
+}
+
 export async function doctor(paths: HubPaths, { repo = path.resolve(import.meta.dirname, '..') }: { repo?: string } = {}): Promise<Check[]> {
   const checks: Check[] = []
   const add = (id: string, status: Check['status'], detail: string, fix?: string) => checks.push({ id, status, detail, ...(fix && { fix }) })
@@ -84,7 +96,9 @@ export async function doctor(paths: HubPaths, { repo = path.resolve(import.meta.
   add('openssl', (await quiet(tool('openssl'), ['version'])) ? 'ok' : 'warn', 'openssl makes the hub\'s own certificates', 'Install openssl (needed for the private listener)')
   add('ffmpeg', (await quiet('ffmpeg', ['-version'])) ? 'ok' : 'warn', 'ffmpeg converts voice notes', 'Optional: install ffmpeg so voice notes from phones play everywhere')
   const built = fs.existsSync(path.join(repo, 'dist/hub.mjs')) && fs.existsSync(path.join(repo, 'web/dist/index.html'))
-  add('build', built ? 'ok' : 'fail', built ? 'hub and app are built' : 'dist/hub.mjs or web/dist is missing', `cd ${repo} && pnpm install && pnpm build`)
+  const { staleBuild } = await import('./updates.ts')
+  const stale = built && (await staleBuild(repo))
+  add('build', !built ? 'fail' : stale ? 'warn' : 'ok', !built ? 'dist/hub.mjs or web/dist is missing' : stale ? 'built before the newest commit, so the hub runs older code' : 'hub and app are built', !built || stale ? `vocorum setup (builds it), or: cd ${repo} && pnpm install && pnpm build, then vocorum restart` : undefined)
 
   const config = loadConfig(paths)
   if (!config) {
@@ -131,6 +145,7 @@ export async function doctor(paths: HubPaths, { repo = path.resolve(import.meta.
     }
   }
 
+  add('security-level', 'ok', securityLevel(config))
   if (config.localAccess === 'open') add('local-access', 'ok', `open: http://localhost:${config.port} on this computer needs no code or passkey. Do not forward this port to other machines (ask for pairing here too: vocorum config set localAccess off)`)
   const listener = config.privateListener
   // Open on this computer alone is a choice, not a fault.

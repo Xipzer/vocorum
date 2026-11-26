@@ -635,6 +635,16 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
       if (!key || !parseValue || value.length === 0) throw new Error(`usage: config set <key> <value>. Keys: ${Object.keys(CONFIG_KEYS).join(', ')}`)
       // Without a device listener, localhost is the only way a browser reaches this hub.
       if (key === 'localAccess' && value.join(' ') === 'off' && current.localAccess === 'open' && !current.privateListener) throw new Error('Nothing changed: with local access off, no browser could reach this hub. Add your devices first (vocorum setup), then run this again.')
+      // Nor while none of the owner's devices has finished pairing: the owner would be locked out.
+      if (key === 'localAccess' && value.join(' ') === 'off' && current.localAccess === 'open') {
+        const { createClient } = await import('@libsql/client')
+        const db = createClient({ url: `file:${paths.hubDb}` })
+        const paired = await db
+          .execute({ sql: "SELECT count(*) AS n FROM devices d WHERE d.revoked_at IS NULL AND d.name != 'This computer' AND (d.user_id IS NULL OR d.user_id = ?) AND (d.kind = 'app' OR EXISTS (SELECT 1 FROM credentials c WHERE c.device_id = d.id))", args: [current.ownerUserId] })
+          .then((r) => Number(r.rows[0]?.['n'] ?? 0), () => 0)
+          .finally(() => db.close())
+        if (paired === 0) throw new Error('Nothing changed: none of your devices has finished pairing yet, so no browser could get in. Pair one first (vocorum pair <device>, then open the link on it and make the passkey), then run this again.')
+      }
       const updated = initHub(paths, { [key]: parseValue(value.join(' ')) } as Partial<HubConfig>)
       await emit({ [key]: (updated as Record<string, unknown>)[key], restart: true }, () => console.log(`${key} set. Restart the hub to apply: vocorum restart`))
       return true
