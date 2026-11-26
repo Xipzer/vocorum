@@ -78,7 +78,7 @@ function certOf(pemOrDer: ArrayBuffer | Buffer) {
 }
 
 // macOS has only 127.0.0.1 on its loopback, so there is no second address to move to.
-test.skipIf(process.platform === 'darwin')('a move to a new address keeps the app name on the new CA, so new pairings work', async () => {
+test.skipIf(process.platform === 'darwin')('a move to a new address keeps the CA: every name answers with it, and the old address is gone from the certificate', async () => {
   const files = hub.privateListener!.files
   await hub.stop()
   fs.rmSync(files.legacy.dir + '.retired', { recursive: true, force: true })
@@ -87,9 +87,10 @@ test.skipIf(process.platform === 'darwin')('a move to a new address keeps the ap
   await hub.stop()
   await startWith([NEW, OLD], '127.0.0.2')
   const after = fs.readFileSync(files.caCert)
-  expect(after.equals(before)).toBe(false)
-  // The app name and the new address answer with the new CA (the one pairing links carry).
-  expect({ newCaName: await handshake(after, NEW, '127.0.0.2'), newCaAddress: await handshake(after, undefined, '127.0.0.2'), oldCaName: await handshake(before, NEW, '127.0.0.2') }).toEqual({ newCaName: true, newCaAddress: true, oldCaName: false })
-  // Its other names stay on the old certificate for devices that only trust the old CA.
-  expect(await handshake(before, OLD, '127.0.0.2')).toBe(true)
+  // Same CA, so devices and pairing links keep trusting the moved hub by name.
+  expect(after.equals(before)).toBe(true)
+  // The certificate names the hub only: the CA may not sign the new address, and a client
+  // without a name (connecting by bare address) is refused.
+  expect({ appName: await handshake(after, NEW, '127.0.0.2'), otherName: await handshake(after, OLD, '127.0.0.2'), byAddress: await handshake(after, undefined, '127.0.0.2') }).toEqual({ appName: true, otherName: true, byAddress: false })
+  expect(new crypto.X509Certificate(fs.readFileSync(files.cert)).subjectAltName).not.toMatch(/IP Address/)
 })

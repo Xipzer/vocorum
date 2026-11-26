@@ -61,12 +61,13 @@ That's all. Every device keeps working without anything to redo: the same addres
 
 ### If the new computer cannot have the old address
 
-Run `vocorum setup --address <its Tailscale address>` instead of step 4. The hub then makes a new CA, so on each device:
-- Open the setup page (http://<new address>:47080).
-- Install the new certificate.
-- The passkey keeps working as long as the hub's name stays the same.
+Run `vocorum setup --address <its Tailscale address>` instead of step 4. The hub keeps its CA and its name, so:
+- **Browsers** keep their certificate, passkey and sign-in once the hub's name points at the new address. On Tailscale, rename the new computer to the old one's name. With `hub.home.arpa`, update the DNS profile or the hosts line on each device.
+- **Desktop and iPhone apps** need a new link: run `vocorum pair <name> --app` and open it on the device.
 
 Bots on other computers also need the new address (`vocorum bots add` again, or edit their env file).
+
+Once the restored hub works, wipe the old computer's hub folder and any copy of the backup, or keep them offline: they hold the CA key, which stays valid.
 
 ## Time it takes
 

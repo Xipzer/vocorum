@@ -940,11 +940,12 @@ export function Chat({
   const scroller = useRef<HTMLDivElement>(null)
   const content = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
-  const followFrame = useRef(0)
+  // Where the last keep-at-bottom scroll left the list, to tell its scroll event from a reader's.
+  const keptAt = useRef(-1)
   const lastArrival = useRef(entry?.arrival)
   // Paging keys and Jump to present: Discord's 580 ms glide.
   const paging = useRef<Glide>({ frame: 0, to: 0 })
-  useEffect(() => () => { cancelAnimationFrame(followFrame.current); cancelAnimationFrame(paging.current.frame) }, [])
+  useEffect(() => () => cancelAnimationFrame(paging.current.frame), [])
   const history = useMessageHistory(channel.id, entry, scroller, pinned)
   const isThread = THREAD_TYPES.has(channel.type)
   const manageThread = isThread && (can(P.MANAGE_THREADS, channel) || channel.owner_id === state.me.id)
@@ -1107,36 +1108,17 @@ export function Chat({
     if (!el) return
     const fresh = entry?.arrival && entry.arrival !== lastArrival.current
     lastArrival.current = entry?.arrival
-    const gap = el.scrollHeight - el.clientHeight - el.scrollTop
-    if (pinned.current && gap > 1 && !followFrame.current) {
-      // Discord places someone else's new message at once; only the owner's own send glides.
-      const own = fresh && entry?.list.find((m) => m.id === entry.arrival)?.author.id === state.me.id
-      if (own && gap <= Math.min(180, el.clientHeight / 2) && document.hasFocus() && motion() === 'smooth') {
-        // Ease only a live append at the tail. Loading history, switching chats
-        // and reduced motion still place the reader directly at the right row.
-        const start = performance.now()
-        const advance = (now: number) => {
-          followFrame.current = 0
-          if (!pinned.current) return
-          const t = Math.min(1, (now - start) / 120)
-          el.scrollTop = el.scrollHeight - el.clientHeight - gap * (1 - t) ** 3
-          if (t < 1) followFrame.current = requestAnimationFrame(advance)
-          else { measure(el); readVisibleEnd() }
-        }
-        followFrame.current = requestAnimationFrame(advance)
-      } else el.scrollTop = el.scrollHeight
+    // As Discord, new messages land on one frame. Sending from this window also brings a
+    // reader who scrolled up straight to the bottom.
+    if (fresh && entry?.list.find((m) => m.id === entry.arrival)?.local) {
+      stopGlide()
+      pinned.current = true
+      setCaughtUp(true)
     }
+    if (pinned.current && el.scrollHeight - el.clientHeight - el.scrollTop > 1) el.scrollTop = el.scrollHeight
     measure(el)
     readVisibleEnd()
   }, [list, entry?.list, entry?.arrival, readVisibleEnd])
-
-  const interruptFollow = () => {
-    if (!followFrame.current) return
-    cancelAnimationFrame(followFrame.current)
-    followFrame.current = 0
-    const el = scroller.current
-    if (el) pinned.current = el.scrollHeight - el.clientHeight - el.scrollTop <= 3
-  }
 
   const measure = (el: HTMLDivElement) => {
     setAway(el.scrollHeight - el.scrollTop - el.clientHeight > Math.max(el.clientHeight, 400))
@@ -1168,7 +1150,10 @@ export function Chat({
     const inner = content.current
     if (!el || !inner) return
     const observer = new ResizeObserver(() => {
-      if (pinned.current && !followFrame.current && el.scrollHeight - el.clientHeight - el.scrollTop > 1) el.scrollTop = el.scrollHeight
+      if (pinned.current && el.scrollHeight - el.clientHeight - el.scrollTop > 1) {
+        el.scrollTop = el.scrollHeight
+        keptAt.current = el.scrollTop
+      }
     })
     observer.observe(inner)
     observer.observe(el)
@@ -1294,7 +1279,6 @@ export function Chat({
       const el = scroller.current
       if ((e.key === 'PageUp' || e.key === 'PageDown') && el && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.target as Element).closest('.composer textarea')) {
         e.preventDefault()
-        interruptFollow()
         history.key(e.key, false)
         page(el, e.key)
       }
@@ -1448,15 +1432,14 @@ export function Chat({
         ref={scroller}
         tabIndex={0}
         aria-label="Messages"
-        onWheelCapture={() => { interruptFollow(); stopGlide() }}
-        onTouchStartCapture={() => { interruptFollow(); stopGlide() }}
-        onPointerDownCapture={() => { interruptFollow(); stopGlide() }}
+        onWheelCapture={stopGlide}
+        onTouchStartCapture={stopGlide}
+        onPointerDownCapture={stopGlide}
         onWheel={history.onWheel}
         onTouchStart={history.onTouchStart}
         onTouchMove={history.onTouchMove}
         onPointerDown={history.onPointerDown}
         onKeyDownCapture={(e) => {
-          interruptFollow()
           if (e.altKey || e.ctrlKey || e.metaKey || (e.target as Element).closest('textarea,input,[role=dialog]')) return
           history.key(e.key, e.shiftKey)
           if (['PageUp', 'PageDown', 'Home', 'End'].includes(e.key) && !e.shiftKey) {
@@ -1477,7 +1460,11 @@ export function Chat({
         onScroll={(e) => {
           const el = e.currentTarget
           const wasPinned = pinned.current
-          pinned.current = !!followFrame.current || el.scrollHeight - el.scrollTop - el.clientHeight <= 3
+          // The scroll event of a keep-at-bottom catch-up can arrive after the list shrank again
+          // (the keyboard opening as the typing line appears): the reader never moved, so stay pinned.
+          const kept = wasPinned && el.scrollTop === keptAt.current
+          keptAt.current = -1
+          pinned.current = kept || el.scrollHeight - el.scrollTop - el.clientHeight <= 3
           if (!wasPinned && pinned.current && document.hasFocus()) setCaughtUp(true)
           if (pinned.current) readVisibleEnd()
           // Back at the newest after reading far back: let the old pages go.

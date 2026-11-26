@@ -1187,6 +1187,13 @@
     animation: present-fade var(--move) var(--ease-out);
   }
 }
+@media (pointer: coarse) and (max-width: 767px) {
+  .present-button {
+    right: 16px;
+    background: var(--composer-bg, color-mix(in srgb, var(--backdrop), #fff 5%));
+    border-color: var(--composer-line, color-mix(in srgb, var(--backdrop), #fff 9%));
+  }
+}
 @media (pointer: coarse) and (min-width: 768px) {
   .present-button {
     background: color-mix(in srgb, var(--backdrop), #fff 5%);

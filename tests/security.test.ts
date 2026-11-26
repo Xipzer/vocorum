@@ -312,6 +312,27 @@ test('R6: an old CA constrained to a whole public zone is detected and replaced 
   expect(await broadConstraints(files.caCert, ['x.home.arpa'])).toEqual(['hub.tailnet.ts.net'])
 })
 
+test('a hub on a new address keeps its CA; its certificate then names only what the CA may sign', async () => {
+  const { caFiles, ensureCa, ensureServerCert, fingerprint, signableIps } = await import('../src/ca.ts')
+  const crypto = await import('node:crypto')
+  const fs = await import('node:fs')
+  const files = caFiles(`${t.paths.root}/moved-ca`)
+  const names = ['hub.home.arpa']
+  await ensureCa(files, { names, ips: ['100.64.0.10'] })
+  await ensureServerCert(files, { names, ips: await signableIps(files.caCert, ['100.64.0.10']) })
+  const before = fingerprint(files.caCert)
+  // Restored on another computer: same name, another address.
+  expect(await ensureCa(files, { names, ips: ['100.64.0.20'] })).toMatchObject({ reissued: false })
+  expect(fingerprint(files.caCert)).toBe(before)
+  expect(await signableIps(files.caCert, ['100.64.0.20'])).toEqual([])
+  expect(await ensureServerCert(files, { names, ips: await signableIps(files.caCert, ['100.64.0.20']) })).toBe(true)
+  const cert = new crypto.X509Certificate(fs.readFileSync(files.cert))
+  expect(cert.subjectAltName).toBe('DNS:hub.home.arpa')
+  expect(cert.checkIssued(new crypto.X509Certificate(fs.readFileSync(files.caCert)))).toBe(true)
+  // A new name still needs a new CA.
+  expect(await ensureCa(files, { names: [...names, 'hub2.home.arpa'], ips: ['100.64.0.20'] })).toMatchObject({ reissued: true, rotated: true })
+})
+
 test('Host allowlist accepts the public URL without its default port', async () => {
   const { initHub } = await import('../src/config.ts')
   const { Hub } = await import('../src/hub.ts')

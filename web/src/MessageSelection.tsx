@@ -3,7 +3,7 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { api, type Message } from './api.ts'
 import { Icon } from './icons.tsx'
-import { plain } from './text.ts'
+import { leave, plain } from './text.ts'
 
 const LIMIT = 100
 const rows = (root: Element | null) => [...(root?.querySelectorAll<HTMLButtonElement>('button[data-pick-id]') ?? [])]
@@ -99,6 +99,8 @@ export function PickRow({ message, allowed, selection, children }: { message: Me
 // sits away from the button that opened it (including a double click or tap).
 function DeleteReview({ count, back, submit }: { count: number; back: () => void; submit: () => void }) {
   const panel = useRef<HTMLDivElement>(null)
+  const layer = useRef<HTMLDivElement>(null)
+  const cancel = () => leave(layer.current, back, 120)
   const title = `Delete ${count} ${count === 1 ? 'message' : 'messages'}?`
   useLayoutEffect(() => {
     const opener = document.activeElement as HTMLElement | null
@@ -106,7 +108,7 @@ function DeleteReview({ count, back, submit }: { count: number; back: () => void
     return () => opener?.focus?.({ preventScroll: true })
   }, [])
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); back(); return }
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cancel(); return }
     if (e.key !== 'Tab') return
     const buttons = [...(panel.current?.querySelectorAll<HTMLButtonElement>('button') ?? [])]
     const first = buttons[0], last = buttons.at(-1)
@@ -114,10 +116,10 @@ function DeleteReview({ count, back, submit }: { count: number; back: () => void
     if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
   }
-  return <div className="overlay delete-layer" onMouseDown={(e) => { if (e.target === e.currentTarget) back() }} onKeyDown={onKeyDown}>
+  return <div ref={layer} className="overlay delete-layer" onMouseDown={(e) => { if (e.target === e.currentTarget) cancel() }} onKeyDown={onKeyDown}>
     <div ref={panel} className="delete-review" role="dialog" aria-modal="true" aria-label={title}>
       <h2>{title}</h2><p>This cannot be undone.</p>
-      <div><button className="button" onClick={back}>Cancel</button><button className="button danger" onClick={submit}>Delete</button></div>
+      <div><button className="button" onClick={cancel}>Cancel</button><button className="button danger" onClick={submit}>Delete</button></div>
     </div>
   </div>
 }

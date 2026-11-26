@@ -1,7 +1,8 @@
-// The built PWA in headless Chromium: scrolling and arrivals move as Discord's desktop app
-// does (measured from 60 fps captures of it). Page Up and Page
-// Down in the message box page the messages with Discord's 580 ms glide; a new message from
-// someone else is placed at once, without an eased scroll.
+// The built PWA in headless Chromium: scrolling, arrivals and the owner's own actions move as
+// Discord's desktop app does (measured from 60 fps captures of it). Page Up and Page Down in
+// the message box page the messages with Discord's 580 ms glide; new messages, the owner's
+// own sends (from the bottom or scrolled up), reactions, Mark unread and Mark as read land on
+// one frame; the delete confirmation opens and leaves as Discord's confirm dialog.
 // Needs `pnpm build:web` and a Playwright Chromium.
 
 import fs from 'node:fs'
@@ -59,6 +60,8 @@ beforeAll(async () => {
   page = await context.newPage()
   const cdp = await context.newCDPSession(page)
   await cdp.send('WebAuthn.enable')
+  // A window in front, as the owner's is when they send: the app eases only for a focused window.
+  await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true })
   await cdp.send('WebAuthn.addVirtualAuthenticator', { options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } })
   await page.goto(`http://localhost:${hub.port}`)
   await page.getByLabel('Pairing code').fill(await hub.store.createPairing('chromium'))
@@ -137,6 +140,73 @@ test.skipIf(!ready)('a new message from someone else is placed at once, as on Di
   expect(gaps.every((g) => g <= 1)).toBe(true)
 })
 
+// Per frame, for each selector: how many match, how many animations run on or under them,
+// and the first match's height; plus the list's distance from the bottom.
+type Frame = { gap: number } & Record<string, [number, number, number]>
+const record = (p: Page, probes: Record<string, string>, ms: number) =>
+  list(p).evaluate(
+    (el, { probes, ms }) =>
+      new Promise<Frame[]>((resolve) => {
+        const out: Frame[] = []
+        const start = performance.now()
+        const tick = (now: number) => {
+          const row = { gap: el.scrollHeight - el.clientHeight - el.scrollTop } as Frame
+          for (const [name, sel] of Object.entries(probes)) {
+            const found = [...document.querySelectorAll<HTMLElement>(sel)]
+            row[name] = [found.length, found.reduce((n, f) => n + f.getAnimations({ subtree: true }).length, 0), found[0]?.offsetHeight ?? 0]
+          }
+          out.push(row)
+          if (now - start < ms) requestAnimationFrame(tick)
+          else resolve(out)
+        }
+        requestAnimationFrame(tick)
+      }),
+    { probes, ms },
+  )
+// The first frame a probe's count changes.
+const flip = (frames: Frame[], name: string) => frames.findIndex((f) => f[name]![0] !== frames[0]![name]![0])
+const toBottom = async () => {
+  await list(page).evaluate((el) => (el.scrollTop = el.scrollHeight))
+  await expect.poll(() => gap(page)).toBeLessThanOrEqual(1)
+}
+// The list's distance from the bottom on each of the first ten frames a message with this text is shown.
+const gapsOnceShown = (p: Page, text: string) =>
+  list(p).evaluate(
+    (el, text) =>
+      new Promise<number[]>((resolve) => {
+        const out: number[] = []
+        const tick = () => {
+          if ([...el.querySelectorAll('.message')].some((m) => m.textContent?.includes(text))) out.push(el.scrollHeight - el.clientHeight - el.scrollTop)
+          if (out.length < 10) requestAnimationFrame(tick)
+          else resolve(out)
+        }
+        requestAnimationFrame(tick)
+      }),
+    text,
+  )
+
+test.skipIf(!ready)('the owner\'s own send lands on one frame at the bottom, with no glide', async () => {
+  await toBottom()
+  const box = page.locator('.composer textarea')
+  await box.fill('Own at the bottom: a note from the owner')
+  const watching = gapsOnceShown(page, 'Own at the bottom')
+  await box.press('Enter')
+  expect((await watching).every((g) => g <= 1)).toBe(true)
+  await list(page).locator('.message:not(.sending)', { hasText: 'Own at the bottom' }).waitFor()
+})
+
+test.skipIf(!ready)('sending while scrolled up jumps straight to the bottom on one frame', async () => {
+  await toBottom()
+  await list(page).evaluate((el) => (el.scrollTop = el.scrollHeight - el.clientHeight * 3))
+  await expect.poll(() => gap(page)).toBeGreaterThan(1000)
+  const box = page.locator('.composer textarea')
+  await box.fill('Own while scrolled up: a note from the owner')
+  const watching = gapsOnceShown(page, 'Own while scrolled up')
+  await box.press('Enter')
+  expect((await watching).every((g) => g <= 1)).toBe(true)
+  await list(page).locator('.message:not(.sending)', { hasText: 'Own while scrolled up' }).waitFor()
+})
+
 test.skipIf(!ready)('the owner\'s message shows the moment it is sent, and the hub\'s copy replaces it', async () => {
   let release = () => {}
   const gate = new Promise<void>((resolve) => { release = resolve })
@@ -172,4 +242,75 @@ test.skipIf(!ready)('the owner\'s message shows the moment it is sent, and the h
     release()
     await page.unroute('**/client/channels/*/messages')
   }
+})
+
+test.skipIf(!ready)('a reaction appears and goes on one frame, the row resizing with it, as on Discord', async () => {
+  await toBottom()
+  const message = list(page).locator('.message', { hasText: 'Line 60:' })
+  const id = await message.getAttribute('id')
+  const probes = { pill: `#${id} .reaction.me`, row: `#${id}` }
+  await message.hover()
+  let watching = record(page, probes, 600)
+  await message.getByRole('button', { name: 'React 👍' }).click()
+  let frames = await watching
+  let at = flip(frames, 'pill')
+  expect(at).toBeGreaterThan(0)
+  // Full size and opaque on its first frame: no pop, and the row is already its new height.
+  expect(frames.slice(at).every((f) => f.pill![0] === 1 && f.pill![1] === 0 && f.row![2] === frames.at(-1)!.row![2])).toBe(true)
+  expect(await list(page).locator(probes.pill).evaluate((el) => getComputedStyle(el).opacity)).toBe('1')
+  const tall = frames.at(-1)!.row![2]
+  watching = record(page, probes, 600)
+  await list(page).locator(probes.pill).click()
+  frames = await watching
+  at = flip(frames, 'pill')
+  expect(at).toBeGreaterThan(0)
+  expect(frames.slice(at).every((f) => f.pill![0] === 0 && f.row![2] < tall && f.row![2] === frames.at(-1)!.row![2])).toBe(true)
+})
+
+test.skipIf(!ready)('the delete confirmation opens and leaves as Discord\'s; the message goes on one frame', async () => {
+  await toBottom()
+  const message = list(page).locator('.message', { hasText: 'Own at the bottom' })
+  await message.click({ button: 'right' })
+  await page.locator('.sheet-item', { hasText: 'Delete' }).click()
+  const confirm = page.locator('.sheet.confirm')
+  await confirm.waitFor()
+  const timing = (sel: string) => page.locator(sel).evaluate((el) => el.getAnimations().map((a) => [(a as CSSAnimation).animationName, a.effect?.getTiming().duration]))
+  // In as Discord's modal card: 120 ms, growing from 0.9 as it fades in.
+  expect(await timing('.sheet.confirm')).toEqual([['card-in', 120]])
+  const id = await message.getAttribute('id')
+  const watching = record(page, { leaving: '.sheet-layer[data-leaving]', open: '.sheet.confirm', row: `#${id}` }, 800)
+  await confirm.locator('.sheet-item', { hasText: 'Delete' }).click()
+  // Out over ~120 ms, shrinking to 0.9.
+  expect(await timing('.sheet-layer[data-leaving] .sheet.confirm')).toEqual([['confirm-out', 120]])
+  const frames = await watching
+  expect(frames.some((f) => f.leaving![0] === 1)).toBe(true)
+  const gone = flip(frames, 'row')
+  expect(gone).toBeGreaterThan(0)
+  // No collapse: the row is there at full height or not at all, and the bottom stays in place.
+  expect(frames.slice(0, gone).every((f) => f.row![1] === 0 && f.row![2] === frames[0]!.row![2])).toBe(true)
+  expect(frames.slice(gone).every((f) => f.row![0] === 0 && f.gap <= 1)).toBe(true)
+  await page.locator('.sheet-layer').waitFor({ state: 'detached' })
+})
+
+test.skipIf(!ready)('Mark unread shows the line and the bar on one frame; Mark as read takes both away on one', async () => {
+  const message = list(page).locator('.message', { hasText: 'Line 40:' })
+  await message.scrollIntoViewIfNeeded()
+  await message.click({ button: 'right' })
+  let watching = record(page, { line: '.new-divider' }, 1500)
+  await page.locator('.sheet-item', { hasText: 'Mark unread' }).click()
+  let frames = await watching
+  const at = flip(frames, 'line')
+  expect(at).toBeGreaterThan(0)
+  expect(frames.slice(at).every((f) => f.line![0] === 1 && f.line![1] === 0)).toBe(true)
+  // Read down past it: the bar above, on the frame the line goes out of sight.
+  await toBottom()
+  const bar = page.locator('.new-bar')
+  await bar.waitFor()
+  expect(await bar.evaluate((el) => el.getAnimations({ subtree: true }).length)).toBe(0)
+  watching = record(page, { line: '.new-divider', bar: '.new-bar' }, 1500)
+  await page.locator('.new-bar-read').click()
+  frames = await watching
+  const off = flip(frames, 'bar')
+  expect(off).toBeGreaterThan(0)
+  expect(frames.slice(off).every((f) => f.bar![0] === 0 && f.line![0] === 0)).toBe(true)
 })

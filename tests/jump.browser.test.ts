@@ -80,21 +80,66 @@ test.skipIf(!ready)('touch: a square button over the composer\'s right edge take
   expect(await page.locator('.present-bar').isVisible()).toBe(false)
   const box = (await button.boundingBox())!
   const composer = (await page.locator('.composer').boundingBox())!
+  const pill = (await page.locator('.composer-box').boundingBox())!
   const footer = (await page.locator('.footer').boundingBox())!
   const look = await button.evaluate(el => {
-    const s = getComputedStyle(el), f = getComputedStyle(document.querySelector('.footer')!)
-    return { radius: s.borderTopLeftRadius, border: s.borderTopWidth, fill: s.backgroundColor, footerFill: f.backgroundColor, text: (el as HTMLElement).innerText }
+    const s = getComputedStyle(el), f = getComputedStyle(document.querySelector('.composer-box')!)
+    return { radius: s.borderTopLeftRadius, border: s.borderTopWidth, fill: s.backgroundColor, boxFill: f.backgroundColor, text: (el as HTMLElement).innerText }
   })
   expect([box.width, box.height]).toEqual([36, 36])
   expect(look).toMatchObject({ radius: '7px', border: '1px', text: '' })
-  expect(look.fill).toBe(look.footerFill)
+  // In the message box's fill, its right edge on the box's and the composer's.
+  expect(look.fill).toBe(look.boxFill)
   expect(box.x + box.width).toBe(composer.x + composer.width)
+  expect(box.x + box.width).toBe(pill.x + pill.width)
   // 8px above the footer, so it never sits over the composer or the typing line inside it.
   expect(footer.y - (box.y + box.height)).toBe(8)
 
   await button.tap()
   await expect.poll(() => fromBottom(page)).toBeLessThan(4)
   await expect.poll(() => page.locator('.present-button').count()).toBe(0)
+  await page.context().close()
+})
+
+// Discord's iPhone message box: a rounded box floating on the chat, 16pt from each side, 58pt
+// tall for one line with 16pt corners, its own fill and rule. It grows upward from a fixed bottom,
+// and the newest message clears it, with the keyboard closed and open.
+test.skipIf(!ready)('phone: the message box floats on the chat as Discord iOS draws it', async () => {
+  const page = await open({ width: 390, height: 844 }, true, thread)
+  await expect.poll(() => fromBottom(page)).toBeLessThan(4)
+  const pill = page.locator('.composer-box')
+  const shape = () => pill.evaluate(el => {
+    const r = el.getBoundingClientRect(), s = getComputedStyle(el), f = getComputedStyle(el.closest('.footer')!)
+    return { left: r.left, right: innerWidth - r.right, top: r.top, bottom: r.bottom, height: r.height, radius: s.borderTopLeftRadius, fill: s.backgroundColor, ring: s.boxShadow, footerFill: f.backgroundColor, footerRule: f.borderTopWidth }
+  })
+  const one = await shape()
+  expect(one).toMatchObject({ left: 16, right: 16, height: 58, radius: '16px', footerFill: 'rgba(0, 0, 0, 0)', footerRule: '0px' })
+  expect(one.fill).not.toBe('rgba(0, 0, 0, 0)')
+  expect(one.ring).toMatch(/ 0px 0px 0px 1px inset$/)
+  expect(844 - one.bottom).toBe(10)
+  // The newest message sits wholly above the box.
+  const lastBottom = () => page.locator('.chat-history .message').last().evaluate(el => el.getBoundingClientRect().bottom)
+  expect(await lastBottom()).toBeLessThanOrEqual(one.top)
+  // Keyboard open: the box rides 10pt above it and the newest message still clears it.
+  await page.locator('.composer textarea').focus()
+  await page.setViewportSize({ width: 390, height: 844 - 336 })
+  await expect.poll(() => page.evaluate(() => document.documentElement.dataset['keyboard'])).toBe('open')
+  await expect.poll(async () => 508 - (await shape()).bottom).toBe(10)
+  await expect.poll(() => fromBottom(page)).toBeLessThan(4)
+  const open1 = await shape()
+  expect(await lastBottom()).toBeLessThanOrEqual(open1.top)
+  // Three lines: the box grows upward, its bottom and sides stay, Send stays on the last line.
+  await page.locator('.composer textarea').fill('One\nTwo\nThree')
+  const three = await shape()
+  expect(three).toMatchObject({ left: 16, right: 16, bottom: open1.bottom })
+  // Three 22pt lines, the first centred 24pt below the top and the last 29pt above the bottom.
+  expect(three.height).toBe(24 + 2 * 22 + 29)
+  const first = await page.locator('.composer textarea').evaluate(el => el.getBoundingClientRect().top + parseFloat(getComputedStyle(el).paddingTop) + 11)
+  expect(first - three.top).toBe(24)
+  const send = (await page.getByRole('button', { name: 'Send', exact: true }).boundingBox())!
+  expect(send.y + send.height / 2).toBe(three.bottom - 29)
+  await expect.poll(() => fromBottom(page)).toBeLessThan(4)
+  expect(await lastBottom()).toBeLessThanOrEqual(three.top)
   await page.context().close()
 })
 

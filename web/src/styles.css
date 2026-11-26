@@ -121,6 +121,7 @@
   --backdrop-out: 100ms;
   --card-in: 120ms;
   --card-out: 50ms;
+  --confirm-out: 120ms;
   --menu-in: 130ms;
   --tip-in: 50ms;
   --tip-out: 50ms;
@@ -161,6 +162,7 @@
     --backdrop-out: 0ms;
     --card-in: 0ms;
     --card-out: 0ms;
+    --confirm-out: 0ms;
     --menu-in: 0ms;
     --tip-in: 0ms;
     --tip-out: 0ms;
@@ -1513,9 +1515,6 @@ html[data-keyboard='open'] .footer {
   width: 44px;
   height: 44px;
 }
-.composer .send {
-  color: var(--accent);
-}
 /* Dock, desktop half: after the base composer rules so it wins without tricks. */
 @media (min-width: 768px) {
   .footer {
@@ -1563,26 +1562,6 @@ html[data-keyboard='open'] .footer {
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
-}
-.mic.live {
-  color: var(--danger);
-}
-.recording-label {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 44px;
-  padding: 0 4px;
-  font-size: 14px;
-  color: var(--text);
-}
-.rec-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--danger);
-  animation: breathe 1.2s infinite;
 }
 .palette {
   position: absolute;
@@ -3094,43 +3073,6 @@ mark {
   white-space: nowrap;
 }
 
-/* Voice note: timer, live level, cancel */
-.recording-label .num {
-  font-variant-numeric: tabular-nums;
-  min-width: 34px;
-}
-.recording-label {
-  min-width: 0;
-  overflow: hidden;
-}
-.rec-level {
-  flex: 1 1 60px;
-  min-width: 48px;
-  max-width: 220px;
-  height: 22px;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-.rec-level i {
-  flex: 1;
-  min-height: 2px;
-  border-radius: 1px;
-  background: var(--danger);
-  opacity: 0.85;
-  transition: height 80ms linear;
-}
-.rec-hint {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.rec-cancel {
-  margin-left: auto;
-  font-size: 13px;
-}
 /* Holding the mic must not turn into a scroll: the browser would cancel the press. */
 .icon-button.mic {
   touch-action: none;
@@ -6910,6 +6852,23 @@ svg.flip {
   .sheet.confirm .sheet-sub {
     white-space: normal;
   }
+  /* Discord's delete confirmation: in as its modal card, out over ~120 ms shrinking to 0.9. */
+  .sheet.confirm {
+    animation: card-in var(--card-in) var(--pop-ease);
+  }
+}
+.sheet-layer[data-leaving] {
+  pointer-events: none;
+}
+.sheet-layer[data-leaving] .sheet.confirm,
+.overlay.delete-layer[data-leaving] > * {
+  animation: confirm-out var(--confirm-out) var(--pop-ease) forwards;
+}
+@keyframes confirm-out {
+  to {
+    opacity: 0;
+    scale: 0.9;
+  }
 }
 .thread-card-meta {
   padding-left: 16px;
@@ -8535,6 +8494,7 @@ html[data-voice='on'] .side-main {
   border: 1px solid var(--line-raised);
   border-radius: var(--r-float);
   box-shadow: var(--shadow-float);
+  animation: card-in var(--card-in) var(--pop-ease);
 }
 /* Centred on phones too: a two-button confirmation, not a bottom sheet. */
 .overlay.delete-layer { place-items: center; padding: 16px; }

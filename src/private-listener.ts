@@ -15,7 +15,7 @@ import type { Duplex } from 'node:stream'
 import { execFile } from 'node:child_process'
 import { tool } from './platform.ts'
 import { promisify } from 'node:util'
-import { caFiles, certDer, ensureCa, ensureServerCert, fingerprint, hasLegacy, type CaFiles } from './ca.ts'
+import { caFiles, certDer, ensureCa, ensureServerCert, fingerprint, hasLegacy, signableIps, type CaFiles } from './ca.ts'
 import type { PrivateListenerConfig } from './config.ts'
 
 const WILDCARD = new Set(['0.0.0.0', '::', '', '*'])
@@ -344,7 +344,9 @@ export class PrivateListener {
   async prepare({ reissueBroad = false } = {}) {
     const ips = [this.config.address]
     const ca = await ensureCa(this.files, { names: this.config.names, ips, reissueBroad })
-    await ensureServerCert(this.files, { names: this.config.names, ips })
+    // A hub restored on a computer with another address keeps its CA: the certificate then
+    // carries its names only, which is how devices reach it.
+    await ensureServerCert(this.files, { names: this.config.names, ips: await signableIps(this.files.caCert, ips) })
     return ca
   }
 

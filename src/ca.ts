@@ -53,6 +53,13 @@ async function nameConstraints(certFile: string) {
   return /X509v3 Name Constraints[^\n]*\n([\s\S]*?)(?=\n\s*(?:X509v3 |Signature Algorithm|Authority|Subject Key)|$)/.exec(stdout)?.[1] ?? ''
 }
 
+// The addresses among ips that the CA's name constraints allow in a certificate.
+export async function signableIps(certFile: string, ips: string[]) {
+  const stdout = await nameConstraints(certFile)
+  const addresses = [...stdout.matchAll(/IP:([0-9a-fA-F.:]+)\//g)].map((m) => m[1]!.toLowerCase())
+  return ips.filter((ip) => addresses.includes(ip.toLowerCase()))
+}
+
 function ipConstraint(ip: string) {
   return ip.includes(':') ? `IP:${ip}/ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff` : `IP:${ip}/255.255.255.255`
 }
@@ -87,10 +94,12 @@ export async function broadConstraints(certFile: string, names: string[]): Promi
 export async function ensureCa(files: CaFiles, { names, ips, reissueBroad = false }: { names: string[]; ips: string[]; reissueBroad?: boolean }): Promise<{ broad: string[]; reissued: boolean; rotated?: boolean }> {
   if (fs.existsSync(files.caKey) && fs.existsSync(files.caCert)) {
     const broad = await broadConstraints(files.caCert, names)
-    // A name or address the CA may not sign (one was added): a new CA for all of
-    // them. Its old server certificate keeps serving the old names, so devices
-    // that trust the old CA go on working until "private retire-legacy".
-    if (broad.length === 0 && !(await covers(files.caCert, names, ips))) {
+    // A name the CA may not sign (one was added): a new CA for all of them. Its old
+    // server certificate keeps serving the old names, so devices that trust the old CA
+    // go on working until "private retire-legacy". A new address alone does not: the
+    // hub on another computer keeps its CA, and its certificate names only what the
+    // CA may sign (devices reach it by name). See signableIps.
+    if (broad.length === 0 && !(await covers(files.caCert, names, []))) {
       if (!hasLegacy(files)) {
         await fs.promises.mkdir(files.legacy.dir, { recursive: true, mode: 0o700 })
         for (const [from, to] of [[files.caCert, files.legacy.caCert], [files.cert, files.legacy.cert], [files.key, files.legacy.key]] as const) if (fs.existsSync(from)) await fs.promises.rename(from, to)

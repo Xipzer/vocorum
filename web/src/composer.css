@@ -181,3 +181,210 @@
 .footer-line.command-receipt { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; height: auto; font-size: 13px; }
 .command-receipt small { color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .command-receipt .icon-button { margin-left: auto; }
+
+/* The message box. Desktop draws it on the whole footer (styles.css), so the box itself steps
+   aside. Phones float Discord's iPhone box on the chat: 16pt from each side, 58pt tall for one
+   line, 16pt corners, the composer fill and a 1px rule inside its edge, 10pt above the keyboard
+   or the home bar. It grows upward; the typing line, receipts and notices sit above it, on the
+   chat. The rule is an inset shadow so the row spans the full width: Send and the jump button
+   share its right edge. */
+.composer-box {
+  display: contents;
+}
+@media (max-width: 767px) {
+  .footer {
+    padding: 0 16px max(10px, env(safe-area-inset-bottom));
+    background: transparent;
+    border-top: 0;
+  }
+  html[data-keyboard='open'] .footer {
+    padding-bottom: 10px;
+  }
+  .footer > .footer-line {
+    padding: 0 0 2px 16px;
+  }
+  .footer > .snackbar {
+    left: 16px;
+    right: 16px;
+  }
+  /* While a recording is held, its hint takes the line above the box. */
+  .footer:has(.rec-tip) > .footer-line {
+    visibility: hidden;
+  }
+  .composer-box {
+    position: relative;
+    display: block;
+    padding: 7px 0;
+    border-radius: 16px;
+    background: var(--composer-bg, color-mix(in srgb, var(--backdrop), #fff 5%));
+    box-shadow: inset 0 0 0 1px var(--composer-line, color-mix(in srgb, var(--backdrop), #fff 9%));
+  }
+  /* Discord's insets: the + and the last icon centred 28-29pt from the box's edges, the text on
+     the message column, its last line centred 29pt above the bottom and its first 24pt below the top. */
+  .composer {
+    padding: 0 7px 0 6px;
+  }
+  .composer textarea {
+    padding: 6px 4px 11px 0;
+  }
+  .composer-box > .footer-line {
+    padding: 0 12px 4px 16px;
+  }
+}
+
+/* Send: Discord's rounded square in the theme's accent (blurple in OG), a filled arrow on
+   it. Phones: 36pt in the 44pt slot, as on iPhone; desktop keeps the 32px control. */
+.composer {
+  position: relative;
+}
+.composer .send {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 8px;
+}
+.composer .send:is(:hover, :active):not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 88%, #000);
+  color: #fff;
+}
+.composer .send > svg {
+  width: 18px;
+  height: 18px;
+}
+@media (max-width: 767px) {
+  .composer .send {
+    width: 36px;
+    height: 36px;
+    margin: 4px;
+  }
+  .composer .send > svg {
+    width: 22px;
+    height: 22px;
+  }
+}
+/* Over the lock the arrow stands alone, as in Discord. */
+.composer .send.plain,
+.composer .send.plain:is(:hover, :active):not(:disabled) {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+/* The recording bar, measured from Discord on iPhone: a bin where the + was, a 5.3pt red
+   dot 5pt from a 15pt timer, then the waveform 11pt on, ending 14pt short of Send. */
+.composer .rec-trash {
+  color: var(--text-strong);
+}
+.composer .rec-trash.over {
+  color: var(--danger);
+}
+.recording-label {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 8px 0 2px;
+  overflow: hidden;
+  font: 500 15px/20px var(--font);
+  color: var(--text-strong);
+}
+.rec-dot {
+  flex: none;
+  width: 5.33px;
+  height: 5.33px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: rec-blink 1.2s ease-in-out infinite;
+}
+@keyframes rec-blink {
+  50% {
+    opacity: 0.35;
+  }
+}
+.recording-label .num {
+  flex: none;
+  min-width: 28px;
+  margin-right: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.rec-wave {
+  flex: 1;
+  min-width: 0;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  overflow: hidden;
+}
+.rec-wave i {
+  flex: none;
+  width: 2px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--text-strong);
+}
+
+/* While holding: the hint centred above the bar and the lock over Send. A 36x68pt pill
+   with an open padlock and an up chevron; over it, a 56pt accent square, padlock shut. */
+.rec-tip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 14px);
+  z-index: 5;
+  text-align: center;
+  font: 400 13px/16px var(--font);
+  color: var(--text);
+  pointer-events: none;
+}
+.rec-lock {
+  position: absolute;
+  right: 4px;
+  bottom: calc(100% + 25px);
+  z-index: 5;
+  width: 36px;
+  height: 68px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding-top: 13px;
+  border-radius: 10px;
+  background: var(--bg-3);
+  color: var(--text-strong);
+  pointer-events: none;
+}
+.rec-lock.on {
+  right: -6px;
+  bottom: calc(100% + 73px);
+  width: 56px;
+  height: 56px;
+  justify-content: center;
+  padding: 0;
+  background: var(--accent);
+  color: #fff;
+}
+.rec-lock.on > svg {
+  width: 32px;
+  height: 32px;
+}
+/* Phones: over Send, inside the box's own 7pt inset. */
+@media (max-width: 767px) {
+  .rec-lock {
+    right: 11px;
+  }
+  .rec-lock.on {
+    right: 1px;
+  }
+}
+@media (min-width: 768px) {
+  .rec-tip {
+    bottom: calc(100% + 20px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rec-dot {
+    animation: none;
+  }
+}

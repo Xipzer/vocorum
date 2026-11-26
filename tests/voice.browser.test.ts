@@ -215,8 +215,10 @@ test.skipIf(!ready)('desktop: + opens a menu to upload, schedule or record; keys
   await context.close()
 })
 
-test.skipIf(!ready)('phone: hold the mic to record, release to send', async () => {
-  const context = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, serviceWorkers: 'block' })
+// Phones record as Discord does on iPhone: hold the mic, release to send, slide up
+// onto the lock to keep recording hands-free, the bin to drop it.
+async function phone() {
+  const context = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, viewport: { width: 393, height: 852 }, deviceScaleFactor: 3, hasTouch: true, isMobile: true, serviceWorkers: 'block' })
   const page = await context.newPage()
   const cdp = await pair(page)
   page.setDefaultTimeout(8000)
@@ -225,17 +227,150 @@ test.skipIf(!ready)('phone: hold the mic to record, release to send', async () =
   await page.reload()
   await page.locator('.message').last().waitFor()
   await page.waitForTimeout(600)
-  const before = await voiceNotes(page).count()
   const box = (await page.getByRole('button', { name: 'Record a voice message' }).boundingBox())!
   const at = { x: box.x + box.width / 2, y: box.y + box.height / 2 }
-  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [at] })
-  await page.locator('.recording-label').waitFor()
-  await page.waitForTimeout(1500)
-  // The mic stays on screen under the finger while recording.
-  const held = (await page.getByRole('button', { name: 'Record a voice message' }).boundingBox())!
-  expect(held.x + held.width).toBeLessThanOrEqual(390)
-  await page.screenshot({ path: path.join(shots, 'voice-phone-recording.png') })
-  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
-  await expect.poll(() => voiceNotes(page).count(), { timeout: 10_000 }).toBe(before + 1)
-  await context.close()
+  const touch = (type: 'touchStart' | 'touchMove' | 'touchEnd', p = at) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [p] })
+  // Slide in small steps, as a finger does.
+  const slide = async (to: { x: number; y: number }) => {
+    for (let i = 1; i <= 8; i++) {
+      await touch('touchMove', { x: at.x + ((to.x - at.x) * i) / 8, y: at.y + ((to.y - at.y) * i) / 8 })
+      await page.waitForTimeout(20)
+    }
+  }
+  return { context, page, at, touch, slide }
+}
+
+test.skipIf(!ready)('phone: hold the mic to record, release to send', async () => {
+  const { context, page, touch } = await phone()
+  try {
+    const before = await voiceNotes(page).count()
+    await touch('touchStart')
+    await page.locator('.recording-label').waitFor()
+    await page.getByText('Release to Send', { exact: true }).waitFor()
+    // Discord's bar: the bin where the + was, the timer, the waveform and a 36pt accent Send square under the finger.
+    expect(await page.getByRole('button', { name: 'Add to message' }).count()).toBe(0)
+    await page.getByRole('button', { name: 'Discard voice message' }).waitFor()
+    const send = page.getByRole('button', { name: 'Send voice message' })
+    const [box, bg, accent] = [(await send.boundingBox())!, await send.evaluate((e) => getComputedStyle(e).backgroundColor), await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim())]
+    expect([Math.round(box.width), Math.round(box.height)]).toEqual([36, 36])
+    expect(box.x + box.width).toBeLessThanOrEqual(393)
+    expect(bg).not.toBe('rgba(0, 0, 0, 0)')
+    expect(accent).not.toBe('')
+    // The bar sits inside the floating message box, 16pt in from each side.
+    const inside = await page.evaluate(() => {
+      const pill = document.querySelector('.composer-box')!.getBoundingClientRect()
+      return ['.rec-trash', '.recording-label', '.composer .send'].map((s) => { const r = document.querySelector(s)!.getBoundingClientRect(); return r.left >= pill.left && r.right <= pill.right && r.top >= pill.top && r.bottom <= pill.bottom })
+        .concat([pill.left === 16, innerWidth - pill.right === 16, pill.height === 58])
+    })
+    expect(inside).toEqual([true, true, true, true, true, true])
+    // Send and the shut lock are the theme's accent with a white glyph, in cyan and in pink.
+    for (const tone of ['cyan', 'pink']) {
+      const look = () => page.evaluate((tone) => {
+        if (tone === 'pink') document.documentElement.dataset['accent'] = 'pink'
+        else delete document.documentElement.dataset['accent']
+        const probe = document.createElement('i')
+        probe.style.cssText = 'background: var(--accent); color: #fff'
+        document.body.append(probe)
+        const want = [getComputedStyle(probe).backgroundColor, getComputedStyle(probe).color]
+        probe.remove()
+        const send = getComputedStyle(document.querySelector('.composer .send')!)
+        const lum = (c: string) => { const [r, g, b] = c.match(/\d+(\.\d+)?/g)!.slice(0, 3).map(Number).map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4 }); return 0.2126 * r! + 0.7152 * g! + 0.0722 * b! }
+        const [a, b] = [lum(send.backgroundColor), lum(send.color)].sort((x, y) => y - x)
+        return { want, got: [send.backgroundColor, send.color], contrast: (a! + 0.05) / (b! + 0.05) }
+      }, tone)
+      // Polled: the fill eases between tones.
+      await expect.poll(async () => { const l = await look(); return l.got.join() === l.want.join() }).toBe(true)
+    }
+    await page.evaluate(() => { delete document.documentElement.dataset['accent'] })
+    await page.locator('.rec-lock').waitFor()
+    const [lock, sendNow] = [(await page.locator('.rec-lock').boundingBox())!, (await send.boundingBox())!]
+    expect(lock.x + lock.width).toBe(sendNow.x + sendNow.width)
+    await page.waitForTimeout(1500)
+    await expect(page.locator('.recording-label .num').textContent()).resolves.toMatch(/^0:0[1-2]$/)
+    expect(await page.locator('.rec-wave i').count()).toBeGreaterThan(5)
+    await page.screenshot({ path: path.join(shots, 'voice-phone-recording.png') })
+    await touch('touchEnd')
+    await expect.poll(() => voiceNotes(page).count(), { timeout: 10_000 }).toBe(before + 1)
+    await page.locator('.recording-label').waitFor({ state: 'detached' })
+    await page.getByRole('button', { name: 'Record a voice message' }).waitFor()
+  } finally { await context.close() }
+})
+
+test.skipIf(!ready)('phone: slide up onto the lock, recording carries on after release, Send sends', async () => {
+  const { context, page, at, touch, slide } = await phone()
+  try {
+    const before = await voiceNotes(page).count()
+    await touch('touchStart')
+    await page.locator('.recording-label').waitFor()
+    await slide({ x: at.x, y: at.y - 100 })
+    await page.getByText('Release to Lock', { exact: true }).waitFor()
+    await page.locator('.rec-lock.on').waitFor()
+    // The shut lock: the accent square with its ink, centred over Send.
+    const [on, send] = await Promise.all(['.rec-lock.on', '.composer .send'].map((s) => page.locator(s).evaluate((el) => { const r = el.getBoundingClientRect(), c = getComputedStyle(el); return { mid: r.left + r.width / 2, bg: c.backgroundColor, ink: c.color } })))
+    expect(on!.mid).toBe(send!.mid)
+    expect(on!.bg).toBe(await page.evaluate(() => { const i = document.createElement('i'); i.style.background = 'var(--accent)'; document.body.append(i); const c = getComputedStyle(i).backgroundColor; i.remove(); return c }))
+    await page.screenshot({ path: path.join(shots, 'voice-phone-lock.png') })
+    await touch('touchEnd', { x: at.x, y: at.y - 100 })
+    // Locked: the hint and the lock go, the timer keeps counting, nothing is sent yet.
+    await page.locator('.rec-lock').waitFor({ state: 'detached' })
+    expect(await page.locator('.rec-tip').count()).toBe(0)
+    await page.waitForTimeout(1600)
+    await expect(page.locator('.recording-label .num').textContent()).resolves.toMatch(/^0:0[1-3]$/)
+    expect(await voiceNotes(page).count()).toBe(before)
+    await page.screenshot({ path: path.join(shots, 'voice-phone-locked.png') })
+    await page.getByRole('button', { name: 'Send voice message' }).tap()
+    await expect.poll(() => voiceNotes(page).count(), { timeout: 10_000 }).toBe(before + 1)
+    await page.locator('.recording-label').waitFor({ state: 'detached' })
+  } finally { await context.close() }
+})
+
+test.skipIf(!ready)('phone: the bin drops a recording, locked or held; a quick tap only says how', async () => {
+  const { context, page, at, touch, slide } = await phone()
+  try {
+    const before = await voiceNotes(page).count()
+    // Locked, then the bin.
+    await touch('touchStart')
+    await page.locator('.recording-label').waitFor()
+    await slide({ x: at.x, y: at.y - 100 })
+    await touch('touchEnd', { x: at.x, y: at.y - 100 })
+    await page.locator('.rec-lock').waitFor({ state: 'detached' })
+    await page.waitForTimeout(800)
+    await page.getByRole('button', { name: 'Discard voice message' }).tap()
+    await page.locator('.recording-label').waitFor({ state: 'detached' })
+    // Held, slid onto the bin, released.
+    await touch('touchStart')
+    await page.locator('.recording-label').waitFor()
+    await page.waitForTimeout(600)
+    const bin = (await page.getByRole('button', { name: 'Discard voice message' }).boundingBox())!
+    const over = { x: bin.x + bin.width / 2, y: bin.y + bin.height / 2 }
+    await slide(over)
+    await page.getByText('Release to Discard', { exact: true }).waitFor()
+    await touch('touchEnd', over)
+    await page.locator('.recording-label').waitFor({ state: 'detached' })
+    // A tap records nothing and shows the hint.
+    await touch('touchStart')
+    await page.waitForTimeout(60)
+    await touch('touchEnd')
+    await page.getByText('Hold to record, release to send', { exact: true }).waitFor()
+    await page.waitForTimeout(1500)
+    expect(await page.locator('.recording-label').count()).toBe(0)
+    expect(await voiceNotes(page).count()).toBe(before)
+  } finally { await context.close() }
+})
+
+test.skipIf(!ready)('phone: typed text shows the Send square in place of the mic', async () => {
+  const { context, page } = await phone()
+  try {
+    const mic = page.getByRole('button', { name: 'Record a voice message' })
+    await mic.waitFor()
+    expect(await page.getByRole('button', { name: 'Send', exact: true }).count()).toBe(0)
+    await page.locator('.composer textarea').fill('On my way')
+    const send = page.getByRole('button', { name: 'Send', exact: true })
+    await send.waitFor()
+    expect(await mic.count()).toBe(0)
+    const box = (await send.boundingBox())!
+    expect([Math.round(box.width), Math.round(box.height)]).toEqual([36, 36])
+    await page.locator('.composer textarea').fill('')
+    await mic.waitFor()
+  } finally { await context.close() }
 })

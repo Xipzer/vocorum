@@ -344,28 +344,69 @@ function SlashForm({
 const clockSecs = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 
 // Live input level as a row of bars.
-function Level({ analyser }: { analyser: AnalyserNode | null }) {
-  const [bars, setBars] = useState<number[]>(() => Array(24).fill(0.08))
+// The live waveform, as Discord's: a dotted track that fills from the right with one
+// sample every 100ms, a bar where there was sound. With reduced motion the track stays
+// still and only the bars at its end follow the level.
+const WAVE_PITCH = 6
+const STILL_SHAPE = [0.5, 0.8, 1, 0.8, 0.5]
+function Wave({ analyser }: { analyser: AnalyserNode | null }) {
+  const track = useRef<HTMLSpanElement>(null)
+  const [slots, setSlots] = useState(0)
+  const [samples, setSamples] = useState<number[]>([])
+  const [still] = useState(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+  useLayoutEffect(() => {
+    const el = track.current
+    if (!el) return
+    const fit = () => setSlots(Math.max(0, Math.floor((el.clientWidth + WAVE_PITCH - 2) / WAVE_PITCH)))
+    fit()
+    const watch = new ResizeObserver(fit)
+    watch.observe(el)
+    return () => watch.disconnect()
+  }, [])
   useEffect(() => {
-    if (!analyser) return
-    const data = new Uint8Array(analyser.fftSize)
-    let frame = 0
-    const tick = () => {
-      analyser.getByteTimeDomainData(data)
+    const data = analyser ? new Uint8Array(analyser.fftSize) : null
+    const id = window.setInterval(() => {
       let peak = 0
-      for (const v of data) peak = Math.max(peak, Math.abs(v - 128) / 128)
-      setBars((b) => [...b.slice(1), Math.max(0.08, Math.min(1, peak * 1.8))])
-      frame = window.setTimeout(tick, 80)
-    }
-    tick()
-    return () => window.clearTimeout(frame)
-  }, [analyser])
+      if (analyser && data) {
+        analyser.getByteTimeDomainData(data)
+        for (const v of data) peak = Math.max(peak, Math.abs(v - 128) / 128)
+      }
+      const level = Math.min(1, peak * 1.8)
+      setSamples((s) => (still ? [level] : [...s.slice(-255), level]))
+    }, 100)
+    return () => window.clearInterval(id)
+  }, [analyser, still])
+  const shown = still ? Array.from({ length: slots }, (_, i) => (i >= slots - STILL_SHAPE.length ? (samples[0] ?? 0) * STILL_SHAPE[i - slots + STILL_SHAPE.length]! : 0)) : samples.slice(-slots)
   return (
-    <span className="rec-level" aria-hidden>
-      {bars.map((h, i) => (
-        <i key={i} style={{ height: `${Math.round(h * 100)}%` }} />
+    <span ref={track} className="rec-wave" aria-hidden>
+      {shown.map((h, i) => (
+        <i key={i} style={h >= 0.1 ? { height: `${Math.round(2 + h * 13)}px` } : undefined} />
       ))}
     </span>
+  )
+}
+
+// Discord's filled glyphs for the voice note bar and the send button.
+function SendGlyph() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M4.2 3.9c-.6-.3-1.2.3-.9.9L7.8 12l-4.5 7.2c-.3.6.3 1.2.9.9l16.9-7.3c.6-.3.6-1.2 0-1.5Z" />
+    </svg>
+  )
+}
+function TrashGlyph() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path fillRule="evenodd" d="M9.4 3h5.2l.7 1.6h3.4a1 1 0 0 1 0 2H5.3a1 1 0 0 1 0-2h3.4ZM5.8 8h12.4l-.9 11.6a2 2 0 0 1-2 1.9H8.7a2 2 0 0 1-2-1.9ZM9.8 10.6v7.4h1.5v-7.4Zm2.9 0v7.4h1.5v-7.4Z" />
+    </svg>
+  )
+}
+function Padlock({ open }: { open: boolean }) {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+      <path d={open ? 'M8 10.5V6.6a4 4 0 0 1 7.9-.9' : 'M8 10.5V7.5a4 4 0 0 1 8 0v3'} fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+      <path fill="currentColor" fillRule="evenodd" d="M7.5 10h9a2.5 2.5 0 0 1 2.5 2.5v6a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 5 18.5v-6A2.5 2.5 0 0 1 7.5 10ZM12 13.4a1.5 1.5 0 0 0-.8 2.8V18h1.6v-1.8a1.5 1.5 0 0 0-.8-2.8Z" />
+    </svg>
   )
 }
 
@@ -481,10 +522,22 @@ export function Composer({
   const [bar, setBar] = useState<{ x: number; y: number } | null>(null)
   const emojiButton = useRef<HTMLButtonElement>(null)
   const mic = useRef<HTMLButtonElement>(null)
+  const trash = useRef<HTMLButtonElement>(null)
   const pressed = useRef(false)
   const locked = useRef(false)
+  const sendDown = useRef(false)
   const downAt = useRef(0)
+  const downPos = useRef<{ x: number; y: number } | null>(null)
   const lastPos = useRef<{ x: number; y: number } | null>(null)
+  // A held recording: 'hold' sends on release, 'lock' and 'trash' are the finger over
+  // the lock or the bin, 'locked' records hands-free until Send or the bin.
+  const [phase, setPhase] = useState<'hold' | 'lock' | 'trash' | 'locked'>('hold')
+  const [tip, setTip] = useState('')
+  useEffect(() => {
+    if (!tip) return
+    const id = window.setTimeout(() => setTip(''), 2000)
+    return () => window.clearTimeout(id)
+  }, [tip])
   const meter = useRef<AudioContext | null>(null)
   const levels = useRef<AnalyserNode | null>(null)
 
@@ -795,18 +848,20 @@ export function Composer({
     }
   }
 
-  // Voice notes. Touch: hold to record, release to send, slide away to cancel.
-  // A click (mouse) or a quick tap locks recording on: then Send or Enter
-  // sends, Cancel or Esc drops it. Works the same on desktop and phones.
-  // Without a press (the + menu) recording starts locked on.
+  // Voice notes, as Discord's. Touch: hold the mic to record and release to send;
+  // slide up onto the lock to keep recording hands-free, or onto the bin to drop it.
+  // A quick tap only shows how. A mouse click, the keyboard or the + menu start
+  // recording locked on: then Send or Enter sends, the bin or Esc drops it.
   const startRecording = async (event?: React.PointerEvent) => {
     event?.preventDefault()
     if (recorder.current || retained || voiceSending.current) return
     if (event) mic.current?.setPointerCapture(event.pointerId)
     pressed.current = Boolean(event)
     downAt.current = Date.now()
-    lastPos.current = event ? { x: event.clientX, y: event.clientY } : null
+    downPos.current = lastPos.current = event ? { x: event.clientX, y: event.clientY } : null
     locked.current = !event || event.pointerType === 'mouse'
+    sendDown.current = false
+    setTip('')
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       // Released before the microphone opened: a hold that ended (drop it) unless it was a tap (lock on).
@@ -835,6 +890,8 @@ export function Composer({
         const analyser = audio.createAnalyser()
         analyser.fftSize = 256
         audio.createMediaStreamSource(stream).connect(analyser)
+        // Opened after an await: some browsers start it suspended.
+        void audio.resume().catch(() => {})
         meter.current = audio
         levels.current = analyser
       } catch {
@@ -842,6 +899,7 @@ export function Composer({
       }
       media.start(250)
       recorder.current = state
+      setPhase(locked.current ? 'locked' : 'hold')
       setRecording({ started: Date.now(), cancel: false })
       setNow(Date.now())
     } catch (e) {
@@ -849,12 +907,20 @@ export function Composer({
     }
   }
 
-  // Where the finger is now: from moves, since some browsers report 0,0 on release.
-  const outside = () => {
-    const rect = mic.current?.getBoundingClientRect()
-    const at = lastPos.current
-    if (!rect || !at) return false
-    return at.x < rect.left - 60 || at.y < rect.top - 60
+  // Where the finger is: from moves, since some browsers report 0,0 on release.
+  // Up past the lock's middle locks; over the bin drops.
+  const heldOver = (): 'hold' | 'lock' | 'trash' => {
+    const at = lastPos.current, from = downPos.current
+    if (!at || !from) return 'hold'
+    const bin = trash.current?.getBoundingClientRect()
+    if (bin && at.x < bin.right + 16 && Math.abs(at.y - (bin.top + bin.height / 2)) < 44) return 'trash'
+    return from.y - at.y >= 72 ? 'lock' : 'hold'
+  }
+
+  const moveRecording = (event: React.PointerEvent) => {
+    if (!pressed.current) return
+    lastPos.current = { x: event.clientX, y: event.clientY }
+    if (recorder.current && !locked.current) setPhase(heldOver())
   }
 
   const finish = (send: boolean) => {
@@ -863,20 +929,26 @@ export function Composer({
     const state = recorder.current
     recorder.current = null
     setRecording(null)
+    setPhase('hold')
     if (!state) return
     state.cancelled = !send
     if (state.media.state !== 'inactive') state.media.stop()
   }
 
-  const stopRecording = (event: React.PointerEvent) => {
+  const stopRecording = () => {
     pressed.current = false
-    // A quick tap (or any click) keeps recording until Send or Cancel.
-    if (locked.current || Date.now() - downAt.current < 350) {
-      locked.current = true
-      return
+    if (locked.current) return
+    // A quick tap records nothing, as in Discord: it says how instead.
+    if (Date.now() - downAt.current < 300) {
+      setTip('Hold to record, release to send')
+      return finish(false)
     }
-    void event
-    finish(!outside())
+    const over = heldOver()
+    if (over === 'lock' && recorder.current) {
+      locked.current = true
+      return setPhase('locked')
+    }
+    finish(over !== 'trash')
   }
 
   useEffect(() => {
@@ -908,232 +980,259 @@ export function Composer({
 
   return (
     <>
-      {retained && <div className="footer-line" role="group" aria-label="Voice recording"><span>{voiceBusy ? 'Sending voice note…' : 'Unsent voice note'}</span>{!voiceBusy && <><button className="button" onClick={() => void deliverVoice(retained)}>Retry</button>{saveUrl && <a className="button" href={saveUrl} download={retained.name}>Save audio</a>}<button onClick={() => { if (window.confirm('Discard this recording?')) void saveVoice(voiceKey).then(() => setDraft(undefined), () => onError('Could not discard the draft.')) }}>Discard</button></>}</div>}
-      {replyTo && (
-        <div className="footer-line">
-          <span>
-            Replying to <strong>{replyTo.author.global_name ?? replyTo.author.username}</strong>
-          </span>
-          <button className="icon-button" onClick={onCancelReply} aria-label="Cancel reply">
-            <Icon name="close" size={16} />
-          </button>
-        </div>
-      )}
-      {command && <SlashForm command={command} channelId={channelId} channels={channels} onCancel={() => setCommand(null)} onResult={onResult} />}
-      {matches.length > 0 && (
-        <div className="palette" role="listbox">
-          {matches.map((c, index) => (
-            <button key={c.id} className={`slash-item${index === pick ? ' on' : ''}`} onMouseEnter={() => setPick(index)} onClick={() => chooseCommand(c)}>
-              <span className="slash-name">/{c.name}</span>
-              <span className="muted">{c.description}</span>
+      <div className="composer-box">
+        {retained && <div className="footer-line" role="group" aria-label="Voice recording"><span>{voiceBusy ? 'Sending voice note…' : 'Unsent voice note'}</span>{!voiceBusy && <><button className="button" onClick={() => void deliverVoice(retained)}>Retry</button>{saveUrl && <a className="button" href={saveUrl} download={retained.name}>Save audio</a>}<button onClick={() => { if (window.confirm('Discard this recording?')) void saveVoice(voiceKey).then(() => setDraft(undefined), () => onError('Could not discard the draft.')) }}>Discard</button></>}</div>}
+        {replyTo && (
+          <div className="footer-line">
+            <span>
+              Replying to <strong>{replyTo.author.global_name ?? replyTo.author.username}</strong>
+            </span>
+            <button className="icon-button" onClick={onCancelReply} aria-label="Cancel reply">
+              <Icon name="close" size={16} />
             </button>
-          ))}
-        </div>
-      )}
-      {suggestions.length > 0 && (
-        <div className="palette suggest" role="listbox" aria-label={token?.trigger === '@' ? 'Members' : token?.trigger === '#' ? 'Channels' : 'Emoji'}>
-          {suggestions.map((s, index) => (
-            <button key={s.key} role="option" aria-selected={index === suggestPick} className={`slash-item${index === suggestPick ? ' on' : ''}`} onMouseEnter={() => setSuggestPick(index)} onMouseDown={(e) => e.preventDefault()} onClick={() => chooseSuggestion(s)}>
-              {s.glyph && <span className={`suggest-glyph${token?.trigger === ':' ? ' emoji' : ''}`}>{token?.trigger === ':' ? emojify(String(s.glyph)) : s.glyph}</span>}
-              <span className="slash-name">{s.label}</span>
-              {s.hint && <span className="muted">{s.hint}</span>}
-            </button>
-          ))}
-        </div>
-      )}
-      {bar &&
-        createPortal(
-          <div className="format-bar" role="toolbar" aria-label="Formatting" style={{ left: bar.x, top: bar.y }} onMouseDown={(e) => e.preventDefault()}>
-            {FORMATS.map((f, i) => (
-              <button key={f.key} className={`format-button${i === 4 ? ' gap' : ''}`} aria-label={f.label} title={f.label} onClick={() => format(f)}>
-                {f.glyph}
+          </div>
+        )}
+        {command && <SlashForm command={command} channelId={channelId} channels={channels} onCancel={() => setCommand(null)} onResult={onResult} />}
+        {matches.length > 0 && (
+          <div className="palette" role="listbox">
+            {matches.map((c, index) => (
+              <button key={c.id} className={`slash-item${index === pick ? ' on' : ''}`} onMouseEnter={() => setPick(index)} onClick={() => chooseCommand(c)}>
+                <span className="slash-name">/{c.name}</span>
+                <span className="muted">{c.description}</span>
               </button>
             ))}
-          </div>,
-          document.body,
+          </div>
         )}
-      {emojiAt && (
-        <EmojiPicker
-          anchor={emojiAt}
-          guildId={guildId}
-          onPick={(emoji) => {
-            rememberEmoji(emoji)
-            // A server emoji reads as :name: while typing; sending turns it back into the emoji.
-            replaceRange(caret.start, caret.end, customName(emoji) ? `:${customName(emoji)}:` : emoji)
-            setEmojiAt(null)
-          }}
-          onClose={() => setEmojiAt(null)}
-        />
-      )}
-      {uploads.length > 0 && (
-        <ul className="upload-tiles" aria-label="Attachments">
-          {uploads.map((u) => (
-            <UploadTile
-              key={u.key}
-              upload={u}
-              onSpoiler={() => changeUpload(u, { spoiler: !u.spoiler })}
-              onEdit={() => setEditing(u.key)}
-              onRemove={() => removeUpload(u)}
-              onRetry={() => startUpload(u.key, u.file, uploadName(u))}
-            />
-          ))}
-        </ul>
-      )}
-      {(() => {
-        const u = uploads.find((x) => x.key === editing)
-        return (
-          u && (
-            <UploadEditor
-              upload={u}
-              onClose={() => setEditing(null)}
-              onSave={(name, description) => {
-                changeUpload(u, { name, description })
-                setEditing(null)
-                textarea.current?.focus()
-              }}
-            />
+        {suggestions.length > 0 && (
+          <div className="palette suggest" role="listbox" aria-label={token?.trigger === '@' ? 'Members' : token?.trigger === '#' ? 'Channels' : 'Emoji'}>
+            {suggestions.map((s, index) => (
+              <button key={s.key} role="option" aria-selected={index === suggestPick} className={`slash-item${index === suggestPick ? ' on' : ''}`} onMouseEnter={() => setSuggestPick(index)} onMouseDown={(e) => e.preventDefault()} onClick={() => chooseSuggestion(s)}>
+                {s.glyph && <span className={`suggest-glyph${token?.trigger === ':' ? ' emoji' : ''}`}>{token?.trigger === ':' ? emojify(String(s.glyph)) : s.glyph}</span>}
+                <span className="slash-name">{s.label}</span>
+                {s.hint && <span className="muted">{s.hint}</span>}
+              </button>
+            ))}
+          </div>
+        )}
+        {bar &&
+          createPortal(
+            <div className="format-bar" role="toolbar" aria-label="Formatting" style={{ left: bar.x, top: bar.y }} onMouseDown={(e) => e.preventDefault()}>
+              {FORMATS.map((f, i) => (
+                <button key={f.key} className={`format-button${i === 4 ? ' gap' : ''}`} aria-label={f.label} title={f.label} onClick={() => format(f)}>
+                  {f.glyph}
+                </button>
+              ))}
+            </div>,
+            document.body,
+          )}
+        {emojiAt && (
+          <EmojiPicker
+            anchor={emojiAt}
+            guildId={guildId}
+            onPick={(emoji) => {
+              rememberEmoji(emoji)
+              // A server emoji reads as :name: while typing; sending turns it back into the emoji.
+              replaceRange(caret.start, caret.end, customName(emoji) ? `:${customName(emoji)}:` : emoji)
+              setEmojiAt(null)
+            }}
+            onClose={() => setEmojiAt(null)}
+          />
+        )}
+        {uploads.length > 0 && (
+          <ul className="upload-tiles" aria-label="Attachments">
+            {uploads.map((u) => (
+              <UploadTile
+                key={u.key}
+                upload={u}
+                onSpoiler={() => changeUpload(u, { spoiler: !u.spoiler })}
+                onEdit={() => setEditing(u.key)}
+                onRemove={() => removeUpload(u)}
+                onRetry={() => startUpload(u.key, u.file, uploadName(u))}
+              />
+            ))}
+          </ul>
+        )}
+        {(() => {
+          const u = uploads.find((x) => x.key === editing)
+          return (
+            u && (
+              <UploadEditor
+                upload={u}
+                onClose={() => setEditing(null)}
+                onSave={(name, description) => {
+                  changeUpload(u, { name, description })
+                  setEditing(null)
+                  textarea.current?.focus()
+                }}
+              />
+            )
           )
-        )
-      })()}
-      {!command && (
-        <div
-          className={`composer${recording ? ' recording' : ''}${dragging ? ' dropping' : ''}`}
-          onDragOver={(e) => {
-            if (![...e.dataTransfer.types].includes('Files')) return
-            e.preventDefault()
-            setDragging(true)
-          }}
-          onDragLeave={(e) => !e.currentTarget.contains(e.relatedTarget as Node) && setDragging(false)}
-          onDrop={(e) => {
-            if (!e.dataTransfer.files.length) return
-            e.preventDefault()
-            setDragging(false)
-            addFiles(e.dataTransfer.files)
-          }}
-        >
-          <button ref={attach} className="icon-button attach" onClick={() => (plusMenu ? setPlusMenu(null) : openPlusMenu())} aria-label="Add to message" aria-haspopup="menu" aria-expanded={Boolean(plusMenu)}>
-            <Icon name="attach" size={20} />
-          </button>
-          <input ref={fileInput} type="file" multiple hidden onChange={(e) => {
-              if (e.target.files) addFiles(e.target.files)
-              e.target.value = ''
-            }} />
-          {recording ? (
-            <div className="recording-label">
-              <span className="rec-dot" />
-              <span className="num">{clockSecs(Math.floor((now - recording.started) / 1000))}</span>
-              <Level analyser={levels.current} />
-              {locked.current ? (
-                <>
-                  <button className="link-button rec-cancel" onClick={() => finish(false)}>
-                    Cancel
-                  </button>
-                </>
-              ) : (
-                <span className="muted rec-hint">Slide away to cancel</span>
-              )}
-            </div>
-          ) : (
-            <textarea
-              ref={textarea}
-              rows={1}
-              value={text}
-              placeholder={placeholder}
-              aria-label={placeholder}
-              onChange={(e) => {
-                setText(e.target.value)
-                setCaret({ start: e.target.selectionStart, end: e.target.selectionEnd })
-                setDismissed(null)
-              }}
-              onSelect={trackCaret}
-              onBlur={() => setBar(null)}
-              onFocus={trackCaret}
-              onPaste={(e) => {
-                if (e.clipboardData.files.length) {
-                  e.preventDefault()
-                  addFiles(e.clipboardData.files)
-                }
-              }}
-              onKeyDown={(e) => {
-                if (suggestions.length) {
-                  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                    e.preventDefault()
-                    setSuggestPick((p) => (p + (e.key === 'ArrowDown' ? 1 : suggestions.length - 1)) % suggestions.length)
-                    return
-                  }
-                  if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
-                    e.preventDefault()
-                    chooseSuggestion(suggestions[suggestPick] ?? suggestions[0]!)
-                    return
-                  }
-                  if (e.key === 'Escape') {
-                    e.preventDefault()
-                    setDismissed(token!.start)
-                    return
-                  }
-                }
-                if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
-                  const f = FORMATS.find((x) => x.key === e.key.toLowerCase() && 'biu'.includes(x.key))
-                  if (f) {
-                    e.preventDefault()
-                    format(f)
-                    return
-                  }
-                }
-                if (matches.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
-                  e.preventDefault()
-                  setPick((p) => (p + (e.key === 'ArrowDown' ? 1 : matches.length - 1)) % matches.length)
-                  return
-                }
-                if (matches.length && !e.nativeEvent.isComposing && !e.shiftKey && (e.key === 'Tab' || e.key === 'Enter')) {
-                  e.preventDefault()
-                  if (!e.repeat) chooseCommand(matches[pick] ?? matches[0]!)
-                  return
-                }
-                // Up in an empty box edits your last message, like Discord.
-                if (e.key === 'ArrowUp' && !text && !uploads.length && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
-                  e.preventDefault()
-                  window.dispatchEvent(new CustomEvent('vocorum:edit-last', { detail: channelId }))
-                  return
-                }
-                const touch = window.matchMedia('(pointer: coarse)').matches
-                if (e.key === 'Enter' && !e.shiftKey && !touch && !e.nativeEvent.isComposing) {
-                  e.preventDefault()
-                  void send()
-                }
-                if (e.key === 'Escape' && replyTo) onCancelReply()
-              }}
-            />
-          )}
-          {!recording && text.length > LIMIT - 200 && <span className={`char-count num${text.length > LIMIT ? ' over' : ''}`}>{LIMIT - text.length}</span>}
-          {!recording && (
-            <button ref={emojiButton} className="icon-button emoji-button" aria-label="Emoji" title="Emoji" onMouseDown={(e) => e.preventDefault()} onClick={() => {
-                if (emojiAt) return setEmojiAt(null)
-                // Above the whole box, 8px clear of it, right edge on the button (Discord's spot).
-                const b = emojiButton.current!.getBoundingClientRect()
-                const box = (emojiButton.current!.closest('.footer') ?? emojiButton.current!.closest('.composer'))?.getBoundingClientRect() ?? b
-                setEmojiAt(new DOMRect(b.x, box.top, b.width, b.bottom - box.top))
-              }}>
-              <Icon name="smile" />
-            </button>
-          )}
-          {recording && locked.current ? (
-            <button className="icon-button send" onClick={() => finish(true)} aria-label="Send voice message" title="Send (Enter)">
-              <Icon name="send" />
-            </button>
-          ) : (
-            text.trim() || uploads.length ? (
-              <button className="icon-button send" {...sendPress} onClick={() => void send()} aria-label="Send" title={canSchedule ? 'Send (right-click to schedule)' : 'Send'}>
-                <Icon name="send" />
+        })()}
+        {!command && (
+          <div
+            className={`composer${recording ? ' recording' : ''}${dragging ? ' dropping' : ''}`}
+            onDragOver={(e) => {
+              if (![...e.dataTransfer.types].includes('Files')) return
+              e.preventDefault()
+              setDragging(true)
+            }}
+            onDragLeave={(e) => !e.currentTarget.contains(e.relatedTarget as Node) && setDragging(false)}
+            onDrop={(e) => {
+              if (!e.dataTransfer.files.length) return
+              e.preventDefault()
+              setDragging(false)
+              addFiles(e.dataTransfer.files)
+            }}
+          >
+            {recording ? (
+              <button ref={trash} className={`icon-button rec-trash${phase === 'trash' ? ' over' : ''}`} onClick={() => finish(false)} aria-label="Discard voice message" title="Discard (Esc)">
+                <TrashGlyph />
               </button>
             ) : (
-              <button ref={mic} className={`icon-button mic${recording ? ' live' : ''}`} onPointerDown={(e) => void startRecording(e)} onPointerMove={(e) => { if (pressed.current) lastPos.current = { x: e.clientX, y: e.clientY } }} onPointerUp={stopRecording} onPointerCancel={(e) => (locked.current ? undefined : finish(false), void e)} onContextMenu={(e) => e.preventDefault()} aria-label="Record a voice message" title="Voice message: click to record, or hold">
+              <button ref={attach} className="icon-button attach" onClick={() => (plusMenu ? setPlusMenu(null) : openPlusMenu())} aria-label="Add to message" aria-haspopup="menu" aria-expanded={Boolean(plusMenu)}>
+                <Icon name="attach" size={20} />
+              </button>
+            )}
+            <input ref={fileInput} type="file" multiple hidden onChange={(e) => {
+                if (e.target.files) addFiles(e.target.files)
+                e.target.value = ''
+              }} />
+            {recording ? (
+              <div className="recording-label">
+                <span className="rec-dot" />
+                <span className="num">{clockSecs(Math.floor((now - recording.started) / 1000))}</span>
+                <Wave analyser={levels.current} />
+              </div>
+            ) : (
+              <textarea
+                ref={textarea}
+                rows={1}
+                value={text}
+                placeholder={placeholder}
+                aria-label={placeholder}
+                onChange={(e) => {
+                  setText(e.target.value)
+                  setCaret({ start: e.target.selectionStart, end: e.target.selectionEnd })
+                  setDismissed(null)
+                }}
+                onSelect={trackCaret}
+                onBlur={() => setBar(null)}
+                onFocus={trackCaret}
+                onPaste={(e) => {
+                  if (e.clipboardData.files.length) {
+                    e.preventDefault()
+                    addFiles(e.clipboardData.files)
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (suggestions.length) {
+                    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                      e.preventDefault()
+                      setSuggestPick((p) => (p + (e.key === 'ArrowDown' ? 1 : suggestions.length - 1)) % suggestions.length)
+                      return
+                    }
+                    if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
+                      e.preventDefault()
+                      chooseSuggestion(suggestions[suggestPick] ?? suggestions[0]!)
+                      return
+                    }
+                    if (e.key === 'Escape') {
+                      e.preventDefault()
+                      setDismissed(token!.start)
+                      return
+                    }
+                  }
+                  if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+                    const f = FORMATS.find((x) => x.key === e.key.toLowerCase() && 'biu'.includes(x.key))
+                    if (f) {
+                      e.preventDefault()
+                      format(f)
+                      return
+                    }
+                  }
+                  if (matches.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+                    e.preventDefault()
+                    setPick((p) => (p + (e.key === 'ArrowDown' ? 1 : matches.length - 1)) % matches.length)
+                    return
+                  }
+                  if (matches.length && !e.nativeEvent.isComposing && !e.shiftKey && (e.key === 'Tab' || e.key === 'Enter')) {
+                    e.preventDefault()
+                    if (!e.repeat) chooseCommand(matches[pick] ?? matches[0]!)
+                    return
+                  }
+                  // Up in an empty box edits your last message, like Discord.
+                  if (e.key === 'ArrowUp' && !text && !uploads.length && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
+                    e.preventDefault()
+                    window.dispatchEvent(new CustomEvent('vocorum:edit-last', { detail: channelId }))
+                    return
+                  }
+                  const touch = window.matchMedia('(pointer: coarse)').matches
+                  if (e.key === 'Enter' && !e.shiftKey && !touch && !e.nativeEvent.isComposing) {
+                    e.preventDefault()
+                    void send()
+                  }
+                  if (e.key === 'Escape' && replyTo) onCancelReply()
+                }}
+              />
+            )}
+            {!recording && text.length > LIMIT - 200 && <span className={`char-count num${text.length > LIMIT ? ' over' : ''}`}>{LIMIT - text.length}</span>}
+            {!recording && (
+              <button ref={emojiButton} className="icon-button emoji-button" aria-label="Emoji" title="Emoji" onMouseDown={(e) => e.preventDefault()} onClick={() => {
+                  if (emojiAt) return setEmojiAt(null)
+                  // Above the whole box, 8px clear of it, right edge on the button (Discord's spot).
+                  const b = emojiButton.current!.getBoundingClientRect()
+                  const box = (emojiButton.current!.closest('.footer') ?? emojiButton.current!.closest('.composer'))?.getBoundingClientRect() ?? b
+                  setEmojiAt(new DOMRect(b.x, box.top, b.width, b.bottom - box.top))
+                }}>
+                <Icon name="smile" />
+              </button>
+            )}
+            {recording ? (
+              // The same element as the mic under the finger, so the press carries on.
+              <button
+                ref={mic}
+                className={`icon-button mic send${phase === 'lock' ? ' plain' : ''}`}
+                onPointerMove={moveRecording}
+                onPointerUp={stopRecording}
+                onPointerCancel={() => locked.current || finish(false)}
+                onContextMenu={(e) => e.preventDefault()}
+                // The release that starts or locks a recording may also click: only a new press sends.
+                onPointerDown={() => { sendDown.current = true }}
+                onClick={(e) => {
+                  if (locked.current && (e.detail === 0 || sendDown.current)) finish(true)
+                  sendDown.current = false
+                }}
+                aria-label="Send voice message"
+                title="Send (Enter)"
+              >
+                <SendGlyph />
+              </button>
+            ) : text.trim() || uploads.length ? (
+              <button className="icon-button send" {...sendPress} onClick={() => void send()} aria-label="Send" title={canSchedule ? 'Send (right-click to schedule)' : 'Send'}>
+                <SendGlyph />
+              </button>
+            ) : (
+              <button ref={mic} className="icon-button mic" onPointerDown={(e) => void startRecording(e)} onPointerMove={moveRecording} onPointerUp={stopRecording} onPointerCancel={() => locked.current || finish(false)} onContextMenu={(e) => e.preventDefault()} onClick={(e) => e.detail === 0 && void startRecording()} aria-label="Record a voice message" title="Voice message: hold to record, or click">
                 <Icon name="mic" />
               </button>
-            )
-          )}
-        </div>
-      )}
+            )}
+            {recording && phase !== 'locked' && (
+              <>
+                <span className="rec-tip" role="status">{phase === 'lock' ? 'Release to Lock' : phase === 'trash' ? 'Release to Discard' : 'Release to Send'}</span>
+                <span className={`rec-lock${phase === 'lock' ? ' on' : ''}`} aria-hidden>
+                  <Padlock open={phase !== 'lock'} />
+                  {phase !== 'lock' && (
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="m7.5 14 4.5-4.5 4.5 4.5" />
+                    </svg>
+                  )}
+                </span>
+              </>
+            )}
+            {!recording && tip && <span className="rec-tip" role="status">{tip}</span>}
+          </div>
+        )}
+      </div>
       {plusMenu && <Sheet spec={plusMenu} onClose={() => { setPlusMenu(null); attach.current?.focus({ preventScroll: true }) }} />}
       {sheet && <Sheet spec={sheet} onClose={() => setSheet(null)} />}
     </>

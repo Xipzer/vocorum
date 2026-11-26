@@ -3,6 +3,7 @@
 
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { Icon, type IconName } from './icons.tsx'
+import { leave } from './text.ts'
 
 export type SheetAction = { label: string; icon?: IconName; run: () => void; red?: boolean; radio?: boolean; checked?: boolean; sub?: string }
 /** Where a menu opens: at a point (right-click, long press) or dropped from a control,
@@ -31,6 +32,7 @@ type Picker = { trigger: HTMLButtonElement; body: (finish: (run: () => void) => 
 
 export function Sheet({ spec, onClose, picker }: { spec: SheetSpec; onClose: () => void; picker?: Picker }) {
   const panel = useRef<HTMLDivElement>(null)
+  const layer = useRef<HTMLDivElement>(null)
   const sheetId = useId()
   const closing = useRef(false)
   const drag = useRef<{ y: number; t: number; dy: number } | null>(null)
@@ -151,18 +153,22 @@ export function Sheet({ spec, onClose, picker }: { spec: SheetSpec; onClose: () 
   const close = () => {
     if (closing.current) return
     closing.current = true
-    if (history.state?.sheet === sheetId) history.back()
-    else onClose()
+    const go = () => history.state?.sheet === sheetId ? history.back() : onClose()
+    // A confirmation leaves as Discord's confirm dialog does (desktop, motion allowed).
+    if (spec.confirm) leave(layer.current, go, 120)
+    else go()
   }
   const finish = (run: () => void) => {
     if (closing.current) return
+    // A confirmed action happens as the question starts to leave, not after it.
+    if (spec.confirm) { run(); close(); return }
     if (history.state?.sheet === sheetId) after.current = run
     else window.setTimeout(run, 0)
     close()
   }
 
   return (
-    <div className={`sheet-layer${isPhone ? ' phone' : ''}`} onPointerDown={(e) => e.target === e.currentTarget && close()} onContextMenu={(e) => e.preventDefault()}>
+    <div ref={layer} className={`sheet-layer${isPhone ? ' phone' : ''}`} onPointerDown={(e) => e.target === e.currentTarget && close()} onContextMenu={(e) => e.preventDefault()}>
       <div
         ref={panel}
         className={`sheet${spec.plain && !isPhone ? ' plain' : ''}${spec.confirm ? ' confirm' : ''}${picker ? ' choice-sheet' : ''}${spec.card ? ' profile-sheet' : ''}`}

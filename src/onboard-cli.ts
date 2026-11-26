@@ -175,9 +175,12 @@ the certificate and passkey on each device, Tailscale shares, this code folder.`
 Puts a backup back: into an empty hub folder (a new machine: set VOCORUM_DIR or
 use ~/.vocorum), or over the current one with --replace (what is there is moved
 aside, never deleted). The hub must not be running. Checks the copy against the
-backup's manifest, then: vocorum setup. Devices keep trusting the hub when this
-machine has the old hub's address and name (same CA); with a new address the
-hub makes a new CA, and devices install it again from the setup page.`,
+backup's manifest, then: vocorum setup. The hub keeps its CA, so devices keep
+trusting it, their passkeys and their sign-in, as long as its name stays the same.
+On a new address only the name has to point there (Tailscale: give this machine
+the old one's name), and desktop or iPhone apps need a new link: vocorum pair <name> --app.
+The backup holds the CA's key, which stays valid: once the restored hub works, wipe
+the old machine's hub folder and any copy of the backup, or keep them offline.`,
   update: `vocorum update [--check] [--yes] [--json]
 
 Shows what is new where this hub was cloned from, with each version's notes, and
@@ -501,7 +504,8 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
         console.log(`\nThe hub listened on ${result.address}, which is not an address of this machine.`)
         console.log('For every device to keep trusting it with nothing to redo, give this machine that address and name:')
         console.log(`  in Tailscale's admin console, remove the old machine, rename this one to its name, and set its IPv4 to ${result.address} (Machines, the menu, Edit machine IPv4).`)
-        console.log(`Then: vocorum setup. With another address instead (vocorum setup --address <ip>) the hub makes a new CA, and every device installs it again from the setup page; passkeys keep working while the name (${result.names[0]}) stays.`)
+        console.log(`Then: vocorum setup. With another address instead (vocorum setup --address <ip>) the hub keeps its CA and its name (${result.names[0]}): browsers keep their certificate, passkey and sign-in once that name points at the new address, and desktop or iPhone apps need a new link (vocorum pair <name> --app).`)
+        console.log('Once it works, wipe the old hub folder and any copy of this backup, or keep them offline: they hold the CA key, which stays valid.')
       } else console.log('\nNext: vocorum setup (installs the service here and checks everything; it keeps the names and the CA).')
     })
     if (result.problems.length) process.exitCode = 1
