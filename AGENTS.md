@@ -4,8 +4,9 @@ You are an AI agent asked to install Vocorum for a person, move them from
 Discord, set it up, and clean up their Discord. Follow the steps in order. Each
 step says how to check it worked. Do not skip a check.
 
-`setup` puts a `vocorum` command on PATH (`~/.local/bin`). Before that, run
-`node bin/vocorum.js` from the checkout. Every command takes `--json`: use it and read the result.
+`setup` puts a `vocorum` command on PATH (`~/.local/bin`) for a hub in `~/.vocorum`.
+Before that, or for a hub in another folder, run `node bin/vocorum.js` from the
+checkout (with `VOCORUM_DIR=<folder>` in front for another folder; setup prints the line). Every command takes `--json`: use it and read the result.
 Every command is safe to run twice.
 
 ## Rules
@@ -23,11 +24,11 @@ Every command is safe to run twice.
 - **Never pass `--delete-data` to `vocorum uninstall`** unless the person asked
   for their data to be deleted and an export or backup exists outside the hub
   folder.
-- **Back up first.** Before an import, a purge or an update, run
+- **Back up first.** Before an import or a purge, run
   `vocorum backup --json`. It copies the hub while it runs and prints the folder.
 - **Update with `vocorum update`.** To update a hub: `vocorum update --check` to see
   what is new, then `vocorum update --yes` once the person agrees. It backs up first
-  and puts the old version back if anything fails. Do not run git pull and a build
+  by itself and puts the old version back if anything fails. Do not run git pull and a build
   by hand unless update says the checkout is updated by hand.
 - **Talk to Discord only through `vocorum discord`.** Never call Discord's API
   yourself with the token, not even to check: `discord scan` and `discord status`
@@ -56,11 +57,10 @@ Every command is safe to run twice.
 5. Moving from Discord? Which servers or channels (default: all), their Discord
    user id (default: the server owner's id from `discord scan`, if they own it),
    and whether to clean up Discord afterwards (default: no).
-6. May you open the private listener on the hub's private address? (Needs a yes.
-   Without one, run setup with `--address 127.0.0.1`: the hub works on this
-   machine only, and no device can pair until they say yes. When they do, run
-   `vocorum setup --address <private ip> --yes` before pairing anything: with no
-   device paired yet, the new names and certificate cost nothing.)
+6. May you open the private listener on the hub's private address, so other
+   devices can reach it? (Needs a yes. Without one, use `vocorum setup --open`:
+   this computer only, see docs/try-it.md. With a yes, run `vocorum setup` after
+   they have seen its plan.)
 
 ## 1. Prerequisites
 

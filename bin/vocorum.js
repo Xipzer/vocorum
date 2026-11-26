@@ -15,6 +15,19 @@ if (!fs.existsSync(loaderFile)) {
     console.error(`Vocorum needs Node.js 22.16 or newer (this is ${process.versions.node}).`)
     process.exit(1)
   }
+  // Asking for help should not cost a 470 MB download.
+  const asked = process.argv.slice(2)
+  if (asked.length === 0 || asked.includes('--help') || asked.includes('-h') || asked[0] === 'help') {
+    console.log(`Vocorum is not installed in this folder yet. Start with:
+
+  node bin/vocorum.js setup --open     try it on this computer: no certificate, code or passkey
+  node bin/vocorum.js setup            set it up for your phone and other devices too
+
+The first run installs the packages (about 470 MB) and builds the app. Add --dry-run
+to see the plan first. Full help appears once it is installed. Guides: docs/try-it.md
+and docs/install.md.`)
+    process.exit(0)
+  }
   console.error('First run: installing packages. This takes a minute or two.')
   // pnpm as it is on this machine: on the PATH, through corepack (it ships with Node), or fetched by npx.
   const win = process.platform === 'win32'

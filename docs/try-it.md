@@ -9,10 +9,14 @@ node bin/vocorum.js setup --open
 
 The first run installs the packages and builds the app by itself (a minute or
 two, about 470 MB of packages). Then open the address it prints
-(http://localhost:47100) in a browser on the same computer and write a message.
+(http://localhost:47100, or the next free port if another hub has it) in a browser on the same computer and write a message.
 You need Node.js 22.16 or newer and git. Nothing else.
 
 Add `--dry-run` to see what setup would do without changing anything.
+
+If you set it up with `--no-service`, it does not come back after a reboot: run
+`vocorum start`, or run `vocorum setup --open` again without `--no-service` to
+install the service.
 
 ## What "open" means
 

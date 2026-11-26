@@ -67,13 +67,15 @@ Sets up the hub on this machine in one go, and is safe to run again.
   - Names the hub: your Tailscale machine name first (devices need no DNS setup), then hub.home.arpa.
     The certificate comes from the hub's own authority, so the names never reach public certificate logs.
   - Creates ~/.vocorum, turns on HTTPS for your own devices, installs and starts the service,
-    adds a vocorum command to ~/.local/bin, checks everything, and prints a pairing link and QR code.
+    adds a vocorum command to ~/.local/bin (for a hub in ~/.vocorum), checks everything,
+    and prints a pairing link and QR code.
 
-  --open        the quickest start, for trying it on this computer: the app opens at
-                http://localhost:47100 with no certificate, code or passkey, and no other device can
-                connect. Anyone and any program on this computer can read and post, so do not
-                forward this port to other machines (ssh -L or -R, socat): whoever reaches the
-                forward counts as this computer. Add your other devices later with: vocorum setup.
+  --open        the quickest start, for trying it on this computer: the app opens at the
+                http://localhost address setup prints (port 47100 unless another hub has it)
+                with no certificate, code or passkey, and no other device can connect. Anyone
+                and any program on this computer can read and post, so do not forward this
+                port to other machines (ssh -L or -R, socat): whoever reaches the forward
+                counts as this computer. Add your other devices later with: vocorum setup.
                 Ask for pairing here too with: vocorum config set localAccess off
   --dry-run     show what it would do, change nothing
   --yes         go ahead without asking (agents: only after the person said yes)

@@ -256,8 +256,9 @@ export async function setup(paths: HubPaths, options: SetupOptions): Promise<{ s
   const publicUrl = listener ? `https://${listener.names[0]}:${listener.port}` : null
 
   const plan = [
-    unbuilt ? 'build the app first (it has not been built in this folder yet)' : stale ? 'build the app again (the code is newer than its build) and restart the hub' : '',
+    unbuilt ? 'build the app first (it has not been built in this folder yet)' : stale ? `build the app again (the code is newer than its build)${existing ? ' and restart the hub' : ''}` : '',
     `state in ${paths.root}${existing ? ' (exists, kept)' : ''}, hub port ${hubPort}`,
+    path.resolve(paths.root) === path.join(os.homedir(), '.vocorum') ? `a vocorum command in ${WINDOWS ? '%LOCALAPPDATA%\\Microsoft\\WindowsApps' : '~/.local/bin'} (unless one is already on your PATH)` : `no vocorum command on your PATH (this hub is not in ~/.vocorum): run it as VOCORUM_DIR=${paths.root} node ${path.join(options.repo, 'bin', 'vocorum.js')}`,
     ...notes,
     listener ? `HTTPS for your devices on ${listener.address}:${listener.port} and a setup page on ${listener.address}:${listener.httpPort}, only from ${listener.allowedCidrs.join(', ')} (${['127.0.0.1', '::1'].includes(listener.address) ? 'this computer only' : kept ? 'as before' : network.kind}); never the internet` : localOnly ? '' : 'no private network found: the hub stays on this machine only (pass --address <private ip> to change that)',
     listener ? `app address ${publicUrl}` : '',

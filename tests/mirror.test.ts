@@ -91,6 +91,26 @@ test('old imported threads expose their Discord archive or reopen time across pa
   expect(await metadata(old)).toMatchObject({ archived: false, auto_archive_duration: 60, archive_timestamp: reopened.replace('Z', '+00:00') })
 })
 
+test('a voice channel made on the hub is not doubled by Discord\'s channel of the same name', async () => {
+  const guild_id = t.config.guildId
+  const admin = { authorization: `Bearer ${readFileSync(t.paths.adminToken, 'utf8').trim()}`, 'content-type': 'application/json' }
+  const batch = (rows: unknown[]) => fetch(`${t.hub.localUrl}/admin/mirror/channels`, { method: 'POST', headers: admin, body: JSON.stringify(rows) })
+  const voices = async () => (await t.hub.twin.prisma.channel.findMany({ where: { guildId: guild_id, type: 2 }, select: { id: true, name: true } })).map((c) => c.id).sort()
+  // Kimaki on the hub made its voice channel first.
+  const hubMade = { id: '960000000000000009' }
+  await t.hub.twin.simulateChannelCreate({ id: hubMade.id, guildId: guild_id, name: 'Kimaki voice desk', type: 2 })
+  const fromDiscord = { id: '960000000000000001', guild_id, type: 2, name: 'Kimaki voice desk' }
+  const other = { id: '960000000000000002', guild_id, type: 2, name: 'Lounge' }
+  expect((await batch([fromDiscord, other])).status).toBe(200)
+  expect(await voices()).toEqual([hubMade.id, other.id].sort())
+
+  // A hub that an earlier import already doubled: the next import removes the empty copy.
+  await t.hub.twin.simulateChannelCreate({ id: '960000000000000003', guildId: guild_id, name: 'Kimaki voice desk', type: 2 })
+  expect(await voices()).toContain('960000000000000003')
+  expect((await batch([{ ...fromDiscord, id: '960000000000000003' }, other])).status).toBe(200)
+  expect(await voices()).toEqual([hubMade.id, other.id].sort())
+})
+
 test('messages: the owner\'s Discord account is the hub owner, bots are themselves, and hub bots never see them', async () => {
   const mine = await put('/messages/950000000000000001', { channel_id: THREAD, author: { id: OWNER_DISCORD, username: 'owner' }, content: `<@${OWNER_DISCORD}> note to self`, timestamp: '2026-11-24T10:00:00.000Z' })
   expect(await mine.json()).toEqual({ id: '950000000000000001', created: true })

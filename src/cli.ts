@@ -124,6 +124,7 @@ Get started
   doctor                   check everything, and say how to fix what is wrong
   pair <device>            a link and QR code that signs a new device in
   restart                  restart the hub
+  start                    run the hub in this terminal (a hub set up with --no-service, after a reboot)
   update                   see what is new and install it (--check only looks)
   backup [dir]             a consistent copy of the hub while it runs
   restore <dir>            put a backup back, here or on a new machine

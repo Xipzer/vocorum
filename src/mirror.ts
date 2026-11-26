@@ -175,6 +175,30 @@ export class Mirror {
     }
   }
 
+  // A voice channel made on the hub (Kimaki makes "Kimaki voice <machine>") and Discord's own
+  // of the same name would show twice after an import: the hub's one stays. A Discord copy an
+  // earlier import already brought is removed, unless someone has written in it since.
+  private async withoutVoiceTwins(channels: DiscordChannel[]) {
+    const listed = new Set(channels.map((c) => c.id))
+    const keep: DiscordChannel[] = []
+    for (const c of channels) {
+      if (c.type !== 2 || !c.guild_id || !c.name) {
+        keep.push(c)
+        continue
+      }
+      const twin = await this.prisma.channel.findFirst({ where: { guildId: c.guild_id, type: 2, name: c.name, id: { notIn: [...listed] } }, select: { id: true } })
+      if (!twin) {
+        keep.push(c)
+        continue
+      }
+      const copy = await this.prisma.channel.findUnique({ where: { id: c.id }, select: { id: true } })
+      if (!copy) continue
+      if ((await this.prisma.message.count({ where: { channelId: c.id } })) === 0) await this.hub.twin.simulateChannelDelete({ channelId: c.id })
+      else keep.push(c)
+    }
+    return keep
+  }
+
   async deleteChannel(machine: string | null, id: string) {
     const channel = await this.prisma.channel.findUnique({ where: { id } })
     if (!channel) return { deleted: id }
@@ -360,7 +384,7 @@ export class Mirror {
       return this.guild(null, String(body['id']), String(body['name'] ?? 'Discord server'))
     }
     if (pathname === '/admin/mirror/channels') {
-      const channels = await readJson<DiscordChannel[]>(req)
+      const channels = await this.withoutVoiceTwins(await readJson<DiscordChannel[]>(req))
       // Parents first, so a thread finds its channel's guild; then one write for the rest.
       const checked: Array<Awaited<ReturnType<Mirror['checkedChannel']>>> = []
       for (const channel of channels) {

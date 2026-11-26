@@ -37,11 +37,15 @@ Setup:
 - checks everything with `doctor`,
 - prints a link and a QR code to sign in your first device.
 
-Check the names in the dry run before you go ahead. Changing the hub's first
+The hub uses the machine's Tailscale name only when it listens on the Tailscale
+address; on any other address (for example one given with `--address`) its name
+is `hub.home.arpa`. Check the names in the dry run before you go ahead. Changing the hub's first
 name later means a new certificate on every device and new passkeys.
 
 Setup also adds a `vocorum` command, so from now on you can type `vocorum`
-instead of `node bin/vocorum.js`. It makes an empty server called Home to start
+instead of `node bin/vocorum.js`. The rest of this guide uses `vocorum`. This
+only happens for a hub in `~/.vocorum`; for another folder, setup prints the
+line to use (`VOCORUM_DIR=<folder> node bin/vocorum.js ...`). It makes an empty server called Home to start
 with.
 
 Your data and keys live in `~/.vocorum`. Set `VOCORUM_DIR` to keep them
@@ -144,7 +148,7 @@ backup taken before it is in `backups/pre-update-<time>`.
 
 Good to know:
 
-- Updates come from the place you cloned the hub from. A check is one small request; nothing else is sent.
+- Updates come from the place you cloned the hub from, on the branch you cloned (usually main). Every check, including `--check`, asks it once with one small request; nothing else is sent.
 - `vocorum config set updates off` stops the checks; `notify` turns them back on; `auto` is the same as the switch in the app. Restart the hub afterwards.
 - If you changed files in the checkout, or added your own commits, the hub does not update itself: use git as you would for any fork.
 - The desktop app updates separately, from your hub: **Settings > Updates > This app**.

@@ -90,7 +90,8 @@ export function securityLevel(config: HubConfig): string {
 
 export async function doctor(paths: HubPaths, { repo = path.resolve(import.meta.dirname, '..') }: { repo?: string } = {}): Promise<Check[]> {
   const checks: Check[] = []
-  const add = (id: string, status: Check['status'], detail: string, fix?: string) => checks.push({ id, status, detail, ...(fix && { fix }) })
+  // A fix only goes with a problem: on an ok line it reads as if something were wrong.
+  const add = (id: string, status: Check['status'], detail: string, fix?: string) => checks.push({ id, status, detail, ...(fix && status !== 'ok' && status !== 'skip' && { fix }) })
 
   add('node', nodeSupported() ? 'ok' : 'fail', `Node ${process.versions.node}`, nodeSupported() ? undefined : `Install Node.js ${NODE_MIN} or newer (the current LTS is fine)`)
   add('openssl', (await quiet(tool('openssl'), ['version'])) ? 'ok' : 'warn', 'openssl makes the hub\'s own certificates', 'Install openssl (needed for the private listener)')

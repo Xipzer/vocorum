@@ -45,7 +45,7 @@ In the app, Settings, Devices lists every signed-in device. Rename one, sign it
 out, or pair a new one from there. On the hub:
 
 ```bash
-node bin/vocorum.js devices add <name>       # pairing code, 10 minutes
+node bin/vocorum.js pair <name>              # pairing link and code, 30 minutes
 node bin/vocorum.js devices list
 node bin/vocorum.js devices revoke <name>
 ```
