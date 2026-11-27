@@ -1368,12 +1368,13 @@ test.skipIf(!ready)('image clicks preview once, zoom doubles a small image and o
       await p.setViewportSize({width,height:800})
       const thumbs = p.locator(`#m-${id} .message-body button:has(img)`); await thumbs.first().waitFor(); expect(await thumbs.count()).toBe(1)
       await thumbs.click(); const dialog = p.locator('.lightbox'), img = dialog.locator('.lightbox-stage img'); await img.waitFor()
+      await dialog.evaluate((el) => Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)))
       const fit = (await img.boundingBox())!; await img.click()
       const big = (await img.boundingBox())!; expect(big.width).toBeCloseTo(fit.width*2,0); expect(big.height).toBeCloseTo(fit.height*2,0)
       await dialog.getByRole('button',{name:'Fit',exact:true}).click(); expect((await img.boundingBox())!.width).toBeCloseTo(fit.width,0)
       expect(saves).toBe(0)
       if (width===390) { const download=p.waitForEvent('download'); await dialog.getByRole('link',{name:'Download'}).click(); await download; expect(saves).toBe(1) }
-      await dialog.getByRole('button',{name:'Close',exact:true}).click()
+      await dialog.getByRole('button',{name:'Close',exact:true}).click(); await dialog.waitFor({state:'detached'})
     }
   } finally { await p.close() }
 })
@@ -1398,6 +1399,7 @@ test.skipIf(!ready)('lightbox: a tall phone screenshot fits the screen, top to b
     expect(r!.x + r!.width).toBeLessThanOrEqual(size.width)
     await page.screenshot({ path: path.join(shots, `lightbox-${size.width}.png`) })
     await page.keyboard.press('Escape')
+    await page.locator('.lightbox').waitFor({ state: 'detached' })
   }
   await page.setViewportSize({ width: 1280, height: 800 })
 })

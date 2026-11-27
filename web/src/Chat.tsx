@@ -261,8 +261,11 @@ const MessageItem = memo(function MessageItem({
   current,
   feed = false,
   switched,
+  replying = false,
 }: {
   feed?: boolean
+  /** The owner is replying to this message: it stays highlighted while the reply bar is up. */
+  replying?: boolean
   /** Kimaki's "Switched model to" line, folded into this /model receipt. */
   switched?: Message
   current: boolean
@@ -455,7 +458,7 @@ const MessageItem = memo(function MessageItem({
     )
   }
   return (
-    <div id={`m-${message.id}`} className={`message${compact ? ' compact' : ''}${mine ? ' you' : ''}${needs ? ' needs' : ''}${failed ? ' failed' : ''}${privateReply ? ' private-reply' : ''}${message.local ? ' sending' : ''}`} {...(privateReply ? {} : press)} {...warm} tabIndex={-1} onKeyDown={privateReply ? undefined : onKey} onClick={privateReply ? undefined : markOnAlt}>
+    <div id={`m-${message.id}`} className={`message${compact ? ' compact' : ''}${mine ? ' you' : ''}${needs ? ' needs' : ''}${failed ? ' failed' : ''}${privateReply ? ' private-reply' : ''}${message.local ? ' sending' : ''}${replying ? ' replying' : ''}`} {...(privateReply ? {} : press)} {...warm} tabIndex={-1} onKeyDown={privateReply ? undefined : onKey} onClick={privateReply ? undefined : markOnAlt}>
       {replyId &&
         (reference ? (
           <div className="reply-preview" onClick={() => onJump(reference.id)}>
@@ -945,6 +948,9 @@ export function Chat({
   const lastArrival = useRef(entry?.arrival)
   // Paging keys and Jump to present: Discord's 580 ms glide.
   const paging = useRef<Glide>({ frame: 0, to: 0 })
+  // A glide away from the bottom is under way: its first frames are still within a few px of
+  // the bottom, and must not pin the reader again.
+  const leaving = useRef(false)
   useEffect(() => () => cancelAnimationFrame(paging.current.frame), [])
   const history = useMessageHistory(channel.id, entry, scroller, pinned)
   const isThread = THREAD_TYPES.has(channel.type)
@@ -1129,6 +1135,7 @@ export function Chat({
     const el = scroller.current
     if (!el) return
     pinned.current = true
+    leaving.current = false
     setCaughtUp(true)
     setAway(false)
     glide(el, () => el.scrollHeight - el.clientHeight, paging.current)
@@ -1136,12 +1143,22 @@ export function Chat({
   const stopGlide = () => {
     cancelAnimationFrame(paging.current.frame)
     paging.current.frame = 0
+    leaving.current = false
   }
   const page = (el: HTMLDivElement, key: string) => {
     const max = () => el.scrollHeight - el.clientHeight
     const base = paging.current.frame ? paging.current.to : el.scrollTop
     const to = Math.min(max(), Math.max(0, base + (key === 'PageUp' ? -1 : 1) * pageStep(el)))
-    glide(el, key === 'Home' ? () => 0 : key === 'End' ? max : () => to, paging.current)
+    // A step that reaches the end lands on the end as it is then, pinned. One that leaves it is
+    // no longer following, from the key on: keep-at-bottom must not pull the glide back down
+    // when history lands above, nor the anchoring hold skip it.
+    const end = key === 'End' || (key === 'PageDown' && to >= max() - 1)
+    pinned.current &&= end
+    leaving.current = !end
+    glide(el, key === 'Home' ? () => 0 : end ? max : () => to, paging.current, () => {
+      leaving.current = false
+      if (end) pinned.current = true
+    })
   }
 
   // Late images, expanding steps and the keyboard change heights: keep a reader at the bottom.
@@ -1266,7 +1283,7 @@ export function Chat({
   const rowSelect = useCallback((id: string) => latest.current.start(id), [])
   const message = (m: Message, compact: boolean, inPanel = false, switched?: Message) => {
     const allowed = selectable(m)
-    const row = <MessageItem key={m.id} feed={output} current={!inPanel && (!lastOwnerId || snowflakeGt(m.id, lastOwnerId))} botName={botName} onSheet={setSheet} onSelect={allowed ? rowSelect : undefined} message={m} compact={compact} ctx={ctx} channelId={channel.id} reference={byId.get(replyTarget(m) ?? '')} onReply={setReplyTo} onJump={rowJump} onResult={rowResult} onError={setToast} switched={switched} />
+    const row = <MessageItem key={m.id} feed={output} current={!inPanel && (!lastOwnerId || snowflakeGt(m.id, lastOwnerId))} botName={botName} onSheet={setSheet} onSelect={allowed ? rowSelect : undefined} message={m} compact={compact} ctx={ctx} channelId={channel.id} reference={byId.get(replyTarget(m) ?? '')} onReply={setReplyTo} replying={replyTo?.id === m.id} onJump={rowJump} onResult={rowResult} onError={setToast} switched={switched} />
     return selection.picked ? <PickRow key={m.id} message={m} allowed={allowed} selection={selection}>{row}</PickRow> : row
   }
 
@@ -1464,7 +1481,7 @@ export function Chat({
           // (the keyboard opening as the typing line appears): the reader never moved, so stay pinned.
           const kept = wasPinned && el.scrollTop === keptAt.current
           keptAt.current = -1
-          pinned.current = kept || el.scrollHeight - el.scrollTop - el.clientHeight <= 3
+          pinned.current = !leaving.current && (kept || el.scrollHeight - el.scrollTop - el.clientHeight <= 3)
           if (!wasPinned && pinned.current && document.hasFocus()) setCaughtUp(true)
           if (pinned.current) readVisibleEnd()
           // Back at the newest after reading far back: let the old pages go.

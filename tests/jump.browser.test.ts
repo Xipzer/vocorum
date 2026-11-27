@@ -86,7 +86,7 @@ test.skipIf(!ready)('touch: a square button over the composer\'s right edge take
     const s = getComputedStyle(el), f = getComputedStyle(document.querySelector('.composer-box')!)
     return { radius: s.borderTopLeftRadius, border: s.borderTopWidth, fill: s.backgroundColor, boxFill: f.backgroundColor, text: (el as HTMLElement).innerText }
   })
-  expect([box.width, box.height]).toEqual([36, 36])
+  expect([box.width, box.height]).toEqual([40, 40])
   expect(look).toMatchObject({ radius: '7px', border: '1px', text: '' })
   // In the message box's fill, its right edge on the box's and the composer's.
   expect(look.fill).toBe(look.boxFill)

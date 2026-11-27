@@ -66,12 +66,32 @@
   .voice-button.phone-chat {
     display: grid;
   }
+  /* Discord iOS's dock: 48pt controls 16pt inside an 80pt card, spread across it. */
   .voice-view .voice-controls {
-    gap: 8px;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 16px;
+    border-radius: 16px;
+  }
+  .voice-view :is(.voice-button, .voice-join) {
+    border-radius: 12px;
+  }
+  .voice-view .voice-join {
+    height: 48px;
+    font-size: 14px;
+  }
+  /* Its glyphs fill about 22pt of the button. */
+  .voice-view .voice-button > svg {
+    width: 28px;
+    height: 28px;
+  }
+  .voice-view .voice-button.leave > svg {
+    width: 30px;
+    height: 30px;
   }
   /* On the narrowest phones they give way evenly, never past the dock's edge. */
   .voice-view .voice-button {
-    flex: 0 1 56px;
+    flex: 0 1 48px;
     width: auto;
     height: auto;
     min-width: 0;

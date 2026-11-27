@@ -376,12 +376,45 @@
   position: fixed;
   inset: 0;
   z-index: 200;
+}
+/* Discord's viewer: the picture appears centred, not grown from the thumbnail. The backdrop is
+   its own layer so it can darken ahead of the picture and lift ahead of it on close. */
+.lightbox::before {
+  content: '';
+  position: absolute;
+  inset: 0;
   background: rgb(0 0 0 / 0.92);
-  animation: lightbox-in var(--move) var(--ease-out);
+  animation: fade var(--lightbox-backdrop-in) var(--pop-ease);
+}
+.lightbox-bar,
+.lightbox-nav {
+  animation: fade var(--lightbox-in) var(--pop-ease);
+}
+.lightbox-stage {
+  animation: lightbox-in var(--lightbox-in) var(--pop-ease);
 }
 @keyframes lightbox-in {
   from {
     opacity: 0;
+    scale: 0.95;
+  }
+}
+.lightbox[data-leaving] {
+  pointer-events: none;
+}
+.lightbox[data-leaving]::before {
+  animation: fade-out var(--lightbox-backdrop-out) var(--pop-ease) forwards;
+}
+.lightbox[data-leaving] :is(.lightbox-bar, .lightbox-nav) {
+  animation: fade-out var(--lightbox-out) var(--pop-ease) forwards;
+}
+.lightbox[data-leaving] .lightbox-stage {
+  animation: lightbox-out var(--lightbox-out) var(--pop-ease) forwards;
+}
+@keyframes lightbox-out {
+  to {
+    opacity: 0;
+    scale: 0.92;
   }
 }
 .lightbox-bar {
@@ -1162,8 +1195,8 @@
 }
 
 /* Touch: Discord iOS's square jump button, in the composer's fill and line, its right edge on
-   the composer's and 8px above it. Measured from his iOS crop at 52pt to the composer:
-   36 square, 7 corners, a 1.75 arrow about 13 tall. */
+   the composer's and 8px above it. Measured from a full-size iPhone capture: 40 square,
+   7 corners, an arrow 15pt across. */
 .present-button {
   display: none;
 }
@@ -1177,14 +1210,18 @@
     bottom: 8px;
     display: grid;
     place-items: center;
-    width: 36px;
-    height: 36px;
+    width: 40px;
+    height: 40px;
     border: 1px solid var(--line-strong);
     border-radius: 7px;
     background: var(--bg-3);
     color: var(--text-muted);
     box-shadow: 0 2px 8px rgb(0 0 0 / 0.35);
     animation: present-fade var(--move) var(--ease-out);
+  }
+  .present-button > svg {
+    width: 23px;
+    height: 23px;
   }
 }
 @media (pointer: coarse) and (max-width: 767px) {

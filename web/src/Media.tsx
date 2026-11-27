@@ -8,7 +8,7 @@ import type { Attachment, Embed, EmbedMedia, Poll, Snapshot, StickerItem } from 
 import { highlight } from './highlight.tsx'
 import { Icon } from './icons.tsx'
 import { Markdown, type MarkdownContext } from './markdown.tsx'
-import { clock } from './text.ts'
+import { clock, leave } from './text.ts'
 import { native } from './native.ts'
 
 const IS_VOICE = 1 << 13
@@ -48,8 +48,10 @@ export const isSpoiler = (a: Attachment) => a.filename.startsWith('SPOILER_') ||
 
 export type Viewable = { url: string; name: string; size?: number; width?: number | null; height?: number | null; video?: boolean }
 
-export function Lightbox({ items, start, onClose }: { items: Viewable[]; start: number; onClose: () => void }) {
+export function Lightbox({ items, start, onClose: closed }: { items: Viewable[]; start: number; onClose: () => void }) {
   const [index, setIndex] = useState(start)
+  const layer = useRef<HTMLDivElement>(null)
+  const onClose = () => leave(layer.current, closed, 130, true)
   const [zoom, setZoom] = useState<{ x: number; y: number; width: number; clientX: number; clientY: number } | null>(null)
   const picture = useRef<HTMLImageElement>(null)
   const stage = useRef<HTMLDivElement>(null)
@@ -92,7 +94,7 @@ export function Lightbox({ items, start, onClose }: { items: Viewable[]; start: 
   }
   const stop = (e: { stopPropagation: () => void }) => e.stopPropagation()
   return createPortal(
-    <div className="lightbox" role="dialog" aria-modal="true" aria-label={item.name} onClick={onClose}>
+    <div ref={layer} className="lightbox" role="dialog" aria-modal="true" aria-label={item.name} onClick={onClose}>
       <div className="lightbox-bar" onClick={stop}>
         <span className="lightbox-name">{item.name}</span>
         <span className="lightbox-meta num">

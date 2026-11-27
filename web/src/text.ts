@@ -73,8 +73,9 @@ export function glide(el: HTMLElement, to: () => number, g: Glide, done?: () => 
 export const pageStep = (el: HTMLElement) => el.clientHeight * 0.875
 
 // Closes a dialog after its exit animation (Discord's modal and settings close).
-export function leave(el: HTMLElement | null, done: () => void, ms = 100) {
-  if (!el || motion() === 'auto' || !window.matchMedia('(min-width: 768px)').matches) return done()
+// Phones close at once unless the same layer animates there too (`phones`).
+export function leave(el: HTMLElement | null, done: () => void, ms = 100, phones = false) {
+  if (!el || motion() === 'auto' || (!phones && !window.matchMedia('(min-width: 768px)').matches)) return done()
   if (el.dataset['leaving'] !== undefined) return
   // On its way out it is already gone for clicks, keys and assistive tech.
   el.dataset['leaving'] = ''

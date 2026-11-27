@@ -125,6 +125,12 @@
   --menu-in: 130ms;
   --tip-in: 50ms;
   --tip-out: 50ms;
+  /* The image viewer: the backdrop darkens in two frames, then the picture (growing from 0.95)
+     and its top bar fade in together; on close the backdrop lifts first. */
+  --lightbox-backdrop-in: 50ms;
+  --lightbox-in: 130ms;
+  --lightbox-backdrop-out: 80ms;
+  --lightbox-out: 130ms;
   color-scheme: dark;
   font-family: var(--font);
   font-feature-settings: 'cv11', 'ss01';
@@ -166,6 +172,10 @@
     --menu-in: 0ms;
     --tip-in: 0ms;
     --tip-out: 0ms;
+    --lightbox-backdrop-in: 0ms;
+    --lightbox-in: 0ms;
+    --lightbox-backdrop-out: 0ms;
+    --lightbox-out: 0ms;
   }
 }
 
@@ -818,6 +828,11 @@ html[data-keyboard='open'] .footer {
   padding-bottom: 8px;
 }
 .message.highlight {
+  background: var(--highlight-bg, rgb(var(--accent-rgb) / 0.12));
+}
+/* The message being replied to stays highlighted while the reply bar is up, hovered or not. */
+.message.replying,
+.message.replying:not(.needs):hover {
   background: var(--highlight-bg, rgb(var(--accent-rgb) / 0.12));
 }
 @media (hover: hover) {
@@ -2213,7 +2228,7 @@ html[data-keyboard='open'] .footer {
   right: 0;
   bottom: 0;
   max-width: none;
-  border-radius: var(--r-sheet) var(--r-sheet) 0 0;
+  border-radius: 26px 26px 0 0;
   padding: 8px 16px max(24px, env(safe-area-inset-bottom));
   box-shadow: none;
   touch-action: none;
@@ -2224,11 +2239,11 @@ html[data-keyboard='open'] .footer {
 }
 .sheet-layer.phone .grab {
   display: block;
-  width: 40px;
+  width: 36px;
   height: 4px;
   border-radius: 2px;
   background: var(--group-line);
-  margin: 0 auto 14px;
+  margin: 0 auto 16px;
 }
 .sheet-layer.phone .sheet-head {
   padding: 0 0 16px;
@@ -2237,8 +2252,8 @@ html[data-keyboard='open'] .footer {
 .sheet-layer.phone .sheet-badge {
   display: grid;
   place-items: center;
-  width: 44px;
-  height: 44px;
+  width: 48px;
+  height: 48px;
   border-radius: 12px;
   background: var(--bg-1);
   flex: none;
@@ -2258,29 +2273,47 @@ html[data-keyboard='open'] .footer {
   font-size: 13px;
   line-height: 18px;
 }
+/* Discord iOS action sheets: 56pt rows, groups 24pt apart, 26px glyphs centred 28pt in and
+   labels 56pt in; a row without a glyph starts its label 12pt in. Rules start under the label. */
 .sheet-layer.phone .sheet-group {
   background: var(--group);
   border-radius: var(--r-group);
-  margin: 0 0 16px;
+  margin: 0 0 24px;
   padding: 0;
   border: 0;
 }
+.sheet-layer.phone .sheet-group:last-child {
+  margin-bottom: 0;
+}
 .sheet-layer.phone .sheet-item {
-  height: 52px;
-  padding: 0 16px;
-  gap: 16px;
+  height: 56px;
+  padding: 0 16px 0 15px;
+  gap: 15px;
   border-radius: 0;
-  font: 400 17px/22px var(--font);
+  font: 400 16px/20px var(--font);
   position: relative;
+}
+.sheet-layer.phone .sheet-item > svg {
+  width: 26px;
+  height: 26px;
+}
+.sheet-layer.phone .sheet-item:not(:has(> svg)) {
+  padding-left: 12px;
 }
 .sheet-layer.phone .sheet-item + .sheet-item::before {
   content: '';
   position: absolute;
-  left: 54px;
+  left: 56px;
   right: 0;
   top: 0;
   height: 1px;
   background: var(--group-line);
+}
+.sheet-layer.phone .sheet-item:not(:has(> svg))::before {
+  left: 12px;
+}
+.sheet-layer.phone .sheet-item .sheet-sub-label {
+  line-height: 16px;
 }
 .sheet-layer.phone .sheet-item:hover {
   background: none;
@@ -5007,6 +5040,12 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
 @media (hover: none) {
   .reaction.add {
     opacity: 1;
+  }
+}
+/* Discord iOS counts its reactions a size down from the message text. */
+@media (max-width: 767px) {
+  .reaction {
+    font-size: 14px;
   }
 }
 .message-actions > button.quick.on {
