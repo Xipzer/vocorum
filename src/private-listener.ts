@@ -19,6 +19,7 @@ import { caFiles, certDer, ensureCa, ensureServerCert, fingerprint, hasLegacy, s
 import type { PrivateListenerConfig } from './config.ts'
 
 const WILDCARD = new Set(['0.0.0.0', '::', '', '*'])
+const RETRY_MS = 5000
 
 // VOCORUM_DEBUG_PRIVATE=1: one line per connection, request and DNS question,
 // for finding out why a device does not get through.
@@ -282,6 +283,9 @@ ${code ? installersSection(code, installers) : ''}
 export class PrivateListener {
   readonly files: CaFiles
   private servers: Array<http.Server | https.Server> = []
+  // Servers waiting for the address to exist (after a boot, before the tailnet is up).
+  private unbound: Array<{ server: http.Server | https.Server; port: number }> = []
+  private retry: NodeJS.Timeout | null = null
   // Every accepted socket, upgraded WebSockets included: close() would wait for them.
   private open = new Set<net.Socket>()
   private sockets = new WeakSet<object>()
@@ -383,8 +387,7 @@ export class PrivateListener {
       else relay.emit('request', req, res)
     })
     tls.on('upgrade', (req: http.IncomingMessage, socket: Duplex, head: Buffer) => relay.emit('upgrade', req, socket, head))
-    await new Promise<void>((resolve, reject) => tls.once('error', reject).listen(this.config.port, this.config.address, () => resolve()))
-    this.servers.push(tls)
+    this.unbound.push({ server: tls, port: this.config.port })
     if (this.config.httpPort !== null) {
       const plain = http.createServer((req, res) => {
         this.enrol(req, res).catch((error: { status?: number }) => {
@@ -392,12 +395,42 @@ export class PrivateListener {
         })
       })
       this.guard(plain)
-      await new Promise<void>((resolve, reject) => plain.once('error', reject).listen(this.config.httpPort ?? 0, this.config.address, () => resolve()))
-      this.servers.push(plain)
+      this.unbound.push({ server: plain, port: this.config.httpPort ?? 0 })
     }
+    await this.bind()
   }
 
+  // An address that does not exist yet (the tailnet comes up after the hub at boot) is
+  // retried every few seconds while the hub serves on loopback; any other error stops it.
+  private async bind() {
+    this.retry = null
+    while (this.unbound.length) {
+      const { server, port } = this.unbound[0]!
+      try {
+        await new Promise<void>((resolve, reject) => server.once('error', reject).listen(port, this.config.address, () => {
+          server.off('error', reject)
+          resolve()
+        }))
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EADDRNOTAVAIL') throw error
+        if (!this.waiting) console.error(`[private] ${this.config.address} is not on this machine yet; trying again every ${RETRY_MS / 1000} s`)
+        this.waiting = true
+        this.retry = setTimeout(() => void this.bind().catch((e) => console.error('[private] could not listen:', e)), RETRY_MS)
+        this.retry.unref()
+        return
+      }
+      this.unbound.shift()
+      this.servers.push(server)
+    }
+    if (this.waiting) console.error(`[private] listening on ${this.config.address}`)
+    this.waiting = false
+  }
+  private waiting = false
+
   async stop() {
+    if (this.retry) clearTimeout(this.retry)
+    this.retry = null
+    this.unbound = []
     const closed = Promise.all(this.servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
     for (const socket of this.open) socket.destroy()
     this.open.clear()
