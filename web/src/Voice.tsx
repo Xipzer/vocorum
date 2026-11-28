@@ -11,7 +11,7 @@ import { E } from './emoji.tsx'
 import { Icon } from './icons.tsx'
 import { extensions } from './extensions.tsx'
 import { can, P } from './perms.ts'
-import { Sheet, below, type SheetAction, type SheetSpec } from './Sheet.tsx'
+import { Sheet, below, sessionActions, type SheetAction, type SheetSpec } from './Sheet.tsx'
 import { canPickOutput, join, leave, outputs, setDeaf, setMute, setNoise, setOutput, useVoice, type VoiceUi } from './voice.ts'
 import './voice-room.css'
 
@@ -90,29 +90,33 @@ function Activity({ state, id, speaking, tile }: { state: HubState; id: string; 
   )
 }
 
-function StateIcons({ v }: { v: VoiceState }) {
+// On a tile an open mic shows too (phones only), so its pill always says the mic's state.
+function StateIcons({ v, tile }: { v: VoiceState; tile?: boolean }) {
   return (
     <>
-      {v.self_deaf ? <Icon name="headphones-off" size={14} className="voice-flag" /> : v.self_mute ? <Icon name="mic-off" size={14} className="voice-flag" /> : null}
+      {v.self_deaf ? <Icon name="headphones-off" size={14} className="voice-flag" /> : v.self_mute ? <Icon name="mic-off" size={14} className="voice-flag" /> : tile ? <Icon name="mic" size={14} className="voice-mic" /> : null}
     </>
   )
 }
 
-// The audio settings menu: deafen, noise suppression, where sound plays.
+// The audio settings menu: deafen, noise suppression, where sound plays. Phones read as
+// Discord's: a heading over each group, a switch on Deafen, the choices by their own names.
 async function settingsSheet(at: SheetSpec['at'], voice: VoiceUi): Promise<SheetSpec> {
   const devices = canPickOutput ? await outputs() : []
+  const phone = window.matchMedia('(max-width: 767px)').matches
   const groups: SheetAction[][] = [
-    [{ label: 'Deafen', sub: 'Turns off all sound', icon: 'headphones-off', checked: voice.deaf, run: () => setDeaf(!voice.deaf) }],
+    [{ label: 'Deafen', sub: 'Turns off all sound', icon: 'headphones-off', toggle: true, checked: voice.deaf, run: () => setDeaf(!voice.deaf) }],
     [
-      { label: 'Noise suppression: standard', radio: true, checked: voice.noise === 'standard', run: () => void setNoise('standard') },
-      { label: 'Noise suppression: none', radio: true, checked: voice.noise === 'none', run: () => void setNoise('none') },
+      { label: phone ? 'Standard' : 'Noise suppression: standard', radio: true, checked: voice.noise === 'standard', run: () => void setNoise('standard') },
+      { label: phone ? 'None' : 'Noise suppression: none', radio: true, checked: voice.noise === 'none', run: () => void setNoise('none') },
     ],
   ]
   if (devices.length > 1) groups.push(devices.map((d, i) => ({ label: d.label || (d.deviceId === 'default' ? 'System default' : `Speaker ${i + 1}`), radio: true, checked: (voice.output || 'default') === d.deviceId, run: () => void setOutput(d.deviceId) })))
-  return { title: 'Voice settings', at, groups }
+  return { title: 'Voice settings', at, groups, headings: ['Voice & Video Settings', 'Noise Suppression', 'Audio Output'] }
 }
 
-// The controls: mute, deafen, settings, leave; or mute and Join before joining.
+// The controls: mute, deafen, settings, leave; or mute, Join and the chat before joining. On phones the
+// chat is in the dock before joining and in the header's chips during the call.
 function Controls({ state, channel, here, chat }: { state: HubState; channel: Channel; here: boolean; chat?: { open: boolean; toggle: () => void } }) {
   const voice = useVoice()
   const [sheet, setSheet] = useState<SheetSpec | null>(null)
@@ -126,7 +130,7 @@ function Controls({ state, channel, here, chat }: { state: HubState; channel: Ch
   )
   return (
     <div className="voice-controls" role="toolbar" aria-label="Voice controls">
-      <button className={`voice-button${micOff ? ' off' : ''}`} onClick={() => setMute(!voice.mute)} aria-pressed={micOff} aria-label={micOff ? 'Unmute' : 'Mute'} title={micOff ? 'Unmute' : 'Mute'} disabled={voice.listenOnly && here}>
+      <button className={`voice-button mic${micOff ? ' off' : ''}`} onClick={() => setMute(!voice.mute)} aria-pressed={micOff} aria-label={micOff ? 'Unmute' : 'Mute'} title={micOff ? 'Unmute' : 'Mute'} disabled={voice.listenOnly && here}>
         <Icon name={micOff ? 'mic-off' : 'mic'} size={24} />
       </button>
       {here ? (
@@ -134,7 +138,6 @@ function Controls({ state, channel, here, chat }: { state: HubState; channel: Ch
           <button className={`voice-button${voice.deaf ? ' off' : ''}`} onClick={() => setDeaf(!voice.deaf)} aria-pressed={voice.deaf} aria-label={voice.deaf ? 'Undeafen' : 'Deafen'} title={voice.deaf ? 'Undeafen' : 'Deafen'}>
             <Icon name={voice.deaf ? 'headphones-off' : 'headphones'} size={24} />
           </button>
-          {chatButton}
           <button className="voice-button" onClick={(e) => void settingsSheet(below(e.currentTarget), voice).then(setSheet)} aria-label="Voice settings" title="Voice settings">
             <Icon name="gear" size={24} />
           </button>
@@ -144,10 +147,10 @@ function Controls({ state, channel, here, chat }: { state: HubState; channel: Ch
         </>
       ) : (
         <>
-          {chatButton}
           <button className="voice-join" onClick={() => void join(channel.id, state.me.id)} disabled={voice.status === 'connecting'}>
           {voice.channelId && voice.channelId !== channel.id ? 'Move here' : 'Join voice'}
           </button>
+          {chatButton}
         </>
       )}
       {sheet && <Sheet spec={sheet} onClose={() => setSheet(null)} />}
@@ -163,6 +166,7 @@ export function VoiceView({ channel, state, onMenu, chat }: { channel: Channel; 
   // the chat opens over it when asked, and closes again.
   const over = useMedia('(max-width: 1100px)')
   const [sheet, setSheet] = useState(false)
+  const [audio, setAudio] = useState<SheetSpec | null>(null)
   // Beside the call, the choice is remembered on this device; until one is made, a room
   // with messages shows them.
   const [choice, setChoice] = useState(() => localStorage.getItem(CHAT_KEY))
@@ -189,7 +193,7 @@ export function VoiceView({ channel, state, onMenu, chat }: { channel: Channel; 
     <section className="chat voice-view">
       <header className="chat-header">
         <button className="icon-button menu" onClick={onMenu} aria-label="Channels">
-          <Icon name="back" size={22} className="phone-only" />
+          <Icon name="down" size={20} className="phone-only" />
           <Icon name="sidebar" size={20} className="desk-only-icon" />
         </button>
         <div className="chat-titles">
@@ -203,6 +207,35 @@ export function VoiceView({ channel, state, onMenu, chat }: { channel: Channel; 
           </div>
           <span className="chat-sub">{here ? connectionLabel(voice) : people.length ? `${people.length} in voice` : 'Voice channel'}</span>
         </div>
+        {/* Phones: Discord's call header, a row of chips over the call. */}
+        {can(P.MANAGE_CHANNELS, channel) ? (
+          <button className="voice-chip voice-name-chip phone-only-button" onClick={() => sessionActions.channelSettings?.(channel.id)} aria-label={`${channel.name} settings`}>
+            <span className="title-text"><E>{channel.name}</E></span>
+            <Icon name="chevron" size={16} />
+          </button>
+        ) : (
+          <span className="voice-chip voice-name-chip phone-only-button">
+            <span className="title-text"><E>{channel.name}</E></span>
+          </span>
+        )}
+        <span className="voice-chips phone-only-button">
+          {here && (
+            <button className="voice-chip" onClick={(e) => void settingsSheet(below(e.currentTarget), voice).then(setAudio)} aria-label="Audio output" title="Audio output">
+              <Icon name="speaker" size={20} />
+            </button>
+          )}
+          {can(P.MANAGE_GUILD, null, channel.guild_id) && (
+            <button className="voice-chip" onClick={() => sessionActions.settings?.('members')} aria-label="Invite people" title="Invite people">
+              <Icon name="members" size={20} />
+            </button>
+          )}
+          {chat && here && (
+            <button className="voice-chip" onClick={() => showChat(!chatOpen)} aria-pressed={chatOpen} aria-label={chatOpen ? 'Hide chat' : 'Show chat'} title={chatOpen ? 'Hide chat' : 'Show chat'}>
+              <Icon name="chat" size={20} />
+            </button>
+          )}
+        </span>
+        {audio && <Sheet spec={audio} onClose={() => setAudio(null)} />}
         {chat && (
           <span className="chat-actions">
             <button className="icon-button desk-only" onClick={() => showChat(!chatOpen)} aria-pressed={chatOpen} aria-label={chatOpen ? 'Hide chat' : 'Show chat'} title={chatOpen ? 'Hide chat' : 'Show chat'}>
@@ -227,7 +260,7 @@ export function VoiceView({ channel, state, onMenu, chat }: { channel: Channel; 
                   <Avatar id={v.user_id} name={nameOf(state, v.user_id)} size="panel" version={state.users.find((u) => u.id === v.user_id)?.avatar} />
                   <Activity state={state} id={v.user_id} speaking={Boolean(voice.speaking[v.user_id])} tile />
                   <span className="voice-tile-name">
-                    <StateIcons v={v} />
+                    <StateIcons v={v} tile />
                     <E>{nameOf(state, v.user_id)}</E>
                   </span>
                 </div>

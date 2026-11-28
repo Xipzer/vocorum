@@ -1551,7 +1551,7 @@ export function Chat({
             if (!holds) return bar ? [render(), bar] : render()
             return [
               <div key={`new-${firstNew}`} className="new-divider" role="separator" aria-label="New messages">
-                <span aria-hidden="true">New</span>
+                <span aria-hidden="true">New<i> messages</i></span>
               </div>,
               render(),
               ...(bar ? [bar] : []),

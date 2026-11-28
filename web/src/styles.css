@@ -2321,6 +2321,20 @@ html[data-keyboard='open'] .footer {
 .sheet-layer.phone .sheet-item:active {
   background: var(--active);
 }
+/* Discord's call settings: a muted heading over a group, 8pt above it; on/off rows end in
+   the settings switch. */
+.sheet-layer.phone {
+  --set-switch: 40px;
+  --set-knob: 18px;
+}
+.sheet-layer.phone .sheet-heading {
+  margin: 0 0 8px;
+  font: 400 16px/20px var(--font);
+  color: var(--text-muted);
+}
+.sheet-layer.phone .sheet-item > .settings-switch {
+  margin-left: auto;
+}
 
 /* Message component choices share the action sheet's frame. Only its option list
    scrolls: the title, drag handle and multi-select Done stay in reach. */
@@ -3055,6 +3069,40 @@ mark {
   color: #fff;
   font: 700 10px/13px var(--font);
   text-transform: uppercase;
+}
+.new-divider i {
+  display: none;
+  font-style: normal;
+}
+/* Phones, as Discord's iPhone app: "NEW MESSAGES" centred in red, 8px caps, the rule on each side 12px clear of the words. */
+@media (max-width: 767px) {
+  .new-divider {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    height: auto;
+    background: none;
+  }
+  .new-divider::before,
+  .new-divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--new-line, var(--danger));
+  }
+  .new-divider span {
+    position: static;
+    height: auto;
+    padding: 0;
+    border-radius: 0;
+    background: none;
+    clip-path: none;
+    color: var(--danger);
+    font: 600 13px/16px var(--font);
+  }
+  .new-divider i {
+    display: inline;
+  }
 }
 .icon-button.menu {
   position: relative;
@@ -8607,4 +8655,106 @@ html[data-voice='on'] .side-main {
   .popout .panel-section {
     padding: 0;
   }
+}
+
+/* Wide screens (.wide-screen from 2400px, App.tsx): side columns grow with the screen and chat
+   prose keeps a reading measure instead of running the whole lane. */
+.app.wide-screen .side-panel { width: clamp(440px, 22vw, 860px); }
+.app.wide-screen .message > .message-body { max-width: 960px; }
+.activity-pane .panel-body { overflow-y: auto; }
+.activity-pane .ov { padding: 0 16px 16px; }
+.activity-pane .panel-title { text-align: left; color: var(--text-strong); }
+.activity-pane .panel-title:hover { text-decoration: underline; }
+
+/* Overview on a wide page (Overview.tsx Grid, 1500px of page and up): cards for what needs him,
+   every machine's agents side by side, and a rail for extensions' footers and finished work from 2400px. */
+.ovg { display: grid; grid-template-columns: minmax(0, 1fr); gap: 32px; padding: 8px 24px 24px; }
+.ovg.with-rail { grid-template-columns: minmax(0, 1fr) clamp(420px, 22%, 640px); }
+.ovg-band + .ovg-band { margin-top: 24px; }
+.ovg-band > h3, .ovg-rail h3 { font: 600 14px/20px var(--font); color: var(--text); margin: 12px 0 8px; }
+.ovg-cards { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+.ovg-cards > .ov-item, .ovg-cards > .ov-section > .ov-item { flex: 1 1 420px; max-width: 960px; }
+.ovg-cards > .ov-item { position: relative; margin: 0; padding: 12px 16px; background: var(--bg-3); border-radius: var(--r-card, 8px); box-shadow: inset 0 0 0 1px var(--line-raised); }
+.ovg-cards > .ov-section { display: contents; }
+.ovg-cards > .ov-section > h3 { flex: 0 0 100%; margin: 8px 0 0; font: 600 13px/18px var(--font); color: var(--text-muted); }
+.ovg-cards > .ov-section > .ov-item { position: relative; margin: 0; padding: 12px 16px; background: var(--bg-3); border-radius: var(--r-card, 8px); box-shadow: inset 0 0 0 1px var(--line-raised); }
+.ovg-machines { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 12px; align-items: start; }
+.ovg-machine { padding: 8px 8px 10px; background: var(--bg-1); border-radius: var(--r-card, 8px); box-shadow: inset 0 0 0 1px var(--line-raised); }
+.ovg-machine-head { display: flex; align-items: center; gap: 8px; padding: 4px 8px 8px; font: 400 13px/18px var(--font); color: var(--text-muted); }
+.ovg-machine-head b { color: var(--text-strong); font: 600 15px/20px var(--font); }
+.ovg-counts { margin-left: auto; }
+.ovg-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: baseline; gap: 0 8px; width: 100%; padding: 6px 8px; border-radius: var(--r-control); text-align: left; }
+.ovg-row:hover { background: var(--hover); }
+.ovg-row .st { align-self: center; }
+.ovg-row-text { display: flex; flex-direction: column; min-width: 0; }
+.ovg-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-strong); font: 500 14px/20px var(--font); }
+.ovg-row.done .ovg-row-title, .ovg-row.idle .ovg-row-title { color: var(--text-muted); font-weight: 400; }
+.ovg-row-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font: 400 13px/18px var(--font); }
+.ovg-more { padding: 4px 8px 0 32px; color: var(--text-faint); font: 400 12px/16px var(--font); }
+.ovg-rail { min-width: 0; }
+.ovg-rail > :first-child { margin-top: 12px; }
+
+/* Mentions on a wide page (1500px and up): cards that share each row, so a mention's name and
+   age stay together instead of running the width of a 4K screen. */
+@container chat (min-width: 1500px) {
+  .mentions-page {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr));
+    gap: 12px;
+    align-content: start;
+    padding-top: 16px;
+  }
+  .mentions-page > :not(.mention-row) {
+    grid-column: 1 / -1;
+  }
+  .mentions-page > .mention-row {
+    margin: 0;
+    padding: 12px 16px;
+    text-align: left;
+    background: var(--bg-3);
+    border-radius: var(--r-card, 8px);
+    box-shadow: inset 0 0 0 1px var(--line-raised);
+  }
+}
+
+/* Voice on 2400px screens and up: the call fills the stage it has (to the height that leaves
+   room for the controls) instead of a 720px tile in the middle of it. */
+@media (min-width: 2400px) {
+  .voice-tiles {
+    max-width: min(100%, calc((100vh - 300px) * 16 / 9));
+  }
+  .voice-tiles.n1 .voice-tile {
+    max-width: none;
+  }
+  .voice-tile .avatar {
+    width: 128px;
+    height: 128px;
+    font-size: 48px;
+  }
+}
+
+/* Centred dialogs on 2400px screens and up: the switcher shows longer names, and the shortcut
+   list sits in two columns instead of one long 480px list. */
+@media (min-width: 2400px) {
+  .switcher {
+    width: min(960px, 100%);
+    max-height: min(70dvh, 800px);
+  }
+  .modal.shortcuts {
+    max-width: 1040px;
+  }
+  .shortcuts .modal-body {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 48px;
+  }
+  .shortcuts .shortcut-row:nth-last-child(2):nth-child(odd) {
+    border-bottom: 0;
+  }
+}
+
+/* The member list keeps Discord's 264px column on wide screens: a roster of names gains nothing
+   from width, and the chat header runs on over exactly that column. */
+.app.wide-screen .side-panel.members-panel {
+  width: 264px;
 }

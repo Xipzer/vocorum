@@ -58,3 +58,95 @@
   .side-panel.with-action .panel-head .panel-action { display: inline-grid; color: var(--text); }
   .side-panel.with-action .panel-head .panel-back { color: var(--text); }
 }
+
+/* Each section's threads. Desktop keeps the cards; phones read as Discord's: one grouped list
+   per section under an uppercase heading with its count, 64pt rows with a regular-weight name
+   over one line of detail, a chevron at the right, rules between rows. The status is a short
+   tab at the row's left edge. */
+.thread-group { display: contents; }
+.panel-thread .thread-chevron { display: none; }
+@media (max-width: 767px) {
+  .side-panel .panel-body:has(> .thread-group) > .panel-section {
+    margin: 24px 0 8px;
+    padding: 0 8px;
+    gap: 0;
+    font: 600 12px/16px var(--font);
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .side-panel .panel-body:has(> .thread-group) > .panel-section .num::before { content: '\00a0-\00a0'; }
+  .side-panel .thread-group {
+    display: block;
+    overflow: hidden;
+    background: var(--group);
+    border-radius: var(--r-group);
+  }
+  .side-panel .thread-group > .thread-row.panel-thread {
+    display: flex;
+    flex-flow: row wrap;
+    align-content: center;
+    align-items: baseline;
+    gap: 0 8px;
+    min-height: 64px;
+    margin: 0;
+    padding: 10px 40px 10px 12px;
+    background: none;
+    border: 0;
+    border-radius: 0;
+  }
+  .side-panel .thread-group > .panel-thread + .panel-thread::after {
+    content: '';
+    position: absolute;
+    left: 12px;
+    right: 0;
+    top: 0;
+    height: 1px;
+    background: var(--group-line);
+    pointer-events: none;
+  }
+  .side-panel .thread-group > .panel-thread:active { background: var(--active); }
+  .side-panel .thread-group .panel-thread .thread-open { flex: 1 0 100%; min-width: 0; }
+  .side-panel .thread-group .panel-thread .link-title { font: 400 16px/20px var(--font); }
+  .side-panel .thread-group .panel-thread .link-title b {
+    display: block;
+    font-weight: inherit;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .side-panel .thread-group .panel-thread .ov-line {
+    flex: 1 1 0;
+    max-width: max-content;
+    min-width: 0;
+    display: block;
+    font: 400 14px/18px var(--font);
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .side-panel .thread-group .panel-thread .result-where {
+    flex: none;
+    gap: 6px;
+    font: 400 14px/18px var(--font);
+    color: var(--text-muted);
+  }
+  .side-panel .thread-group .panel-thread .action-row { order: 1; flex-basis: 100%; }
+  .side-panel .thread-group .panel-thread .thread-chevron {
+    display: block;
+    position: absolute;
+    right: 12px;
+    top: calc(50% - 10px);
+    color: var(--text-muted);
+    pointer-events: none;
+  }
+  .side-panel .thread-group > .panel-thread[data-edge]::before {
+    left: 0;
+    top: 50%;
+    bottom: auto;
+    width: 4px;
+    height: 20px;
+    margin-top: -10px;
+    border-radius: 0 4px 4px 0;
+  }
+}

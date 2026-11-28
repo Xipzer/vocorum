@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { HubState } from './api.ts'
 import { Icon } from './icons.tsx'
 import { store } from './store.ts'
+export { Switch } from './Switch.tsx'
 
 const PENDING = 'Coming with the hub update'
 const HOUR = 3_600_000
@@ -99,10 +100,6 @@ export function useFeedback() {
     }
   }
   return { text, run, set: setText }
-}
-
-export function Switch({ label, checked, disabled, onChange }: { label: string; checked: boolean; disabled?: boolean; onChange?: (on: boolean) => void }) {
-  return <button type="button" className={`settings-switch${checked ? ' on' : ''}`} role="switch" aria-checked={checked} aria-label={label} disabled={disabled} onClick={() => onChange?.(!checked)} />
 }
 
 export function Radios<T extends string>({ name, label, value, options, onChange, disabled }: { name: string; label: string; value: T | null; options: Array<{ id: T; label: string; note?: string; swatch?: string }>; onChange?: (id: T) => void; disabled?: boolean }) {

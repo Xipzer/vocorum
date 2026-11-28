@@ -62,9 +62,10 @@
 }
 
 @media (max-width: 767px) {
-  /* Five controls in the dock. */
+  /* Before joining, as Discord's: the mic, Join, then the chat as a bare glyph. */
   .voice-button.phone-chat {
     display: grid;
+    background: none;
   }
   /* Discord iOS's dock: 48pt controls 16pt inside an 80pt card, spread across it. */
   .voice-view .voice-controls {
@@ -123,5 +124,88 @@
   }
   .app:has(> .call-pill) > .chat > .chat-header {
     margin-bottom: calc(var(--hit) + 16px);
+  }
+}
+
+.voice-chips {
+  display: none;
+}
+/* Phones, as Discord's iPhone call: no bar, a row of 32pt chips over the call (collapse, the
+   room's name, then audio output, invite and chat at the right), and in the dock only the
+   mic and leave on a fill. */
+@media (max-width: 767px) {
+  .voice-view > .chat-header {
+    gap: 12px;
+    padding-left: 16px;
+    padding-right: 16px;
+    background: none;
+    border-bottom: 0;
+  }
+  .voice-view > .chat-header > :is(.chat-titles, .chat-actions) {
+    display: none;
+  }
+  .voice-view > .chat-header .icon-button.menu,
+  .voice-chip {
+    display: inline-grid;
+    place-items: center;
+    flex: none;
+    width: 32px;
+    height: 32px;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border-radius: 8px;
+    background: var(--fill-hover);
+    color: var(--text-strong);
+  }
+  .voice-view > .chat-header .voice-name-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    width: auto;
+    min-width: 0;
+    flex: 0 1 auto;
+    padding: 0 8px 0 12px;
+    font: 600 16px/20px var(--font);
+  }
+  .voice-name-chip .title-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  span.voice-name-chip {
+    padding-right: 12px;
+  }
+  .voice-view > .chat-header .voice-chips {
+    display: flex;
+    gap: 12px;
+    margin-left: auto;
+  }
+  .voice-view .voice-button:not(.mic, .leave) {
+    background: none;
+  }
+}
+
+.voice-tile-name .voice-mic {
+  display: none;
+}
+/* Phones: Discord's 28pt name pill, the mic's state glyph before the name. */
+@media (max-width: 767px) {
+  .voice-tile .voice-tile-name {
+    gap: 4px;
+    height: 28px;
+    padding: 0 10px 0 8px;
+    border-radius: 8px;
+    font: 600 15px/20px var(--font);
+  }
+  .voice-tile-name > svg {
+    width: 16px;
+    height: 16px;
+  }
+  .voice-tile-name .voice-mic {
+    display: block;
+    flex: none;
+    color: var(--text-strong);
   }
 }

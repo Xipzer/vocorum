@@ -69,7 +69,7 @@ async function device(options: BrowserContextOptions) {
 const overflow = (p: Page) =>
   p.evaluate(() => {
     const width = window.innerWidth
-    const out = [...document.querySelectorAll<HTMLElement>('.voice-button, .voice-join, .voice-controls, .voice-tile, .call-pill, .call-pill *, .voice-chat, .voice-chat .footer')]
+    const out = [...document.querySelectorAll<HTMLElement>('.voice-button, .voice-join, .voice-controls, .voice-chip, .voice-tile, .call-pill, .call-pill *, .voice-chat, .voice-chat .footer')]
       .filter((el) => el.getBoundingClientRect().width > 0 && (el.getBoundingClientRect().left < -0.5 || el.getBoundingClientRect().right > width + 0.5))
       .map((el) => el.className)
     const list = document.querySelector<HTMLElement>('.voice-chat .messages')
@@ -222,7 +222,9 @@ test.skipIf(!ready)('phone: the dock opens the chat as a full-height panel, and 
     // The narrowest phones: nothing leaves the screen, in the room, its chat or under the pill.
     await p.setViewportSize({ width: 320, height: 640 })
     expect(await overflow(p)).toEqual({ page: 0, list: 0, out: [] })
-    await view.locator('.voice-controls').getByRole('button', { name: 'Show chat' }).tap()
+    // In the call the chat is a chip in the header, not in the dock.
+    expect(await view.locator('.voice-controls').getByRole('button', { name: 'Show chat' }).count()).toBe(0)
+    await view.locator('.chat-header').getByRole('button', { name: 'Show chat' }).tap()
     await chat.locator('.message').last().waitFor()
     expect(await overflow(p)).toEqual({ page: 0, list: 0, out: [] })
     await chat.getByRole('button', { name: 'Close panel' }).tap()

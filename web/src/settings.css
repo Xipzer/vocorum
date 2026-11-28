@@ -1272,3 +1272,28 @@ select.settings-input {
   margin-top: 8px;
   color: var(--text);
 }
+
+/* 2400px and up: the user dialog grows with the screen and a page's groups flow into up to
+   three columns, each kept at a reading width, instead of one 740px column in an empty screen. */
+@media (min-width: 2400px) {
+  .settings-layer.dialog {
+    width: min(2400px, calc(100vw - 160px));
+    height: min(1320px, calc(100vh - 160px));
+  }
+  .settings-layer:not(.phone) .settings-content,
+  .settings-layer.dialog .settings-content {
+    max-width: 2040px;
+    column-width: 600px;
+    column-count: 3;
+    column-gap: 56px;
+  }
+  .settings-layer.dialog .settings-content {
+    margin: 0;
+  }
+  .settings-content > * {
+    break-inside: avoid;
+  }
+  .settings-content > .settings-title {
+    column-span: all;
+  }
+}

@@ -10,7 +10,7 @@ import { startAuthentication, startRegistration } from '@simplewebauthn/browser'
 import { api, connectEvents, signedIn, type Channel, type Guild, type HubState, type LinkKind, type SessionSummary, type User } from './api.ts'
 import { Avatar, DmAvatar, machineIcon } from './Avatar.tsx'
 import { Chat } from './Chat.tsx'
-import { Overview } from './Overview.tsx'
+import { ActivityPane, Overview } from './Overview.tsx'
 import { extensions } from './extensions.tsx'
 import { SettingsHost } from './Settings.tsx'
 import { can, P } from './perms.ts'
@@ -1220,6 +1220,12 @@ function Main() {
   }, [current, openGuild])
   const openDrawer = useCallback(() => setDrawer(true), [])
   useSwipeBack(!drawer && !linkSheet && !modal, openDrawer)
+  // Wide screens: an Activity column beside every conversation from 2400px, and from 3200px a
+  // session's Workspace beside it as well, until closed.
+  const wide = useMediaQuery('(min-width: 2400px)')
+  const wider = useMediaQuery('(min-width: 3200px)')
+  const [autoBoard, setAutoBoard] = useState(() => localStorage.getItem('wide:workspace') !== 'off')
+  const sessionMap = useStore((d) => d.sessions)
   const [panel, setPanel] = useState<{ kind: 'search'; q?: string } | { kind: 'pins' | 'links' | 'threads' | 'members' | 'split' | 'workspace' | 'mentions'; channelId: string } | { kind: 'services'; threadId?: string } | { kind: 'inbox' } | { kind: 'scheduled'; channelId?: string } | null>(null)
   const account = state?.me.id
   useEffect(() => {
@@ -1511,7 +1517,7 @@ function Main() {
   }, [placeName, here, activeGuild])
 
   return (
-    <div className="app">
+    <div className={`app${wide ? ' wide-screen' : ''}`}>
       <OfflineNotice />
       {/* Discord's first Tab stop: straight to the conversation. */}
       <button className="skip-link" onClick={() => (document.querySelector<HTMLElement>('.composer textarea') ?? document.querySelector<HTMLElement>('.messages'))?.focus()}>
@@ -1644,8 +1650,10 @@ function Main() {
       {panel?.kind === 'mentions' && store.channel(panel.channelId) && can(P.READ_MESSAGE_HISTORY, panel.channelId) && <ChatMentions key={panel.channelId} channelId={panel.channelId} onClose={() => setPanel(null)} onJump={jump}/>}
       {panel?.kind === 'threads' && <ThreadsPanel key={`t${panel.channelId}`} channelId={panel.channelId} onClose={() => setPanel(null)} onOpen={(id) => { setCurrent(id); setDrawer(false); setPanel(null) }} onCreate={() => startThread(panel.channelId)} />}
       {panel?.kind === 'workspace' && channel?.id === panel.channelId && <WorkspacePanel key={`w${panel.channelId}`} channelId={panel.channelId} ctx={ctx} onClose={() => setBoardLocation(state.me.id, panel.channelId, false)} onJump={jump} onOpen={(id) => { setCurrent(id); setDrawer(false) }} onServices={() => setPanel({ kind: 'services', threadId: panel.channelId })} />}
+      {wider && autoBoard && !panel && channel && sessionMap[channel.id] && <WorkspacePanel key={`aw${channel.id}`} channelId={channel.id} ctx={ctx} onClose={() => (localStorage.setItem('wide:workspace', 'off'), setAutoBoard(false))} onJump={jump} onOpen={(id) => { setCurrent(id); setDrawer(false) }} onServices={() => setPanel({ kind: 'services', threadId: channel.id })} />}
       {panel?.kind === 'members' && <MembersPanel key={`m${panel.channelId}`} channelId={panel.channelId} onClose={() => setPanel(null)} />}
       {panel?.kind === 'pins' && <PinsPanel key={`p${panel.channelId}`} channelId={panel.channelId} ctx={ctx} onClose={() => setPanel(null)} onJump={(c, m) => { jump(c, m); setPanel(null) }} />}
+      {wide && !overview && !page && (!panel || (wider && panel.kind === 'workspace')) && <ActivityPane onOpen={open} />}
       {switcher === 'switcher' && <QuickSwitcher current={channel?.id ?? null} onOpen={open} onGuild={pickGuild} onClose={() => setSwitcher(null)} />}
       {switcher === 'shortcuts' && <ShortcutSheet onClose={() => setSwitcher(null)} />}
       {modal && modal.channelId === channel?.id && (
@@ -1730,4 +1738,15 @@ export function App() {
     )
   if (phase === 'login') return <Login onDone={() => void check()} />
   return <Main />
+}
+
+function useMediaQuery(query: string) {
+  const [match, setMatch] = useState(() => window.matchMedia(query).matches)
+  useEffect(() => {
+    const list = window.matchMedia(query)
+    const change = () => setMatch(list.matches)
+    list.addEventListener('change', change)
+    return () => list.removeEventListener('change', change)
+  }, [query])
+  return match
 }

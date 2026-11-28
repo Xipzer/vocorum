@@ -404,7 +404,7 @@ export function Inbox({ guildId, onMenu, onJump, onSearch }: { guildId: string; 
         </span>
       </header>
       <div className="messages">
-        <div className="ov">
+        <div className="ov mentions-page">
           {error && <div className="error">{error}</div>}
           {list?.length === 0 && <Empty icon="at" title="No mentions">Mentions in this server from the last 14 days show here.</Empty>}
           {list?.map((m) => <MentionRow key={m.message.id} m={m} unread={unread(m)} onJump={onJump} />)}
@@ -1109,7 +1109,7 @@ function ThreadAnswer({ session, onOpen }: { session: SessionSummary; onOpen: (i
 const EDGES = ['busy', 'waiting', 'failed'] as const
 const RANK: Partial<Record<SessionSummary['state'], number>> = { waiting: 0, failed: 1, busy: 2 }
 
-// One thread as a card. Its left edge is the status: working, waiting for you, failed, or white
+// One thread as a card (on phones a row of one grouped list per section). Its left edge is the status: working, waiting for you, failed, or white
 // for unread when nothing is active. The title is bright only when unread.
 function ThreadCard({ thread, session, unread, starter, from, names, onOpen }: { thread: Channel; session?: SessionSummary; unread: boolean; starter?: Message; from: string | null; names: (text: string) => string; onOpen: (id: string) => void }) {
   const root = useRef<HTMLDivElement>(null)
@@ -1135,6 +1135,7 @@ function ThreadCard({ thread, session, unread, starter, from, names, onOpen }: {
         </span>
         <span className="num">{since(new Date(run !== null ? Date.now() - run : at).toISOString())}</span>
       </span>
+      <Icon name="chevron" size={20} className="thread-chevron" />
     </div>
   )
 }
@@ -1256,13 +1257,13 @@ export function ThreadsPanel({ channelId, onClose, onOpen, onCreate }: { channel
             Active <span className="num">{open.length}</span>
           </div>
         )}
-        {open.map(row)}
+        {open.length > 0 && <div className="thread-group">{open.map(row)}</div>}
         {older.length > 0 && (
           <div className="panel-section">
             Archived <span className="num">{older.length}</span>
           </div>
         )}
-        {older.map(row)}
+        {older.length > 0 && <div className="thread-group">{older.map(row)}</div>}
       </div>
     </Panel>
   )

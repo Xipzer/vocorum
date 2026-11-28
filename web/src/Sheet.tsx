@@ -4,12 +4,14 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { Icon, type IconName } from './icons.tsx'
 import { leave } from './text.ts'
+import { Switch } from './Switch.tsx'
 
-export type SheetAction = { label: string; icon?: IconName; run: () => void; red?: boolean; radio?: boolean; checked?: boolean; sub?: string }
+/** `toggle`: an on/off row, a switch on phones. */
+export type SheetAction = { label: string; icon?: IconName; run: () => void; red?: boolean; radio?: boolean; toggle?: boolean; checked?: boolean; sub?: string }
 /** Where a menu opens: at a point (right-click, long press) or dropped from a control,
  *  8px below it and aligned to its start or end edge, like Discord's. */
 export type SheetAt = { x: number; y: number } | { rect: DOMRect; align: 'start' | 'end' } | { rect: DOMRect; side: 'left' | 'right' }
-export type SheetSpec = { title: string; subtitle?: string; badge?: ReactNode; groups: SheetAction[][]; at?: SheetAt; plain?: boolean; /** A question before an action: the title stays on desktop too. */ confirm?: boolean; /** A card (a profile) in place of the title and actions. */ card?: (finish: (run: () => void) => void) => ReactNode }
+export type SheetSpec = { title: string; subtitle?: string; badge?: ReactNode; groups: SheetAction[][]; /** Phones: a heading over each group, by index. */ headings?: Array<string | undefined>; at?: SheetAt; plain?: boolean; /** A question before an action: the title stays on desktop too. */ confirm?: boolean; /** A card (a profile) in place of the title and actions. */ card?: (finish: (run: () => void) => void) => ReactNode }
 
 /** A menu that drops from the clicked control. */
 export const below = (el: Element, align: 'start' | 'end' = 'end'): SheetAt => ({ rect: el.getBoundingClientRect(), align })
@@ -206,21 +208,27 @@ export function Sheet({ spec, onClose, picker }: { spec: SheetSpec; onClose: () 
           {picker && isPhone && <button className="choice-close" aria-label="Close selector" onClick={close}><Icon name="close" size={16} /></button>}
         </div>
         {picker ? picker.body(finish, close) : spec.groups
-          .filter((g) => g.length)
-          .map((group, i) => (
-            <div key={i} className="sheet-group">
-              {group.map((action) => (
-                <button key={action.label} className={`sheet-item${action.red ? ' red' : ''}${action.sub ? ' two-line' : ''}`} role={action.radio ? 'menuitemradio' : 'menuitem'} aria-checked={action.radio ? Boolean(action.checked) : undefined} onClick={() => finish(action.run)}>
+          .map((group, i) => ({ group, heading: isPhone ? spec.headings?.[i] : undefined }))
+          .filter(({ group }) => group.length)
+          .map(({ group, heading }, i) => [
+            heading && <div key={`h${i}`} className="sheet-heading" role="presentation">{heading}</div>,
+            <div key={i} className="sheet-group" role={heading ? 'group' : undefined} aria-label={heading}>
+              {group.map((action) => {
+                const toggle = Boolean(action.toggle && isPhone)
+                return (
+                <button key={action.label} className={`sheet-item${action.red ? ' red' : ''}${action.sub ? ' two-line' : ''}`} role={action.radio ? 'menuitemradio' : toggle ? 'menuitemcheckbox' : 'menuitem'} aria-checked={action.radio || toggle ? Boolean(action.checked) : undefined} onClick={() => finish(action.run)}>
                   {action.icon && <Icon name={action.icon} size={isPhone ? 22 : 18} />}
                   <span className="sheet-item-text">
                     {action.label}
                     {action.sub && <span className="sheet-sub-label">{action.sub}</span>}
                   </span>
                   {action.radio && <i className={`sheet-radio${action.checked ? ' on' : ''}`} />}
+                  {toggle && <Switch label={action.label} checked={Boolean(action.checked)} decorative />}
                 </button>
-              ))}
-            </div>
-          ))}
+                )
+              })}
+            </div>,
+          ])}
       </div>
     </div>
   )

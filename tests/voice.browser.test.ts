@@ -253,6 +253,7 @@ test.skipIf(!ready)('phone: hold the mic to record, release to send', async () =
     const before = await voiceNotes(page).count()
     await touch('touchStart')
     await page.locator('.recording-label').waitFor()
+    const shown = Date.now()
     await page.getByText('Release to Send', { exact: true }).waitFor()
     // Discord's bar: the bin where the + was, the timer, the waveform and a 36pt accent Send square under the finger.
     expect(await page.getByRole('button', { name: 'Add to message' }).count()).toBe(0)
@@ -293,7 +294,13 @@ test.skipIf(!ready)('phone: hold the mic to record, release to send', async () =
     const [lock, sendNow] = [(await page.locator('.rec-lock').boundingBox())!, (await send.boundingBox())!]
     expect(lock.x + lock.width).toBe(sendNow.x + sendNow.width)
     await page.waitForTimeout(1500)
-    await expect(page.locator('.recording-label .num').textContent()).resolves.toMatch(/^0:0[1-2]$/)
+    // The timer counts real seconds since the hold began, including the checks above; read it against the time that passed.
+    const label = (await page.locator('.recording-label .num').textContent()) ?? ''
+    const passed = (Date.now() - shown) / 1000
+    expect(label).toMatch(/^0:\d\d$/)
+    const seconds = Number(label.slice(2))
+    expect(seconds).toBeGreaterThanOrEqual(Math.max(1, Math.floor(passed) - 1))
+    expect(seconds).toBeLessThanOrEqual(Math.ceil(passed) + 1)
     expect(await page.locator('.rec-wave i').count()).toBeGreaterThan(5)
     await page.screenshot({ path: path.join(shots, 'voice-phone-recording.png') })
     await touch('touchEnd')
