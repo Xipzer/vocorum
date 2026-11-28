@@ -112,6 +112,11 @@ Next time, the device signs in with its passkey.
 app needs no certificate, DNS or passkey steps: the link tells it which
 certificate to trust. See [apps/desktop/README.md](../apps/desktop/README.md).
 
+Using the Vocorum app on the hub computer itself (or on Windows when the hub runs
+in WSL)? Run `vocorum pair <name> --here` and open the link on that computer.
+Any program or user on that computer (and on Windows, for a hub in WSL) can reach
+that port; the paired device's key is what keeps them out.
+
 The setup page shows a fingerprint. If you want to be sure the certificate is
 yours, compare it with `node bin/vocorum.js private status` on the hub.
 

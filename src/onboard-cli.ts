@@ -88,7 +88,7 @@ Sets up the hub on this machine in one go, and is safe to run again.
 
 Checks every layer a device or bot goes through and prints the command that fixes
 each problem. Read only. Exits 1 when something fails.`,
-  pair: `vocorum pair <device name> [--ttl 30m] [--person USERNAME] [--app] [--json]
+  pair: `vocorum pair <device name> [--ttl 30m] [--person USERNAME] [--app] [--here] [--json]
 
 Makes a single-use pairing code and prints one link and a QR code. The link opens
 the hub's setup page by address, which works before the device trusts anything; it
@@ -97,7 +97,12 @@ shows what to install for that device and then opens the app with the code fille
   --ttl 30m          how long the code works (at most 24h; default 30m)
   --person USERNAME  a device for someone you invited (default: you)
   --app              QR for the Vocorum app instead of the browser (the app checks the
-                     hub's certificate itself: no profile, DNS step or passkey needed)`,
+                     hub's certificate itself: no profile, DNS step or passkey needed)
+  --here             the Vocorum app on the hub's own computer (also the Windows side of
+                     a hub in WSL): it connects over this computer's loopback, so it needs
+                     no network at all. Any program or user on this computer (and on
+                     Windows, for a hub in WSL) can reach that port: the paired device's
+                     key is what keeps them out`,
   config: `vocorum config get [KEY] [--json]
 vocorum config set KEY VALUE
 
@@ -250,7 +255,7 @@ function help(key: string) {
   console.log(HELP[key] ?? Object.values(HELP).map((h) => h.split('\n')[0]).join('\n'))
 }
 
-const BOOLEAN = new Set(['help', 'open', 'check', 'replace', 'delete-data', 'app', 'no-service', 'remove', 'json', 'yes', 'dry-run', 'no-service', 'detach', 'no-files', 'threads', 'kimaki-keep'])
+const BOOLEAN = new Set(['help', 'open', 'check', 'replace', 'delete-data', 'app', 'here', 'no-service', 'remove', 'json', 'yes', 'dry-run', 'no-service', 'detach', 'no-files', 'threads', 'kimaki-keep'])
 
 const str = (v: string | true | undefined) => (typeof v === 'string' ? v : undefined)
 
@@ -272,13 +277,14 @@ function requireConfig(): HubConfig {
 // server ever logs.
 // The Vocorum apps pair from their own link instead, which carries the CA's
 // fingerprint: no certificate or DNS setup and no passkey on those devices.
-export async function pairingLinks(config: HubConfig, code: string) {
+export async function pairingLinks(config: HubConfig, code: string, { here = false }: { here?: boolean } = {}) {
   const l = config.privateListener
   if (!l) return { setup: null, app: `http://localhost:${config.port}/#pair=${code}`, native: null }
   const host = l.address.includes(':') ? `[${l.address}]` : l.address
   const { appPairLink } = await import('./private-listener.ts')
   const caCert = path.join(paths.ca, 'ca.crt')
-  const native = fs.existsSync(caCert) ? appPairLink(l, caCert, code) : null
+  // here: an app on the hub's own computer, which reaches the listener on loopback.
+  const native = fs.existsSync(caCert) ? appPairLink(here ? { ...l, address: '127.0.0.1' } : l, caCert, code) : null
   return { setup: l.httpPort === null ? null : `http://${host}:${l.httpPort}/?code=${code}`, app: `https://${l.names[0]}:${l.port}/#pair=${code}`, native }
 }
 
@@ -622,8 +628,9 @@ export async function onboardCommand(argv: string[]): Promise<boolean> {
     } finally {
       store.close()
     }
-    const links = await pairingLinks(config, code)
-    await emit({ device: name, code, expires_in_minutes: ttlMs / 60_000, links, app_installers: links.setup ? await appInstallers() : [] }, () => printPairing(links, code, ttlMs / 60_000, flags['app'] === true))
+    const here = flags['here'] === true
+    const links = await pairingLinks(config, code, { here })
+    await emit({ device: name, code, expires_in_minutes: ttlMs / 60_000, links, app_installers: links.setup ? await appInstallers() : [] }, () => printPairing(links, code, ttlMs / 60_000, flags['app'] === true || here, here))
     return true
   }
   if (command === 'config') {
@@ -710,11 +717,15 @@ async function appInstallers() {
   }
 }
 
-async function printPairing(links: { setup: string | null; app: string; native: string | null }, code: string, minutes: number, forApp = false) {
+async function printPairing(links: { setup: string | null; app: string; native: string | null }, code: string, minutes: number, forApp = false, here = false) {
   const { qrTerminal } = await import('./qr.ts')
   const lasts = `Code ${code} works once, for ${minutes} minutes.`
   const installers = links.setup ? await appInstallers() : []
   const offer = installers.length ? `The setup page also has the Vocorum app for ${[...new Set(installers.map((i) => SYSTEMS[i.platform.split('-')[0]!] ?? i.platform))].join(', ')} (${installers[0]!.version}), while this code is valid.` : null
+  if (here && links.native) {
+    console.log(`\nPair the Vocorum app on this computer. ${lasts}\nOpen this link here (with the app installed):\n  ${links.native}`)
+    return
+  }
   if (forApp && links.native) {
     console.log(`\nPair the Vocorum app. ${lasts}\n`)
     console.log(qrTerminal(links.native))
@@ -727,7 +738,9 @@ async function printPairing(links: { setup: string | null; app: string; native: 
   console.log(qrTerminal(first))
   console.log(`Scan it with the device's camera, or open:\n  ${first}`)
   if (links.setup) console.log(`That page shows what to install, then opens Vocorum with the code filled in.${offer ? `\n${offer}` : ''}\n\nAlready set up?   ${links.app}`)
-  if (links.native) console.log(`The Vocorum app?  vocorum pair <device> --app`)
+  if (links.native) console.log(`The Vocorum app?  vocorum pair <device> --app (on this computer: --here)`)
+  // The hub in WSL: Windows on the same PC cannot reach WSL's private address, only its loopback.
+  if (links.native && process.platform === 'linux' && /microsoft/i.test((() => { try { return fs.readFileSync('/proc/version', 'utf8') } catch { return '' } })())) console.log(`The app on this PC's Windows side: vocorum pair windows --here`)
 }
 
 async function discordCommand(sub: string | undefined, rest: string[], flags: Record<string, string | true>, json: boolean, argv: string[]) {

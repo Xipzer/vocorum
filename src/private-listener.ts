@@ -289,6 +289,12 @@ export class PrivateListener {
   // Every accepted socket, upgraded WebSockets included: close() would wait for them.
   private open = new Set<net.Socket>()
   private sockets = new WeakSet<object>()
+  // The same listener on this computer's loopback, for a Vocorum app on the hub's own computer
+  // (and the Windows side of a WSL hub, which reaches WSL's loopback but not its tailnet
+  // address). It adds no way in: loopback already reaches the hub, and these connections
+  // need a paired device like any other on this listener.
+  private loopback: net.Server[] = []
+  private viaLoopback = new WeakSet<net.Socket>()
   private whoisCache = new Map<string, { login: string | null; at: number }>()
 
   constructor(
@@ -332,6 +338,7 @@ export class PrivateListener {
   }
 
   private allowed(socket: net.Socket) {
+    if (this.viaLoopback.has(socket)) return true
     const ip = socket.remoteAddress ?? ''
     return this.config.allowedCidrs.some((cidr) => inCidr(ip, cidr))
   }
@@ -388,8 +395,9 @@ export class PrivateListener {
     })
     tls.on('upgrade', (req: http.IncomingMessage, socket: Duplex, head: Buffer) => relay.emit('upgrade', req, socket, head))
     this.unbound.push({ server: tls, port: this.config.port })
+    let plain: http.Server | null = null
     if (this.config.httpPort !== null) {
-      const plain = http.createServer((req, res) => {
+      plain = http.createServer((req, res) => {
         this.enrol(req, res).catch((error: { status?: number }) => {
           if (!res.headersSent) res.writeHead(typeof error?.status === 'number' ? error.status : 500).end()
         })
@@ -398,6 +406,24 @@ export class PrivateListener {
       this.unbound.push({ server: plain, port: this.config.httpPort ?? 0 })
     }
     await this.bind()
+    if (!['127.0.0.1', '::1'].includes(this.config.address)) await this.onLoopback([{ server: tls, port: this.config.port }, ...(plain && this.config.httpPort !== null ? [{ server: plain, port: this.config.httpPort }] : [])])
+  }
+
+  private async onLoopback(targets: Array<{ server: net.Server; port: number }>) {
+    for (const target of targets) {
+      const { server } = target
+      // Port 0 (tests): the one the private address got.
+      const port = target.port || ((server.address() as net.AddressInfo | null)?.port ?? 0)
+      if (!port) continue
+      const front = net.createServer((socket) => {
+        this.viaLoopback.add(socket)
+        server.emit('connection', socket)
+      })
+      // Another hub on this computer may hold the port: then apps here use the private address.
+      const bound = await new Promise<boolean>((resolve) => front.once('error', () => resolve(false)).listen(port, '127.0.0.1', () => resolve(true)))
+      if (bound) this.loopback.push(front)
+      else console.error(`[private] 127.0.0.1:${port} is taken, so apps on this computer use ${this.config.address}`)
+    }
   }
 
   // An address that does not exist yet (the tailnet comes up after the hub at boot) is
@@ -431,11 +457,12 @@ export class PrivateListener {
     if (this.retry) clearTimeout(this.retry)
     this.retry = null
     this.unbound = []
-    const closed = Promise.all(this.servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
+    const closed = Promise.all([...this.servers, ...this.loopback].map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
     for (const socket of this.open) socket.destroy()
     this.open.clear()
     await closed
     this.servers = []
+    this.loopback = []
   }
 
   private records() {
