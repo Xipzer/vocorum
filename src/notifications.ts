@@ -2,7 +2,8 @@
 // category, channel or thread (Discord's levels: all messages, mentions only,
 // nothing; plus mute until). Pushes go to installed PWAs for messages the
 // settings allow and for sessions that start waiting on the owner ("needs
-// you"), unless a device is in front: then the open app shows it.
+// you"), unless a device is in front: then the open app shows it, or the person is on
+// Do Not Disturb.
 
 import { getMessageVisibleText } from 'discord-digital-twin/src'
 import type { Hub } from './hub.ts'
@@ -204,6 +205,8 @@ export class Notifications {
   }
 
   async pushAll(payload: PushPayload, only: { userId?: string; deviceId?: string }) {
+    // Do Not Disturb: no notifications at all, like Discord on desktop.
+    if (only.userId && this.hub.presence.doNotDisturb(only.userId)) return { sent: 0, failed: 0 }
     const targets = (await this.hub.store.pushSubscriptions()).filter((t) => (!only.deviceId || t.deviceId === only.deviceId) && (!only.userId || (t.userId ?? this.owner) === only.userId))
     const results = await Promise.all(targets.map((t) => this.pushOne(t, payload)))
     const apps = this.hub.events.notifyApps(payload, only)

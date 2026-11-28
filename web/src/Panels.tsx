@@ -6,6 +6,7 @@ import { extensions } from './extensions.tsx'
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { below, Sheet, type SheetSpec } from './Sheet.tsx'
 import { profileSheet, type ProfileOf } from './Profile.tsx'
+import { liveCustom, ownStatus, STATUS_TEXT } from './Status.tsx'
 import { startAuthentication } from '@simplewebauthn/browser'
 import { api, call, type Channel, type HubRequest, type Reminder, type FoundChannel, type LinkKind, type Mention, type Message, type SearchResult, type Service, type ServiceEvent, type SessionSummary } from './api.ts'
 import { Avatar, machineIcon } from './Avatar.tsx'
@@ -1294,21 +1295,23 @@ export function MembersPanel({ channelId, onClose }: { channelId: string; onClos
   }
   const now = Date.now()
   const isTyping = (id: string) => (typing?.[id] ?? 0) > now
-  const status = (id: string) => presence[id]?.status ?? (id === state.me.id ? 'online' : 'offline')
+  const status = (id: string) => (id === state.me.id ? ownStatus(state) : (presence[id]?.status ?? 'offline'))
   const row = (u: (typeof state.users)[number]) => {
     const p = presence[u.id]
     const st = status(u.id)
     const notes: string[] = []
     if (u.pending) notes.push('Not joined yet')
+    const custom = !u.bot && liveCustom(u.id === state.me.id ? state.user_status?.custom_status : p?.custom_status)
+    if (custom && !isTyping(u.id)) notes.push(custom.text)
     if (u.bot && p?.activity && !p.machines?.length) notes.push(p.activity)
     if (isTyping(u.id)) notes.push(u.bot ? 'working here' : 'typing here')
     for (const d of p?.devices ?? []) notes.push(`${d.name}${d.visible ? '' : ' (away)'} · ${where(d.channel_id)}`)
     if (u.bot && p?.machines?.length) notes.push(p.machines.map((m) => `${machineName(m.machine)}${m.online ? '' : ' (offline)'}`).join(', '))
     return (
-      <button key={u.id} className={`member${st === 'offline' ? ' away' : ''}${opened === u.id ? ' open' : ''}`} onClick={(e) => profile(e, u.id, { user: u })}>
+      <button key={u.id} className={`member${st === 'offline' || st === 'invisible' ? ' away' : ''}${opened === u.id ? ' open' : ''}`} onClick={(e) => profile(e, u.id, { user: u })}>
         <span className="member-avatar">
           <Avatar id={u.id} name={u.global_name ?? u.username} size="panel" version={u.avatar} />
-          <i className={`presence ${st}`} aria-label={st} />
+          <i className={`presence ${st}`} aria-label={STATUS_TEXT[st]} />
         </span>
         <span className="member-name">
           <span className="member-line">
@@ -1326,7 +1329,7 @@ export function MembersPanel({ channelId, onClose }: { channelId: string; onClos
     const machines = u.bot ? presence[u.id]?.machines : undefined
     return machines?.length ? machines.map((m) => ({ key: `${u.id}:${m.machine}`, user: u, machine: m })) : [{ key: u.id, user: u }]
   })
-  const isOn = (r: Row) => (r.machine ? r.machine.online : status(r.user.id) !== 'offline')
+  const isOn = (r: Row) => (r.machine ? r.machine.online : !['offline', 'invisible'].includes(status(r.user.id)))
   const render = (r: Row) => {
     if (!r.machine) return row(r.user)
     const u = r.user

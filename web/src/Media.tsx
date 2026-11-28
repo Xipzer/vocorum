@@ -92,6 +92,77 @@ export function Lightbox({ items, start, onClose: closed }: { items: Viewable[];
     const clientX = x ?? r.left + r.width / 2, clientY = y ?? r.top + r.height / 2
     setZoom(zoom ? null : { x: (clientX-r.left)/r.width, y: (clientY-r.top)/r.height, width: r.width * 2, clientX, clientY })
   }
+  // Phones: a vertical swipe throws the picture away; a short, slow one lets it spring back.
+  const zoomed = useRef(false)
+  zoomed.current = zoom !== null
+  useEffect(() => {
+    const box = layer.current
+    if (!box || !window.matchMedia('(max-width: 767px)').matches) return
+    let start: { x: number; y: number } | null = null
+    let dy = 0
+    let still = false
+    let fling = { y: 0, t: 0, v: 0 }
+    const show = (y: number) => {
+      const el = stage.current
+      if (!el) return
+      el.style.translate = y ? `0 ${y}px` : ''
+      box.style.setProperty('--fade', String(1 - Math.min(1, Math.abs(y) / (window.innerHeight * 0.5)) * 0.8))
+      box.style.setProperty('--fade-bar', String(1 - Math.min(1, Math.abs(y) / (window.innerHeight * 0.15))))
+    }
+    const reset = () => {
+      delete box.dataset['drag']
+      box.style.removeProperty('--fade')
+      box.style.removeProperty('--fade-bar')
+      if (stage.current) stage.current.style.translate = ''
+    }
+    const down = (e: TouchEvent) => {
+      const pinched = (window.visualViewport?.scale ?? 1) > 1.01
+      if (e.touches.length !== 1 || zoomed.current || pinched || (e.target as Element).closest('.lightbox-bar, .lightbox-nav')) {
+        if (start && dy) reset()
+        return void (start = null)
+      }
+      start = { x: e.touches[0]!.clientX, y: e.touches[0]!.clientY }
+      fling = { y: start.y, t: Date.now(), v: 0 }
+      dy = 0
+    }
+    const move = (e: TouchEvent) => {
+      if (!start) return
+      const x = e.touches[0]!.clientX - start.x
+      const y = e.touches[0]!.clientY - start.y
+      const now = Date.now()
+      if (now > fling.t) fling = { y: e.touches[0]!.clientY, t: now, v: (e.touches[0]!.clientY - fling.y) / (now - fling.t) }
+      if (!dy) {
+        if (Math.abs(x) > 10 && Math.abs(x) > Math.abs(y)) return void (start = null)
+        if (Math.abs(y) < 10 || Math.abs(y) < Math.abs(x) * 1.5) return
+        still = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+        if (!still) box.dataset['drag'] = ''
+      }
+      dy = y || 1
+      e.preventDefault()
+      if (!still) show(dy)
+    }
+    const up = () => {
+      if (!start || !dy) return void (start = null)
+      start = null
+      const speed = Date.now() - fling.t < 100 ? fling.v : 0
+      const done = Math.abs(dy) > window.innerHeight * 0.25 || (Math.abs(speed) > 0.5 && Math.sign(speed) === Math.sign(dy))
+      delete box.dataset['drag']
+      if (!done) return reset()
+      if (!still) show(Math.sign(dy) * window.innerHeight)
+      onClose()
+    }
+    box.addEventListener('touchstart', down, { passive: true })
+    box.addEventListener('touchmove', move, { passive: false })
+    box.addEventListener('touchend', up)
+    box.addEventListener('touchcancel', up)
+    return () => {
+      box.removeEventListener('touchstart', down)
+      box.removeEventListener('touchmove', move)
+      box.removeEventListener('touchend', up)
+      box.removeEventListener('touchcancel', up)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const stop = (e: { stopPropagation: () => void }) => e.stopPropagation()
   return createPortal(
     <div ref={layer} className="lightbox" role="dialog" aria-modal="true" aria-label={item.name} onClick={onClose}>

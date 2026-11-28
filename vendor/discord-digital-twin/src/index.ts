@@ -10,9 +10,11 @@ import type { Duplex } from 'node:stream'
 import path from 'node:path'
 import url from 'node:url'
 import {
+  ActivityType,
   ApplicationCommandOptionType,
   ChannelType,
   GatewayDispatchEvents,
+  PresenceUpdateStatus,
   InteractionType,
   ComponentType,
   MessageType,
@@ -25,6 +27,10 @@ import type {
   APIAttachment,
   APIInteraction,
   APIMessageReference,
+  APIUser,
+  GatewayActivity,
+  GatewayPresenceClientStatus,
+  PresenceUpdateReceiveStatus,
 } from 'discord-api-types/v10'
 import { createPrismaClient, type PrismaClient } from './db.js'
 import { generateSnowflake } from './snowflake.js'
@@ -37,6 +43,7 @@ import {
   type HttpExtension,
   type AttachmentStore,
   pinMessage,
+  startThreadFromMessage,
 } from './server.js'
 import type { GatewayObserver, GatewayState } from './gateway.js'
 import { DiscordVoiceServer, type VoiceStream } from './voice.js'
@@ -673,6 +680,16 @@ export class DigitalDiscord {
     for (const member of members) this.server?.gateway.broadcast(GatewayDispatchEvents.GuildMemberUpdate, { ...memberToAPI({ ...member, user }), guild_id: member.guildId })
   }
 
+  // A user's status changes: PRESENCE_UPDATE in each of their guilds, to bots with the
+  // GUILD_PRESENCES intent. Invisible users are sent as offline, as Discord does.
+  async simulatePresenceUpdate({ userId, status, customStatus = null, clientStatus = {} }: { userId: string; status: 'online' | 'idle' | 'dnd' | 'invisible' | 'offline'; customStatus?: { text: string; createdAt: number } | null; clientStatus?: GatewayPresenceClientStatus }): Promise<void> {
+    const members = await this.prisma.guildMember.findMany({ where: { userId } })
+    const shown = status === 'invisible' ? PresenceUpdateStatus.Offline : (status as PresenceUpdateReceiveStatus)
+    const offline = shown === PresenceUpdateStatus.Offline
+    const activities: GatewayActivity[] = customStatus && !offline ? [{ id: 'custom', name: 'Custom Status', type: ActivityType.Custom, state: customStatus.text, created_at: customStatus.createdAt }] : []
+    this.server?.gateway.setPresence({ user: { id: userId }, status: shown, activities, client_status: offline ? {} : clientStatus }, members.map((m) => m.guildId))
+  }
+
   // Renames a guild or changes its icon: GUILD_UPDATE to its members.
   async updateGuild({ id, name, icon }: { id: string; name?: string; icon?: string | null }): Promise<void> {
     const guild = await this.prisma.guild.update({ where: { id }, data: { ...(name !== undefined && { name }), ...(icon !== undefined && { icon }) }, include: { roles: true } })
@@ -756,6 +773,13 @@ export class DigitalDiscord {
   async simulateUserPin({ channelId, messageId, userId, pinned }: { channelId: string; messageId: string; userId: string; pinned: boolean }): Promise<void> {
     if (!this.server) throw new Error('Server not started')
     await pinMessage({ prisma: this.prisma, gateway: this.server.gateway, channelId, messageId, userId, pinned })
+  }
+
+  // A user starts a thread from a message in the Discord UI.
+  async simulateUserThreadFromMessage({ channelId, messageId, userId, name, type }: { channelId: string; messageId: string; userId: string; name: string; type?: ChannelType }): Promise<APIChannel> {
+    if (!this.server) throw new Error('Server not started')
+    const channel = await this.prisma.channel.findUniqueOrThrow({ where: { id: channelId } })
+    return startThreadFromMessage({ prisma: this.prisma, gateway: this.server.gateway, channel, messageId, userId, name, type })
   }
 
   // A user archives or unarchives a thread in the Discord UI.
@@ -878,8 +902,10 @@ export class DigitalDiscord {
     embeds,
     attachments,
     messageReference,
+    mentions,
     type = MessageType.Default,
     flags = 0,
+    extra,
   }: {
     // A forum post's opening message has its thread's id, as on Discord.
     id?: string
@@ -889,9 +915,13 @@ export class DigitalDiscord {
     embeds?: APIEmbed[]
     attachments?: APIAttachment[]
     messageReference?: APIMessageReference
+    // Discord's `mentions`, e.g. the replied-to author when the reply pings them.
+    mentions?: APIUser[]
     type?: MessageType
     // e.g. MessageFlags.IsVoiceMessage
     flags?: number
+    // Fields beyond the stored columns, e.g. a forward's message_snapshots.
+    extra?: Record<string, unknown>
   }): Promise<APIMessage> {
     if (!this.server) {
       throw new Error('Server not started')
@@ -907,9 +937,11 @@ export class DigitalDiscord {
         content,
         embeds: JSON.stringify(embeds ?? []),
         attachments: JSON.stringify(attachments ?? []),
+        mentions: JSON.stringify(mentions ?? []),
         messageReference: messageReference
           ? JSON.stringify(messageReference)
           : null,
+        extra: extra ? JSON.stringify(extra) : null,
       },
     })
     await this.prisma.channel.update({

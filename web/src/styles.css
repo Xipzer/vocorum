@@ -687,6 +687,34 @@ html[data-keyboard='open'] .footer {
 .menu-item.red {
   color: var(--danger-text);
 }
+.menu-rule {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--line-raised);
+}
+.status-item-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.status-item-text small {
+  font: 400 12px/16px var(--font);
+  color: var(--text-muted);
+}
+.status-item[aria-checked='true'] {
+  color: var(--text-strong);
+  background: var(--fill-menu-hover, var(--active));
+}
+.status-custom {
+  display: flex;
+  align-items: center;
+}
+.status-custom > .icon-button {
+  flex: none;
+  width: 28px;
+  height: 28px;
+}
 .swatch {
   width: 12px;
   height: 12px;
@@ -1443,6 +1471,22 @@ html[data-keyboard='open'] .footer {
   width: 24px;
   height: 24px;
 }
+/* Discord's reply mention toggle: "@ ON" in the accent, "@ OFF" muted. */
+.footer-line .reply-ping {
+  margin-left: auto;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  font: 700 12px/16px var(--font);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.footer-line .reply-ping.on {
+  color: var(--accent);
+}
+.footer-line .reply-ping + .icon-button {
+  margin-left: 0;
+}
 .busy-dot {
   width: 7px;
   height: 7px;
@@ -1855,7 +1899,8 @@ html[data-keyboard='open'] .footer {
   color: var(--text-muted);
 }
 .field input,
-.field textarea {
+.field textarea,
+.field select {
   background: var(--bg-3);
   border: 0;
   border-radius: var(--r-field);
@@ -1866,7 +1911,8 @@ html[data-keyboard='open'] .footer {
   transition: box-shadow var(--fast);
 }
 .field input:focus,
-.field textarea:focus {
+.field textarea:focus,
+.field select:focus {
   box-shadow: inset 0 0 0 2px var(--accent);
 }
 .field .select {
@@ -1892,6 +1938,121 @@ html[data-keyboard='open'] .footer {
 }
 .grab {
   display: none;
+}
+
+/* Create Thread and Forward (MessageDialogs.tsx). */
+.modal-sub {
+  margin: 4px 24px 0;
+  font-size: 14px;
+  line-height: 18px;
+  color: var(--text-muted);
+}
+.message-quote {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px 12px;
+  border-left: 4px solid var(--line-card);
+  border-radius: var(--r-inline);
+  background: var(--bg-3);
+  font-size: 14px;
+  line-height: 18px;
+  color: var(--text-muted);
+}
+.message-quote strong {
+  flex: none;
+  color: var(--text);
+  font-weight: 500;
+}
+.message-quote span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.forward-dialog .modal-body {
+  gap: 8px;
+}
+.forward-search,
+.forward-note {
+  height: var(--control);
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--r-field);
+  background: var(--bg-3);
+  outline: none;
+  font-size: 14px;
+  box-shadow: inset 0 0 0 1px transparent;
+}
+.forward-search:focus,
+.forward-note:focus {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.forward-note {
+  flex: 1;
+  min-width: 0;
+}
+.forward-list {
+  display: flex;
+  flex-direction: column;
+  height: 264px;
+  overflow-y: auto;
+  margin: 0 -8px;
+}
+.forward-item {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-control);
+  background: transparent;
+  color: var(--text);
+  font: 500 14px/18px var(--font);
+  text-align: left;
+  cursor: pointer;
+}
+.forward-item > svg {
+  flex: none;
+  color: var(--text-muted);
+}
+.forward-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+@media (hover: hover) {
+  .forward-item:hover {
+    background: var(--fill-hover);
+  }
+}
+.forward-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.forward-sub {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font: 400 12px/16px var(--font);
+}
+.forward-check {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-left: auto;
+  border: 1.5px solid var(--text-faint);
+  border-radius: var(--r-inline);
+  color: var(--accent-ink);
+}
+.forward-item.on .forward-check {
+  border-color: var(--accent);
+  background: var(--accent);
 }
 
 /* Login */
@@ -2092,6 +2253,16 @@ html[data-keyboard='open'] .footer {
   .modal-footer .button {
     flex: 1;
     height: var(--control);
+  }
+  .modal-sub {
+    margin: 0 16px;
+    font-size: 13px;
+  }
+  .forward-dialog .modal-footer .button {
+    flex: none;
+  }
+  .forward-list {
+    height: 40dvh;
   }
 }
 @keyframes sheet-in {
@@ -3185,6 +3356,18 @@ mark {
     z-index: 31;
     box-shadow: -12px 0 32px rgb(0 0 0 / 0.6);
   }
+  /* The member list follows a swipe in from the right; the chat gives way beneath it. */
+  html[data-pull] .app > .members-panel {
+    transform: translateX(var(--pull));
+    box-shadow: -12px 0 32px rgb(0 0 0 / 0.6);
+  }
+  html[data-pull] .app > .chat {
+    transform: translateX(calc(var(--pull-open) * -30%));
+    filter: brightness(calc(1 - 0.45 * var(--pull-open)));
+  }
+  html[data-pull='settle'] .app > :is(.members-panel, .chat) {
+    transition: transform var(--move) var(--ease-out), filter var(--move) var(--ease-out);
+  }
 }
 .steps b {
   flex: none;
@@ -3523,6 +3706,7 @@ a.crumb-parent:hover {
   flex: none;
 }
 .presence {
+  --ring: var(--backdrop, var(--bg-1));
   position: absolute;
   right: 0;
   bottom: 0;
@@ -3530,13 +3714,74 @@ a.crumb-parent:hover {
   height: 10px;
   border-radius: 50%;
   background: var(--text-faint);
-  box-shadow: 0 0 0 3px var(--backdrop, var(--bg-1));
+  box-shadow: 0 0 0 3px var(--ring);
 }
-.presence.online {
+/* Discord's status shapes: a moon for idle, a bar for Do Not Disturb, a ring for offline and invisible. */
+.presence.online,
+.status-icon.online,
+.system-light.green.online > i {
   background: var(--ok);
 }
-.presence.idle {
+.presence.idle,
+.status-icon.idle,
+.system-light.green.idle > i {
   background: var(--warn);
+}
+.presence.dnd,
+.status-icon.dnd,
+.system-light.green.dnd > i {
+  background: var(--danger);
+}
+.status-icon.invisible,
+.system-light.green.invisible > i {
+  background: var(--text-faint);
+}
+.presence.idle::after,
+.presence.dnd::after,
+.presence.offline::after,
+.presence.invisible::after,
+.system-light.green:is(.idle, .dnd, .invisible) > i::after {
+  content: '';
+  position: absolute;
+  border-radius: 50%;
+  background: var(--ring);
+  width: 40%;
+  height: 40%;
+  left: 30%;
+  top: 30%;
+}
+.presence.idle::after,
+.system-light.green.idle > i::after {
+  width: 60%;
+  height: 60%;
+  left: -10%;
+  top: -10%;
+}
+.presence.dnd::after,
+.system-light.green.dnd > i::after {
+  width: 60%;
+  height: 20%;
+  left: 20%;
+  top: 40%;
+  border-radius: 1px;
+}
+.status-icon {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  margin: 0 5px;
+  border-radius: 50%;
+}
+/* In menus the shapes are cut out, so they read on any row colour. */
+.status-icon.idle {
+  mask: radial-gradient(circle 3px at 2px 2px, transparent 3px, #000 3.5px);
+}
+.status-icon.dnd {
+  mask: linear-gradient(#000 0 0) 2px 4px / 6px 2px no-repeat, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+.status-icon.invisible {
+  mask: radial-gradient(circle 2px, transparent 2px, #000 2.5px);
 }
 .member-name {
   display: flex;
@@ -4089,6 +4334,7 @@ a.crumb-parent:hover {
   outline-offset: 1px;
 }
 .system-light > i {
+  position: relative;
   width: 10px;
   height: 10px;
   border-radius: 50%;
@@ -4557,7 +4803,8 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
   border-color: var(--composer-line, color-mix(in srgb, var(--backdrop, var(--bg-1)), #fff 9%));
 }
 .system-light {
-  background: color-mix(in srgb, var(--backdrop, var(--bg-1)), #fff 5%);
+  --ring: color-mix(in srgb, var(--backdrop, var(--bg-1)), #fff 5%);
+  background: var(--ring);
 }
 @media (min-width: 768px) {
   .footer {
@@ -6682,9 +6929,20 @@ svg.flip {
   }
 }
 
-/* Pipe tables from agents' markdown: the comparison table's look, first column plain. */
+/* Pipe tables from agents' markdown: the comparison table's look, first column plain. Words never
+   break inside (the message's overflow-wrap would squeeze columns to a letter); a table wider than
+   the message scrolls sideways in its block, and long text columns keep a readable width. */
 .md-table-wrap {
   margin: 8px 0;
+  max-width: 100%;
+}
+.md-table th,
+.md-table td {
+  overflow-wrap: normal;
+  word-wrap: normal;
+}
+.md-table td.prose {
+  min-width: 160px;
 }
 .md-table tbody td:first-child,
 .md-table thead th:first-child {
@@ -7521,6 +7779,117 @@ svg.flip {
   }
 }
 
+/* Share to… (Web Share Target): Discord's forward dialog. Search, the switcher's rows, then the
+   message with the shared files as chips. */
+.modal.share {
+  max-height: min(90dvh, 720px);
+}
+.share-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 24px 8px;
+  padding: 0 10px;
+  height: 36px;
+  border-radius: var(--r-field);
+  background: var(--bg-3);
+  color: var(--text-faint);
+}
+.share-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-strong);
+  font: 400 14px/18px var(--font);
+}
+.share-list {
+  flex: 1 1 auto;
+  min-height: 120px;
+  padding: 0 16px 8px;
+}
+.share-list .switcher-item > svg:last-child {
+  color: var(--accent);
+}
+.share-message {
+  position: relative;
+  margin: 8px 24px 0;
+  border-radius: var(--r-field);
+  background: var(--bg-3);
+}
+.share-message textarea {
+  display: block;
+  width: 100%;
+  max-height: 120px;
+  padding: 10px 12px;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  color: var(--text);
+  font: 400 14px/18px var(--font);
+}
+.share-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 8px 8px 0;
+  list-style: none;
+}
+.share-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  height: 28px;
+  padding: 0 2px 0 6px;
+  border-radius: var(--r-inline);
+  background: var(--bg-4);
+  color: var(--text);
+  font: 400 12px/16px var(--font);
+}
+.share-file img {
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  object-fit: cover;
+}
+.share-file span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.share-file .icon-button {
+  width: 24px;
+  height: 24px;
+}
+.share-count {
+  position: absolute;
+  right: 10px;
+  bottom: 6px;
+  color: var(--danger-text);
+  font-size: 12px;
+}
+.share-error {
+  margin: 8px 24px 0;
+}
+@media (max-width: 767px) {
+  .modal.share {
+    height: 85dvh;
+  }
+  .share-search,
+  .share-message,
+  .share-error {
+    margin-left: 16px;
+    margin-right: 16px;
+  }
+  .share-list {
+    padding: 0 8px 8px;
+  }
+}
+
 /* Direct messages. The rail's Home button and a line under it; unread DMs as avatars. */
 .rail-home {
   color: var(--text);
@@ -7561,11 +7930,12 @@ svg.flip {
   display: grid;
 }
 .dm-avatar .presence {
+  --ring: var(--bg-1);
   right: -2px;
   bottom: -2px;
   width: 10px;
   height: 10px;
-  box-shadow: 0 0 0 3px var(--bg-1);
+  box-shadow: 0 0 0 3px var(--ring);
 }
 .dm-row .bot-tag {
   flex: none;
@@ -8173,6 +8543,17 @@ html[data-chrome] :is(.overlay, .sheet-layer, .lightbox, .settings-layer) {
   white-space: nowrap;
   box-shadow: var(--shadow-float);
   pointer-events: none;
+}
+
+.offline-notice.share-again {
+  height: auto;
+  min-height: 32px;
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  padding: 7px 14px;
+  white-space: normal;
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 
 /* Forum channels: post cards, newest activity first, as Discord's forum list. */

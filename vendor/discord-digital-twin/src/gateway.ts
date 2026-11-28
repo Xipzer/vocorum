@@ -10,6 +10,7 @@ import { WebSocketServer, WebSocket } from 'ws'
 import {
   GatewayOpcodes,
   GatewayDispatchEvents,
+  GatewayIntentBits,
   ApplicationFlags,
 } from 'discord-api-types/v10'
 import type {
@@ -119,6 +120,8 @@ export class DiscordGateway {
   private voice: DiscordVoiceServer | null
   // `${guildId}:${userId}` -> voice state, for users and the bot in a voice channel.
   private voiceStates = new Map<string, APIVoiceState>()
+  // userId -> what others see of a user who is not offline (status, activities, client_status).
+  private presences = new Map<string, Omit<GatewayPresenceUpdate, 'guild_id'>>()
   private observers = new Set<GatewayObserver>()
   private resumeUrl: string | null
   private gatewayUrlFor: ((host: string | undefined) => string | undefined) | null
@@ -280,6 +283,7 @@ export class DiscordGateway {
     for (const client of this.clients) {
       if (!client.identified) continue
       if (guildId && client.guilds && !client.guilds.has(guildId)) continue
+      if (event === GatewayDispatchEvents.PresenceUpdate && !(client.intents & GatewayIntentBits.GuildPresences)) continue
       if (direct && !(client.token && direct.has(client.token))) continue
       // Still sending READY: deliver after it and after the missed events, in order.
       if (client.held) {
@@ -304,11 +308,18 @@ export class DiscordGateway {
     }
   }
 
+  // A user's presence: PRESENCE_UPDATE in each of their guilds, and in GUILD_CREATE from now on.
+  setPresence(presence: Omit<GatewayPresenceUpdate, 'guild_id'>, guildIds: readonly string[]): void {
+    if (presence.status === 'offline') this.presences.delete(presence.user.id)
+    else this.presences.set(presence.user.id, presence)
+    for (const guildId of guildIds) this.broadcast(GatewayDispatchEvents.PresenceUpdate, { ...presence, guild_id: guildId })
+  }
+
   broadcastMessageCreate(message: APIMessage, guildId: string): void {
     const data: GatewayMessageCreateDispatchData = {
       ...message,
       guild_id: guildId,
-      mentions: [],
+      mentions: message.mentions ?? [],
     }
     this.broadcast(GatewayDispatchEvents.MessageCreate, data)
   }
@@ -554,7 +565,7 @@ export class DiscordGateway {
     }
     this.sendDispatch(client, GatewayDispatchEvents.Ready, readyData)
 
-    for (const guild of state.guilds) this.sendDispatch(client, GatewayDispatchEvents.GuildCreate, this.guildCreateData(guild))
+    for (const guild of state.guilds) this.sendDispatch(client, GatewayDispatchEvents.GuildCreate, this.guildCreateData(guild, client))
 
     // Like forward_shard in gateway-proxy server.rs: READY, GUILD_CREATEs,
     // then the events missed while offline, then the live stream.
@@ -574,22 +585,27 @@ export class DiscordGateway {
   async sendGuildMembership(token: string, guildId: string, member: boolean): Promise<void> {
     const clients = this.clients.filter((client) => client.identified && client.token === token)
     if (clients.length === 0) return
-    let data: unknown = { id: guildId }
+    const data: unknown = { id: guildId }
+    let guild: GatewayState['guilds'][number] | undefined
     if (member) {
-      const guild = (await this.loadState()).guilds.find((g) => g.id === guildId)
+      guild = (await this.loadState()).guilds.find((g) => g.id === guildId)
       if (!guild) return
-      data = this.guildCreateData(guild)
     }
     const event = member ? GatewayDispatchEvents.GuildCreate : GatewayDispatchEvents.GuildDelete
     for (const client of clients) {
-      if (client.held) client.held.push({ event, data })
-      else this.sendDispatch(client, event, data)
+      const sent = guild ? this.guildCreateData(guild, client) : data
+      if (client.held) client.held.push({ event, data: sent })
+      else this.sendDispatch(client, event, sent)
     }
   }
 
-  private guildCreateData(guild: GatewayState['guilds'][number]): GatewayGuildCreateDispatchData {
+  private guildCreateData(guild: GatewayState['guilds'][number], client: ConnectedClient): GatewayGuildCreateDispatchData {
+    // Like Discord: the presences of members who are not offline, with the GUILD_PRESENCES intent.
+    const presences: GatewayPresenceUpdate[] = client.intents & GatewayIntentBits.GuildPresences ? guild.members.flatMap((m) => {
+      const p = m.user && this.presences.get(m.user.id)
+      return p ? [{ ...p, guild_id: guild.id }] : []
+    }) : []
     // Typed empty arrays so TS doesn't infer never[]
-    const emptyPresences: GatewayPresenceUpdate[] = []
     const emptyStageInstances: APIStageInstance[] = []
     const emptyScheduledEvents: APIGuildScheduledEvent[] = []
     const emptySoundboardSounds: APISoundboardSound[] = []
@@ -614,7 +630,7 @@ export class DiscordGateway {
         // Like Discord: channels without threads, and only the active (unarchived) threads.
         channels: guild.channels.filter((c) => !THREAD_CHANNEL_TYPES.has(c.type)) as GuildCreateChannels,
         threads: guild.channels.filter((c) => THREAD_CHANNEL_TYPES.has(c.type) && !(c as { thread_metadata?: { archived?: boolean } }).thread_metadata?.archived) as GuildCreateThreads,
-        presences: emptyPresences,
+        presences,
         stage_instances: emptyStageInstances,
         guild_scheduled_events: emptyScheduledEvents,
         // soundboard_sounds is missing in Gelbpunkt/twilight 0.16 used by the

@@ -27,11 +27,12 @@
   font-size: 32px;
 }
 .profile-avatar .presence {
+  --ring: var(--sheet);
   right: 8px;
   bottom: 8px;
   width: 16px;
   height: 16px;
-  box-shadow: 0 0 0 5px var(--sheet);
+  box-shadow: 0 0 0 5px var(--ring);
 }
 .profile-body {
   padding: 45px 15px 15px;
@@ -47,6 +48,15 @@
   gap: 4px;
   font: 400 14px/18px var(--font);
   color: var(--text);
+}
+.profile-custom {
+  margin-top: 12px;
+  font: 400 14px/18px var(--font);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.profile-custom + .profile-presence {
+  margin-top: 4px;
 }
 .profile-presence {
   margin-top: 12px;

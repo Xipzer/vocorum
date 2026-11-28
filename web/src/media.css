@@ -508,6 +508,22 @@
   .lightbox-stage {
     inset: 56px 0 72px;
   }
+  /* A swipe drags the picture; the backdrop fades with its distance, the bar sooner. */
+  .lightbox::before,
+  .lightbox :is(.lightbox-bar, .lightbox-nav) {
+    opacity: var(--fade, 1);
+    transition: opacity var(--move) var(--ease-out);
+  }
+  .lightbox :is(.lightbox-bar, .lightbox-nav) {
+    opacity: var(--fade-bar, 1);
+  }
+  .lightbox-stage {
+    transition: translate var(--move) var(--ease-out);
+  }
+  .lightbox[data-drag]::before,
+  .lightbox[data-drag] :is(.lightbox-bar, .lightbox-nav, .lightbox-stage) {
+    transition: none;
+  }
   .lightbox-nav {
     top: auto;
     bottom: 14px;

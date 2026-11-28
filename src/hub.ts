@@ -546,6 +546,14 @@ export class Hub {
       // Everything else is for humans: the private listener or a proxy on loopback.
       await this.checkHuman(req, pathname)
       if (pathname.startsWith('/client/')) return await this.api.handle(req, res, pathname)
+      // The share sheet's POST (Web Share Target) is for the service worker, which keeps the files
+      // on the device. When it is not running the hub gets it: keep nothing and send the app to
+      // a note asking to share again.
+      if (pathname === '/share' && req.method === 'POST') {
+        req.resume()
+        res.writeHead(303, { location: '/#/share-again', 'cache-control': 'no-store' }).end()
+        return
+      }
       return await serveStatic(req, res, pathname, this.api.webDir)
     } catch (error) {
       sendError(res, error)

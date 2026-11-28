@@ -25,6 +25,7 @@ const SILENT_PREFIX = /^@silent\s+/
 const SUPPRESS_NOTIFICATIONS = 1 << 12
 
 const uploadName = (u: Pick<Upload, 'name' | 'spoiler'>) => (u.spoiler ? `SPOILER_${u.name}` : u.name)
+const reply = (id: string, ping: boolean) => ({ message_reference: { message_id: id }, allowed_mentions: { replied_user: ping } })
 const extension = (name: string) => (/\.([a-z0-9]{1,8})$/i.exec(name)?.[1] ?? '').toUpperCase()
 
 function UploadTile({ upload, onSpoiler, onEdit, onRemove, onRetry }: { upload: Upload; onSpoiler: () => void; onEdit: () => void; onRemove: () => void; onRetry: () => void }) {
@@ -530,6 +531,8 @@ export function Composer({
   commands,
   channels,
   replyTo,
+  replyPing,
+  onReplyPing,
   onCancelReply,
   onResult,
   onError,
@@ -539,6 +542,8 @@ export function Composer({
   commands: Command[]
   channels: Array<{ id: string; name: string }>
   replyTo: Message | null
+  replyPing: boolean
+  onReplyPing: (ping: boolean) => void
   onCancelReply: () => void
   onResult: (result: InteractionResult, name: string) => void
   onError: (message: string) => void
@@ -572,7 +577,7 @@ export function Composer({
         d.attachment = (await api.upload(d.blob,d.name,meta)).id
         await saveVoice(d.key,d).catch(() => {})
       }
-      const posted = await api.send(channelId,{ content:'', attachmentIds:[d.attachment], voice:true, ...(d.reply && {replyTo:d.reply}) })
+      const posted = await api.send(channelId,{ content:'', attachmentIds:[d.attachment], voice:true, ...(d.reply && reply(d.reply, d.ping ?? true)) })
       store.confirmSent(posted)
       await saveVoice(d.key).catch(() => {}); setDraft(undefined); onCancelReply()
     } catch { onError(durable ? 'Voice note not confirmed. Your recording is saved on this device.' : 'Keep this window open. Save a copy of your recording before closing.') }
@@ -893,13 +898,13 @@ export function Composer({
       const expanded = await expandEmoji(body, guildId)
       const flags = silent ? SUPPRESS_NOTIFICATIONS : 0
       // Text alone shows at once and the box clears; files wait for the hub as before.
-      const local = files.length ? undefined : store.sendLocal(channelId, expanded, replyTo?.id, flags)
+      const local = files.length ? undefined : store.sendLocal(channelId, expanded, replyTo ?? undefined, replyPing, flags)
       if (local) {
         setText((t) => (t === content ? '' : t))
         onCancelReply()
       }
       try {
-        const posted = await api.send(channelId, { content: expanded, attachmentIds: ids, ...(flags && { flags }), ...(Object.keys(descriptions).length && { descriptions }), ...(replyTo && { replyTo: replyTo.id }) })
+        const posted = await api.send(channelId, { content: expanded, attachmentIds: ids, ...(flags && { flags }), ...(Object.keys(descriptions).length && { descriptions }), ...(replyTo && reply(replyTo.id, replyPing)) })
         store.confirmSent(posted, local)
         setText((t) => (t === content ? '' : t))
         drop(files)
@@ -951,7 +956,7 @@ export function Composer({
         // The recorder stopped before the microphone delivered sound: only container framing.
         if (blob.size < 1024) return onError('Nothing was recorded. Check the microphone and try again.')
         const ext = blob.type.includes('mp4') ? 'm4a' : blob.type.includes('ogg') ? 'ogg' : 'webm'
-        await deliverVoice({key:voiceKey, blob, name:`voice-message.${ext}`, reply:replyTo?.id})
+        await deliverVoice({key:voiceKey, blob, name:`voice-message.${ext}`, reply:replyTo?.id, ping:replyPing})
       }
       // A live level meter while recording.
       try {
@@ -1056,6 +1061,11 @@ export function Composer({
             <span>
               Replying to <strong>{replyTo.author.global_name ?? replyTo.author.username}</strong>
             </span>
+            {replyTo.author.id !== hub?.me.id && (
+              <button className={`reply-ping${replyPing ? ' on' : ''}`} aria-pressed={replyPing} onClick={() => onReplyPing(!replyPing)} title={replyPing ? 'Click to disable pinging the original author.' : 'Click to enable pinging the original author.'}>
+                @ {replyPing ? 'ON' : 'OFF'}
+              </button>
+            )}
             <button className="icon-button" onClick={onCancelReply} aria-label="Cancel reply">
               <Icon name="close" size={16} />
             </button>

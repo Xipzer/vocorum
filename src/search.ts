@@ -48,6 +48,8 @@ type Row = {
   timestamp: Date
   pinned: boolean
   type: number
+  // Discord's `mentions` as JSON: also the replied-to author when a reply pinged them.
+  mentions?: string
 }
 
 export type SearchQuery = {
@@ -101,6 +103,14 @@ export function ftsExpression(query: SearchQuery): string | null {
 }
 
 // What a message is searched by: its visible text, embed titles and descriptions, file names.
+function listedMentions(raw: string | undefined): string[] {
+  try {
+    return (JSON.parse(raw ?? '[]') as Array<{ id?: unknown } | string>).flatMap((u) => (typeof u === 'string' ? [u] : typeof u?.id === 'string' ? [u.id] : []))
+  } catch {
+    return []
+  }
+}
+
 function bodyOf(row: Pick<Row, 'content' | 'components' | 'embeds' | 'attachments'>) {
   const components = JSON.parse(row.components) as unknown[]
   const embeds = JSON.parse(row.embeds) as Array<{ title?: string; description?: string }>
@@ -247,7 +257,7 @@ export class SearchIndex {
 
   private statements(row: Row, bot: boolean): InStatement[] {
     const { components, attachments, visible, body } = bodyOf(row)
-    const mentioned = [...new Set([...`${row.content}\n${visible}`.matchAll(/<@!?(\d{5,20})>/g)].map((m) => m[1]!))].filter((id) => id !== row.authorId)
+    const mentioned = [...new Set([...[...`${row.content}\n${visible}`.matchAll(/<@!?(\d{5,20})>/g)].map((m) => m[1]!), ...listedMentions(row.mentions)])].filter((id) => id !== row.authorId)
     const media = JSON.stringify(components)
     return [
       {

@@ -1,5 +1,5 @@
 // Keep the original bytes until the hub acknowledges the message, not just the upload.
-export type VoiceDraft = { key: string; blob: Blob; name: string; reply?: string; attachment?: string }
+export type VoiceDraft = { key: string; blob: Blob; name: string; reply?: string; ping?: boolean; attachment?: string }
 const memory = new Map<string, VoiceDraft>()
 let opened: Promise<IDBDatabase> | undefined
 function database() {

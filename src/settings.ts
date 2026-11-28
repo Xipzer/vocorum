@@ -1,5 +1,5 @@
 // Settings routes for the app: the person's profile (display name, avatar, name
-// colour, privacy), their own devices, server settings (name, icon; Manage
+// colour, privacy, status), their own devices, server settings (name, icon; Manage
 // Server) and channel settings (create, edit, move, delete; Manage Channels).
 
 import crypto from 'node:crypto'
@@ -11,10 +11,11 @@ import { match, readBody, readJson } from './http.ts'
 import type { Hub } from './hub.ts'
 import { P, parseBits } from './access.ts'
 import { generateSnowflake } from 'discord-digital-twin/src'
-import type { Overwrite } from './store.ts'
+import type { ChosenStatus, Overwrite } from './store.ts'
 import type { Viewer } from './client-api.ts'
 
 const IMAGE_LIMIT = 4 * 1024 * 1024
+const STATUSES = new Set(['online', 'idle', 'dnd', 'invisible'])
 const CHANNEL_TYPES = new Set([0, 2, 4, 5, 15]) // text, voice, category, announcement, forum
 const THREAD_TYPES = new Set([10, 11, 12])
 
@@ -119,10 +120,11 @@ export class Settings {
   }
 
   private async me(v: Viewer) {
-    return { user: await this.profile(v.userId), privacy: await this.privacy(v.userId), device: { id: v.device.id, name: v.device.name } }
+    return { user: await this.profile(v.userId), privacy: await this.privacy(v.userId), user_status: this.hub.presence.settingsOf(v.userId), device: { id: v.device.id, name: v.device.name } }
   }
 
-  // { global_name?: string | null, color?: 0xRRGGBB | null, show_presence?: boolean, show_activity?: boolean }
+  // { global_name?: string | null, color?: 0xRRGGBB | null, show_presence?: boolean, show_activity?: boolean,
+  //   status?: 'online' | 'idle' | 'dnd' | 'invisible', custom_status?: { text: string, expires_at: ms | null } | null }
   private async patchMe(body: Record<string, unknown>, v: Viewer) {
     if (body['global_name'] !== undefined) {
       const name = body['global_name'] === null ? null : text(body['global_name'], 'global_name', 32)
@@ -139,13 +141,23 @@ export class Settings {
       await this.hub.store.setProfile(v.userId, { [key]: body[field] })
       this.hub.presence.forget(v.userId)
     }
+    const status = body['status']
+    const custom = body['custom_status'] as { text?: unknown; expires_at?: unknown } | null | undefined
+    if (status !== undefined || custom !== undefined) {
+      if (status !== undefined && (typeof status !== 'string' || !STATUSES.has(status))) throw new HttpError(400, 'status must be online, idle, dnd or invisible')
+      const expires = custom?.expires_at ?? null
+      if (custom !== undefined && custom !== null && (typeof custom !== 'object' || (expires !== null && !Number.isInteger(expires)))) throw new HttpError(400, 'custom_status must be { text, expires_at } or null')
+      const customStatus = custom === undefined ? undefined : custom === null ? null : { text: text(custom.text, 'custom_status.text', 128), expiresAt: expires as number | null }
+      await this.hub.presence.choose(v.userId, { ...(status !== undefined && { status: status as ChosenStatus }), ...(customStatus !== undefined && { customStatus }) })
+      this.hub.events.send('USER_SETTINGS_UPDATE', this.hub.presence.settingsOf(v.userId), { userId: v.userId })
+    }
     return this.userChanged(v)
   }
 
   private async userChanged(v: Viewer) {
     const user = await this.profile(v.userId)
     this.hub.events.send('USER_UPDATE', user, { users: await this.hub.access.peers(v.userId) })
-    return { user, privacy: await this.privacy(v.userId), device: { id: v.device.id, name: v.device.name } }
+    return { user, privacy: await this.privacy(v.userId), user_status: this.hub.presence.settingsOf(v.userId), device: { id: v.device.id, name: v.device.name } }
   }
 
   private async setImage(kind: 'avatar' | 'guild-icon', id: string, data: Buffer | null, v: Viewer) {

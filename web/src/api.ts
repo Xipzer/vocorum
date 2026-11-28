@@ -87,11 +87,16 @@ export type Overwrite = { id: string; type: 0 | 1; allow: string; deny: string }
 export type Role = { id: string; name: string; color: number; hoist: boolean; position: number; permissions: string; managed?: boolean; mentionable: boolean }
 export type GuildMember = { user_id: string; roles: string[]; nick: string | null; joined_at: string }
 export type Privacy = { show_presence: boolean; show_activity: boolean }
+// The status a person chose, as Discord's: Online still turns Idle when their devices are away.
+export type ChosenStatus = 'online' | 'idle' | 'dnd' | 'invisible'
+export type CustomStatus = { text: string; expires_at: number | null }
+export type UserStatus = { status: ChosenStatus; custom_status: CustomStatus | null }
 export type CommandOption = { name: string; description: string; type: number; required?: boolean; autocomplete?: boolean; choices?: Array<{ name: string; value: string | number }>; options?: CommandOption[] }
 export type Command = { id: string; name: string; description: string; options: CommandOption[] }
-export type PresenceStatus = 'online' | 'idle' | 'offline'
+// invisible: only ever your own presence; others see you offline.
+export type PresenceStatus = 'online' | 'idle' | 'dnd' | 'invisible' | 'offline'
 // activity: what a bot is doing now, from its custom status ("Thinking", "Searching the web").
-export type Presence = { user_id: string; status: PresenceStatus; activity?: string | null; devices?: Array<{ id: string; name: string; channel_id: string | null; visible: boolean }>; machines?: Array<{ machine: string; online: boolean; activity?: string | null }> }
+export type Presence = { user_id: string; status: PresenceStatus; custom_status?: CustomStatus; activity?: string | null; devices?: Array<{ id: string; name: string; channel_id: string | null; visible: boolean }>; machines?: Array<{ machine: string; online: boolean; activity?: string | null }> }
 export type NotifyLevel = 'all' | 'mentions' | 'nothing'
 export type NotifySetting = { level: NotifyLevel | null; muted_until: number | null }
 export type NotificationState = { settings: Record<string, NotifySetting>; default_level: NotifyLevel; vapid_public_key: string; push_subscribed: boolean }
@@ -140,6 +145,7 @@ export type HubState = {
   roles?: Record<string, Role[]>
   members?: Record<string, GuildMember[]>
   privacy?: Privacy
+  user_status?: UserStatus
 }
 export type FoundChannel = { id: string; name: string | null; type: number; parent_id: string | null }
 export type SearchResult = { message: Message; channel: FoundChannel; snippet: string | null }
@@ -155,7 +161,7 @@ export type ServiceEvent = { unit: string; at: number; kind: string; detail: str
 export type Guild = { id: string; name: string; icon: string | null; owner_id?: string; permissions?: string }
 // open: the row an open hub signs this computer's browsers in as, with no pairing.
 export type DeviceInfo = { id: string; name: string; created_at: number | string; last_seen_at: number | string | null; current: boolean; online: boolean; push: boolean; open?: boolean }
-export type Me = { user: User; device: { id: string; name: string }; privacy?: Privacy }
+export type Me = { user: User; device: { id: string; name: string }; privacy?: Privacy; user_status?: UserStatus }
 export type SessionState = 'waiting' | 'failed' | 'busy' | 'done' | 'idle'
 export type SessionSummary = {
   id: string
@@ -246,10 +252,14 @@ export const api = {
   messagesAfter: (channelId: string, after: string) =>
     call<{ messages: Message[]; hasMore: boolean }>(`/client/channels/${channelId}/messages?limit=100&after=${after}`),
   dismissReply: (channelId: string, id: string) => call(`/client/channels/${channelId}/private-replies/${id}`, { method: 'DELETE' }),
-  send: (channelId: string, body: { content: string; attachmentIds?: string[]; descriptions?: Record<string, string>; replyTo?: string; voice?: boolean; flags?: number }) =>
+  send: (channelId: string, body: { content: string; attachmentIds?: string[]; descriptions?: Record<string, string>; message_reference?: { message_id: string }; allowed_mentions?: { replied_user: boolean }; voice?: boolean; flags?: number }) =>
     call<Message>(`/client/channels/${channelId}/messages`, { method: 'POST', json: body }),
   edit: (channelId: string, messageId: string, content: string) => call<Message>(`/client/channels/${channelId}/messages/${messageId}`, { method: 'PATCH', json: { content } }),
   remove: (channelId: string, messageId: string) => call(`/client/channels/${channelId}/messages/${messageId}`, { method: 'DELETE' }),
+  // Discord's message forward (message_reference type 1); the hub adds the snapshot.
+  forward: (channelId: string, from: { channel_id: string; message_id: string }) =>
+    call<Message>(`/client/channels/${channelId}/messages`, { method: 'POST', json: { message_reference: { type: 1, ...from } } }),
+  startThread: (channelId: string, messageId: string, name: string) => call<Channel>(`/client/channels/${channelId}/messages/${messageId}/threads`, { method: 'POST', json: { name } }),
   bulkDelete: (channelId: string, ids: readonly string[]) => call<{ deleted_ids: string[] }>(`/client/channels/${channelId}/messages/bulk-delete`, { method: 'POST', json: { message_ids: ids } }),
   react: (channelId: string, messageId: string, emoji: string, on: boolean) =>
     call(`/client/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`, { method: on ? 'PUT' : 'DELETE' }),
@@ -297,7 +307,7 @@ export const api = {
   autocomplete: (channelId: string, name: string, options: unknown[], focused: string) =>
     call<{ choices: Array<{ name: string; value: string | number }> }>('/client/autocomplete', { method: 'POST', json: { channelId, name, options, focused } }),
   me: () => call<Me>('/client/me'),
-  patchMe: (body: { global_name?: string | null; color?: number | null; show_presence?: boolean; show_activity?: boolean }) => call<Me>('/client/me', { method: 'PATCH', json: body }),
+  patchMe: (body: { global_name?: string | null; color?: number | null; show_presence?: boolean; show_activity?: boolean; status?: ChosenStatus; custom_status?: CustomStatus | null }) => call<Me>('/client/me', { method: 'PATCH', json: body }),
   setAvatar: (image: Blob | null) => call<Me>('/client/me/avatar', image ? { method: 'PUT', body: image } : { method: 'DELETE' }),
   devices: () => call<{ devices: DeviceInfo[] }>('/client/devices'),
   renameDevice: (id: string, name: string) => call<{ devices: DeviceInfo[] }>(`/client/devices/${id}`, { method: 'PATCH', json: { name } }),

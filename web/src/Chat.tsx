@@ -9,6 +9,7 @@ import { profileSheet } from './Profile.tsx'
 import { EmojiPicker } from './EmojiPicker.tsx'
 import { ReactionTip, reactionsSheet, type ReactionSummary } from './Reactions.tsx'
 import { Components, uniqueGallery, type Interact } from './components.tsx'
+import { canStartThread, CreateThreadDialog, ForwardDialog } from './MessageDialogs.tsx'
 import { Attachments, Embeds, Forwarded, onlyEmbedLink, PollCard, stamp, Stickers } from './Media.tsx'
 import { Composer } from './Composer.tsx'
 import { Markdown, type MarkdownContext } from './markdown.tsx'
@@ -283,7 +284,7 @@ const MessageItem = memo(function MessageItem({
   channelId: string
   /** The message this one replies to, when it is loaded. */
   reference?: Message
-  onReply: (m: Message) => void
+  onReply: (m: Message, ping?: boolean) => void
   onJump: (id: string) => void
   onResult: (result: InteractionResult, messageId: string) => void
   onError: (text: string) => void
@@ -305,6 +306,7 @@ const MessageItem = memo(function MessageItem({
     ;(row?.querySelector<HTMLElement>('.select-trigger:not(:disabled)') ?? row)?.focus({ preventScroll: true })
   }, [message.components, message.id])
   const [picker, setPicker] = useState<DOMRect | null>(null)
+  const [dialog, setDialog] = useState<'thread' | 'forward' | null>(null)
   useEffect(() => {
     editors.set(message.id, () => {
       setEditing(message.content)
@@ -368,6 +370,8 @@ const MessageItem = memo(function MessageItem({
           { label: 'Add reaction', icon: 'smile', run: () => setPicker('rect' in at ? at.rect : new DOMRect(at.x, at.y, 0, 0)) },
           ...(message.reactions_summary?.length ? [{ label: 'Reactions', icon: 'smile' as const, run: () => showReactions(message.reactions_summary![0]!.emoji) }] : []),
           { label: 'Reply', icon: 'reply', run: () => onReply(message) },
+          ...(message.local ? [] : [{ label: 'Forward', icon: 'forward' as const, run: () => setDialog('forward') }]),
+          ...(!message.local && canStartThread(message, store.channel(channelId)) ? [{ label: 'Create Thread', icon: 'thread' as const, run: () => setDialog('thread') }] : []),
           ...(onSelect ? [{ label: 'Select messages', icon: 'check' as const, run: () => onSelect(message.id) }] : []),
         ],
         [
@@ -466,7 +470,11 @@ const MessageItem = memo(function MessageItem({
       </div>
     )
   }
+  // Beside the row, not in it: the row's press and key handlers must not hear the dialog.
   return (
+    <>
+    {dialog === 'thread' && <CreateThreadDialog message={message} name={name} ctx={ctx} onClose={() => setDialog(null)} />}
+    {dialog === 'forward' && <ForwardDialog message={message} name={name} ctx={ctx} onClose={() => setDialog(null)} />}
     <div id={`m-${message.id}`} className={`message${compact ? ' compact' : ''}${mine ? ' you' : ''}${needs ? ' needs' : ''}${failed ? ' failed' : ''}${privateReply ? ' private-reply' : ''}${message.local ? ' sending' : ''}${replying ? ' replying' : ''}`} {...(privateReply ? {} : press)} {...warm} tabIndex={-1} onKeyDown={privateReply ? undefined : onKey} onClick={privateReply ? undefined : markOnAlt}>
       {replyId &&
         (reference ? (
@@ -475,7 +483,7 @@ const MessageItem = memo(function MessageItem({
             <span className="reply-avatar">
               <Avatar id={reference.author.id} name={reference.author.global_name ?? reference.author.username} size="inline" version={users.find((u) => u.id === reference.author.id)?.avatar} src={reference.author.bot ? machineIcon(icons, botName, 'avatar') : null} />
             </span>
-            <strong>{(reference.author.bot && botName && agentName(bots, botName)) || (reference.author.global_name ?? reference.author.username)}</strong>
+            <strong>{message.mentions?.some((u) => u.id === reference.author.id) && reference.author.id !== message.author.id && '@'}{(reference.author.bot && botName && agentName(bots, botName)) || (reference.author.global_name ?? reference.author.username)}</strong>
             <span className="reply-text">{plain(reference.content, ctx.userName, ctx.channelName) || attachmentLabel(reference)}</span>
             {!reference.content && (reference.attachments.length > 0 || reference.embeds.length > 0) && <Icon name="image" size={16} className="reply-media" />}
           </div>
@@ -575,7 +583,7 @@ const MessageItem = memo(function MessageItem({
         <button onClick={(e) => setPicker(e.currentTarget.getBoundingClientRect())} aria-label="Add reaction" title="Add reaction">
           <Icon name="smile" size={20} />
         </button>
-        <button onClick={() => onReply(message)} aria-label="Reply" title="Reply">
+        <button onClick={(e) => onReply(message, !e.shiftKey)} aria-label="Reply" title="Reply">
           <Icon name="reply" size={20} />
         </button>
         {mine && message.content && (
@@ -593,6 +601,7 @@ const MessageItem = memo(function MessageItem({
         </button>
       </div>}
     </div>
+    </>
   )
 })
 
@@ -989,6 +998,9 @@ export function Chat({
   const entry = useStore((d) => d.messages[channel.id])
   const waiting = workspaceWaiting(entry?.list, state.me.id)
   const [replyTo, setReplyTo] = useState<Message | null>(null)
+  // Shift-clicking Reply starts the reply without pinging the author, as on Discord.
+  const [replyPing, setReplyPing] = useState(true)
+  const startReply = useCallback((m: Message, ping = true) => { setReplyTo(m); setReplyPing(ping) }, [])
   const [receipts, setReceipts] = useState<Array<{ id: string; name: string; channelId: string }>>([])
   const [sheet, setSheet] = useState<SheetSpec | null>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
@@ -1343,7 +1355,7 @@ export function Chat({
   const rowSelect = useCallback((id: string) => latest.current.start(id), [])
   const message = (m: Message, compact: boolean, inPanel = false, switched?: Message) => {
     const allowed = selectable(m)
-    const row = <MessageItem key={m.id} feed={output} current={!inPanel && (!lastOwnerId || snowflakeGt(m.id, lastOwnerId))} botName={botName} onSheet={setSheet} onSelect={allowed ? rowSelect : undefined} message={m} compact={compact} ctx={ctx} channelId={channel.id} reference={byId.get(replyTarget(m) ?? '')} onReply={setReplyTo} replying={replyTo?.id === m.id} onJump={rowJump} onResult={rowResult} onError={setToast} switched={switched} />
+    const row = <MessageItem key={m.id} feed={output} current={!inPanel && (!lastOwnerId || snowflakeGt(m.id, lastOwnerId))} botName={botName} onSheet={setSheet} onSelect={allowed ? rowSelect : undefined} message={m} compact={compact} ctx={ctx} channelId={channel.id} reference={byId.get(replyTarget(m) ?? '')} onReply={startReply} replying={replyTo?.id === m.id} onJump={rowJump} onResult={rowResult} onError={setToast} switched={switched} />
     return selection.picked ? <PickRow key={m.id} message={m} allowed={allowed} selection={selection}>{row}</PickRow> : row
   }
 
@@ -1703,6 +1715,8 @@ export function Chat({
               commands={store.commandsFor(channel.id)}
               channels={state.channels.filter((c) => c.type === 0 && (c.guild_id ?? state.guild.id) === (channel.guild_id ?? state.guild.id) && can(P.VIEW_CHANNEL, c)).map((c) => ({ id: c.id, name: c.name ?? '' }))}
               replyTo={replyTo}
+              replyPing={replyPing}
+              onReplyPing={setReplyPing}
               onCancelReply={() => setReplyTo(null)}
               onResult={(result, name) => {
                 if (result.acknowledged && (result.type === 4 || result.type === 5)) setReceipts((rows) => [...rows.slice(-4), { id: result.interactionId, name, channelId: channel.id }])

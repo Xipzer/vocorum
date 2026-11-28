@@ -341,6 +341,50 @@ export async function pinMessage({ prisma, gateway, channelId, messageId, userId
   gateway.broadcastMessageCreate(messageToAPI(system, await prisma.user.findUniqueOrThrow({ where: { id: userId } }), guildId), guildId ?? '')
 }
 
+// A thread started from a message (POST /channels/:id/messages/:id/threads), for bots and simulated users.
+export async function startThreadFromMessage({ prisma, gateway, channel, messageId, userId, name, type = ChannelType.PublicThread, autoArchiveDuration, rateLimitPerUser }: { prisma: PrismaClient; gateway: DiscordGateway; channel: { id: string; guildId: string | null }; messageId: string; userId: string; name: string; type?: ChannelType; autoArchiveDuration?: number; rateLimitPerUser?: number }): Promise<APIChannel> {
+  const message = await prisma.message.findUnique({ where: { id: messageId } })
+  if (!message || message.channelId !== channel.id) throw new Response(JSON.stringify({ code: 10008, message: 'Unknown Message', errors: {} }), { status: 404, headers: { 'Content-Type': 'application/json' } })
+  // Real Discord returns 400 with code 160004 if a thread already exists for this message,
+  // so tests catch two code paths creating threads on the same starter message.
+  if (await prisma.channel.findFirst({ where: { starterMessageId: messageId } })) {
+    throw new Response(JSON.stringify({ code: 160004, message: 'A thread has already been created for this message', errors: {} }), { status: 400, headers: { 'Content-Type': 'application/json' } })
+  }
+  // Like Discord: a thread started from a message has the message's id.
+  const threadId = messageId
+  await prisma.channel.create({
+    data: {
+      id: threadId,
+      guildId: channel.guildId,
+      type,
+      name,
+      parentId: channel.id,
+      ownerId: userId,
+      autoArchiveDuration: autoArchiveDuration ?? 1440,
+      archiveTimestamp: new Date(),
+      rateLimitPerUser: rateLimitPerUser ?? 0,
+      starterMessageId: messageId,
+      memberCount: 1,
+    },
+  })
+  await prisma.threadMember.create({ data: { channelId: threadId, userId } })
+  const thread = await prisma.channel.findUniqueOrThrow({ where: { id: threadId } })
+  // Include newly_created so discord.js ThreadCreate action emits the event
+  // even when the REST response is processed before the gateway WS event
+  const withCreated = { ...channelToAPI(thread), newly_created: true }
+  gateway.broadcast(GatewayDispatchEvents.ThreadCreate, withCreated)
+  // The starter message now carries the thread, as Discord sends it.
+  const starterAuthor = await prisma.user.findUniqueOrThrow({ where: { id: message.authorId } })
+  const [starter] = await withThreads(prisma, [messageToAPI(message, starterAuthor, channel.guildId ?? undefined)])
+  gateway.broadcast(GatewayDispatchEvents.MessageUpdate, { ...starter, guild_id: channel.guildId ?? undefined })
+  return withCreated as APIChannel
+}
+
+// What a forward (message_reference type 1) carries of the message it forwards.
+export function messageSnapshot(source: { type: number; content: string; embeds: string; attachments: string; components: string; timestamp: Date; editedTimestamp: Date | null; flags: number }) {
+  return { message: { type: source.type, content: source.content, embeds: JSON.parse(source.embeds), attachments: JSON.parse(source.attachments), components: JSON.parse(source.components), timestamp: source.timestamp.toISOString(), edited_timestamp: source.editedTimestamp?.toISOString() ?? null, flags: source.flags, mentions: [], mention_roles: [] } }
+}
+
 export function createServer({
   prisma,
   botUserId,
@@ -450,7 +494,7 @@ export function createServer({
     if (reference?.type === 1 && reference.message_id) {
       const source = await prisma.message.findUnique({ where: { id: String(reference.message_id) } })
       const [from, to] = source ? await Promise.all([prisma.channel.findUnique({ where: { id: source.channelId } }), prisma.channel.findUnique({ where: { id: channelId } })]) : [null, null]
-      if (source && from?.guildId && from.guildId === to?.guildId) extra['message_snapshots'] = [{ message: { type: source.type, content: source.content, embeds: JSON.parse(source.embeds), attachments: JSON.parse(source.attachments), components: JSON.parse(source.components), timestamp: source.timestamp.toISOString(), edited_timestamp: source.editedTimestamp?.toISOString() ?? null, flags: source.flags, mentions: [], mention_roles: [] } }]
+      if (source && from?.guildId && from.guildId === to?.guildId) extra['message_snapshots'] = [messageSnapshot(source)]
     }
     return Object.keys(extra).length ? JSON.stringify(extra) : null
   }
@@ -1337,65 +1381,7 @@ export function createServer({
             { status: 404, headers: { 'Content-Type': 'application/json' } },
           )
         }
-        const message = await findMessageIn(params.channel_id, params.message_id)
-        if (!message) {
-          throw new Response(
-            JSON.stringify({
-              code: 10008,
-              message: 'Unknown Message',
-              errors: {},
-            }),
-            { status: 404, headers: { 'Content-Type': 'application/json' } },
-          )
-        }
-        // Real Discord returns 400 with code 160004 if a thread already
-        // exists for this message. Reproduce this so tests catch race
-        // conditions where multiple code paths try to create threads on
-        // the same starter message.
-        const existingThread = await prisma.channel.findFirst({
-          where: { starterMessageId: params.message_id },
-        })
-        if (existingThread) {
-          throw new Response(
-            JSON.stringify({
-              code: 160004,
-              message: 'A thread has already been created for this message',
-              errors: {},
-            }),
-            { status: 400, headers: { 'Content-Type': 'application/json' } },
-          )
-        }
-        // Like Discord: a thread started from a message has the message's id.
-        const threadId = params.message_id
-        await prisma.channel.create({
-          data: {
-            id: threadId,
-            guildId: channel.guildId,
-            type: ChannelType.PublicThread,
-            name: body.name,
-            parentId: params.channel_id,
-            ownerId: actor(),
-            autoArchiveDuration: body.auto_archive_duration ?? 1440,
-            archiveTimestamp: new Date(),
-            rateLimitPerUser: body.rate_limit_per_user ?? 0,
-            starterMessageId: params.message_id,
-            memberCount: 1,
-          },
-        })
-        await prisma.threadMember.create({
-          data: { channelId: threadId, userId: actor() },
-        })
-        const thread = await prisma.channel.findUniqueOrThrow({
-          where: { id: threadId },
-        })
-        const apiChannel = channelToAPI(thread)
-        const withCreated = { ...apiChannel, newly_created: true }
-        gateway.broadcast(GatewayDispatchEvents.ThreadCreate, withCreated)
-        // The starter message now carries the thread, as Discord sends it.
-        const starterAuthor = await prisma.user.findUniqueOrThrow({ where: { id: message.authorId } })
-        const [starter] = await withThreads(prisma, [messageToAPI(message, starterAuthor, channel.guildId ?? undefined)])
-        gateway.broadcast(GatewayDispatchEvents.MessageUpdate, { ...starter, guild_id: channel.guildId ?? undefined })
-        return withCreated as APIChannel
+        return startThreadFromMessage({ prisma, gateway, channel, messageId: params.message_id, userId: actor(), name: body.name, autoArchiveDuration: body.auto_archive_duration, rateLimitPerUser: body.rate_limit_per_user })
       },
     })
     .route({

@@ -977,7 +977,8 @@ select.settings-input {
   height: 40px;
 }
 .settings-layer .presence {
-  box-shadow: 0 0 0 3px var(--bg-2);
+  --ring: var(--bg-2);
+  box-shadow: 0 0 0 3px var(--ring);
 }
 .settings-field + .settings-actions,
 .settings-feedback + .settings-actions {

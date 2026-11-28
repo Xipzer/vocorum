@@ -8,6 +8,7 @@ import { Icon, type IconName } from './icons.tsx'
 import { sessionActions, type SheetAt, type SheetSpec } from './Sheet.tsx'
 import { plain, wallHue } from './text.ts'
 import { agentName, store, useStore } from './store.ts'
+import { liveCustom, ownStatus, STATUS_TEXT } from './Status.tsx'
 import './profile.css'
 
 export type ProfileOf = { user: User; machine?: string | null }
@@ -26,7 +27,8 @@ function ProfileCard({ of, channelId, finish }: { of: ProfileOf; channelId: stri
   const p = state.presence?.[user.id]
   const me = user.id === state.me.id
   const running = machine ? p?.machines?.find((m) => m.machine.toLowerCase() === machine.toLowerCase()) : undefined
-  const status = machine ? (running?.online ? 'online' : 'offline') : (p?.status ?? (me ? 'online' : 'offline'))
+  const status = machine ? (running?.online ? 'online' : 'offline') : me ? ownStatus(state) : (p?.status ?? 'offline')
+  const custom = user.bot ? null : liveCustom(me ? state.user_status?.custom_status : p?.custom_status)
   const name = machine ? agentName(state.machine_bots, machine) : (user.global_name ?? user.username)
   const hue = user.color != null && !machine ? `#${user.color.toString(16).padStart(6, '0')}` : `rgb(${wallHue(machine ?? user.username)})`
   const where = (id: string | null) => {
@@ -43,7 +45,7 @@ function ProfileCard({ of, channelId, finish }: { of: ProfileOf; channelId: stri
         { dot: working || running?.activity || p?.activity ? 'busy' : 'none', text: working ? 'Working here' : (running?.activity ?? (machine ? null : p?.activity) ?? (status === 'offline' ? 'Offline' : 'Idle')) },
       ]
     : (p?.devices ?? []).map((d) => ({ dot: d.visible ? 'online' : 'idle', text: `${d.name}${d.visible ? '' : ' (away)'} · ${where(d.channel_id)}` }))
-  const presence = user.bot ? null : user.pending ? 'Not joined yet' : status === 'online' ? 'Online' : status === 'idle' ? 'Idle' : 'Offline'
+  const presence = user.bot ? null : user.pending ? 'Not joined yet' : STATUS_TEXT[status]
   const openDm = (to: { recipient_id: string }) => void store.openDm(to).then((c) => (location.hash = `#/c/${c.id}`)).catch(() => {})
   const actions: Action[] = [
     ...(!user.bot && !me && state.private_channels ? [{ label: 'Message', icon: 'chat' as const, run: () => openDm({ recipient_id: user.id }) }] : []),
@@ -55,7 +57,7 @@ function ProfileCard({ of, channelId, finish }: { of: ProfileOf; channelId: stri
       <div className="profile-banner" style={{ background: hue }} />
       <div className="profile-avatar">
         <Avatar id={user.id} name={name} size="panel" version={user.avatar} src={machine ? machineIcon(state.machine_icons, machine, 'avatar') : null} />
-        <i className={`presence ${status}`} aria-label={status} />
+        <i className={`presence ${status}`} aria-label={STATUS_TEXT[status]} />
       </div>
       <div className="profile-body">
         <div className="profile-name"><E>{name}</E></div>
@@ -63,6 +65,7 @@ function ProfileCard({ of, channelId, finish }: { of: ProfileOf; channelId: stri
           {user.username}
           {user.bot && <span className="bot-tag">BOT</span>}
         </div>
+        {custom && <div className="profile-custom"><E>{custom.text}</E></div>}
         {presence && <div className="profile-presence">{presence}</div>}
         {chips.length > 0 && (
           <div className="profile-chips" aria-label={user.bot ? 'Machine and state' : 'Devices'}>

@@ -16,10 +16,10 @@ const SHOWN_MS = 5000
 
 type Shown = { message: Message; key: number }
 
-// Whether this message would notify: someone else, a place that is not on screen, and the
-// place's notification level (all; or mentions and it names you) and no mute.
+// Whether this message would notify: not on Do Not Disturb, someone else, a place that is not
+// on screen, and the place's notification level (all; or mentions and it names you) and no mute.
 function wanted(state: HubState, message: Message, current: string | null) {
-  if (message.author.id === state.me.id || message.channel_id === current || document.visibilityState !== 'visible') return false
+  if (state.user_status?.status === 'dnd' || message.author.id === state.me.id || message.channel_id === current || document.visibilityState !== 'visible') return false
   const channel = state.channels.find((c) => c.id === message.channel_id) ?? state.threads.find((c) => c.id === message.channel_id)
   if (!channel) return false
   if (isDm(channel)) return true

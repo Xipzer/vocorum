@@ -19,12 +19,14 @@ export function rememberVisit(id: string) {
   localStorage.setItem(RECENT_KEY, JSON.stringify(list))
 }
 
+export const recentVisits = (): string[] => JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]')
+
 export function previousVisit(current: string | null): string | null {
-  return (JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]') as string[]).find((id) => id !== current && store.channel(id)) ?? null
+  return recentVisits().find((id) => id !== current && store.channel(id)) ?? null
 }
 
 // Higher is better: whole-word start, then substring, then letters in order.
-function score(text: string, q: string) {
+export function score(text: string, q: string) {
   const t = text.toLowerCase()
   if (!q) return 1
   if (t.startsWith(q)) return 100
@@ -54,7 +56,7 @@ export function QuickSwitcher({ current, onOpen, onGuild, onClose }: { current: 
     const name = (c: Channel) => plain(c.name ?? '', () => null, () => null) || 'untitled'
     const prefix = /^[#*@]/.exec(query)?.[0] ?? ''
     const q = query.slice(prefix.length).trim().toLowerCase()
-    const recent = JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]') as string[]
+    const recent = recentVisits()
     const recency = (id: string) => (recent.includes(id) ? 30 - recent.indexOf(id) : 0)
     const out: Item[] = []
     const add = (item: Omit<Item, 'rank'>, base: number) => {

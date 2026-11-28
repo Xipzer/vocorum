@@ -577,6 +577,7 @@ export const Markdown = memo(function Markdown({ text, ctx, runFooter = false }:
           }
           case 'table': {
             const numeric = block.head.map((_, j) => block.rows.length > 0 && block.rows.every((r) => !r[j] || /^[~≈<>+\-$£€]?[\d.,]+\s?(%|x|k|m|ms|s|kb|mb|gb)?\**$/i.test(r[j]!.replace(/\*\*/g, ''))))
+            const prose = block.head.map((_, j) => block.rows.some((r) => (r[j] ?? '').length > 32))
             return (
               <div key={key} className="kv-table-wrap md-table-wrap">
                 <table className="kv-table md-table">
@@ -593,7 +594,7 @@ export const Markdown = memo(function Markdown({ text, ctx, runFooter = false }:
                     {block.rows.map((r, ri) => (
                       <tr key={ri}>
                         {block.head.map((_, j) => (
-                          <td key={j} style={{ textAlign: numeric[j] ? 'right' : block.align[j] }}>
+                          <td key={j} className={prose[j] ? 'prose' : undefined} style={{ textAlign: numeric[j] ? 'right' : block.align[j] }}>
                             {inline(r[j] ?? '', ctx, `${key}-${ri}-${j}`)}
                           </td>
                         ))}

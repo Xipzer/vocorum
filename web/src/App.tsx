@@ -7,7 +7,8 @@ import { createPortal } from 'react-dom'
 import { ago } from './SettingsKit.tsx'
 import { elapsedRun } from './run-clock.ts'
 import { startAuthentication, startRegistration } from '@simplewebauthn/browser'
-import { api, connectEvents, signedIn, type Channel, type Guild, type HubState, type LinkKind, type SessionSummary, type User } from './api.ts'
+import { api, connectEvents, signedIn, type Channel, type Guild, type HubState, type LinkKind, type PresenceStatus, type SessionSummary, type User } from './api.ts'
+import { CustomStatusModal, liveCustom, ownStatus, STATUS_TEXT, StatusItems } from './Status.tsx'
 import { Avatar, DmAvatar, machineIcon } from './Avatar.tsx'
 import { Chat } from './Chat.tsx'
 import { ActivityPane, Overview } from './Overview.tsx'
@@ -30,6 +31,7 @@ import { WhenHost } from './When.tsx'
 import { WorkspacePanel } from './Workspace.tsx'
 import { boardForLocation, setBoardLocation } from './board-route.ts'
 import { QuickSwitcher, rememberVisit, ShortcutSheet } from './Switcher.tsx'
+import { discardShare, readShare, ShareDialog, type Shared } from './Share.tsx'
 import { LoadingMark } from './components.tsx'
 import { initColumns, keys, startResize, toggleColumn, useColumnKeys, useColumns, type ColumnId } from './columns.ts'
 
@@ -207,9 +209,12 @@ function Tree({ children }: { children: React.ReactNode }) {
 
 function UserPanel({ state }: { state: HubState }) {
   const [open, setOpen] = useState(false)
+  const [customOpen, setCustomOpen] = useState(false)
   const [accent, setAccent] = useState(localStorage.getItem('accent') ?? 'cyan')
   const me = state.users.find((u) => u.id === state.me.id)
   const name = me?.global_name ?? me?.username ?? 'You'
+  const status = ownStatus(state)
+  const custom = liveCustom(state.user_status?.custom_status)
   useEffect(() => {
     if (!open) return
     const close = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false)
@@ -226,11 +231,11 @@ function UserPanel({ state }: { state: HubState }) {
       <button className="user-panel-me" onClick={() => (setOpen(!open), setAccent(localStorage.getItem('accent') ?? 'cyan'))} aria-expanded={open} aria-label="Settings" title="Settings">
         <span className="member-avatar">
           <Avatar id={state.me.id} name={name} size="panel" version={me?.avatar} />
-          <SystemLight />
+          <SystemLight status={status} />
         </span>
         <span className="user-panel-name">
           {name}
-          <small>{state.device.name}</small>
+          <small>{custom?.text ?? (status === 'online' ? state.device.name : STATUS_TEXT[status])}</small>
         </span>
       </button>
       <InboxButton />
@@ -238,6 +243,7 @@ function UserPanel({ state }: { state: HubState }) {
       <HubUpdateBadge />
       {open && (
         <div className="menu-pop" role="menu">
+          <StatusItems state={state} onDone={() => setOpen(false)} onCustom={() => setCustomOpen(true)} />
           {savedTheme() === 'vocorum' && (
             <>
               <div className="menu-label">Accent colour</div>
@@ -259,6 +265,7 @@ function UserPanel({ state }: { state: HubState }) {
           )}
         </div>
       )}
+      {customOpen && createPortal(<CustomStatusModal state={state} onClose={() => setCustomOpen(false)} />, document.body)}
       <SettingsHost />
     </div>
   )
@@ -269,7 +276,7 @@ const NO_MACHINES: never[] = []
 // The system light is connectivity: green when this device reaches the hub and every
 // machine is up, amber when a machine is offline, red when the hub can't be reached.
 // Services show on their own button. Hover or focus shows the detail.
-function SystemLight() {
+function SystemLight({ status }: { status: PresenceStatus }) {
   const online = useStore((d) => d.online)
   // Machine and service health are the hub owner's; others see the hub and this device.
   const machines = useStore((d) => (d.state?.hub_owner === false ? NO_MACHINES : d.machines))
@@ -281,7 +288,7 @@ function SystemLight() {
   const level = !online ? 'red' : down.length ? 'amber' : 'green'
   const headline = !online ? 'Can’t reach the hub, retrying' : down.length ? `${down.map((m) => named(m.name)).join(', ')} offline` : 'Connected'
   return (
-    <span className={`system-light ${level}`} tabIndex={0} role="status" aria-label={headline}>
+    <span className={`system-light ${level} ${status}`} tabIndex={0} role="status" aria-label={level === 'green' ? `${headline}, ${STATUS_TEXT[status]}` : headline}>
       <i />
       <span className="system-pop" role="tooltip">
         <b>{headline}</b>
@@ -349,32 +356,62 @@ function ServicesButton() {
   )
 }
 
-// Phones: swipe right on a thread to pull the session list back over it, like iOS back.
-function useSwipeBack(enabled: boolean, onOpen: () => void) {
+// Phones: swipe right on a thread to pull the session list back over it, like iOS back; swipe
+// left to pull the member list in from the right as Discord's app does, and right on it to put it away.
+function usePhoneSwipes(enabled: boolean, onOpen: () => void, pull: { current: ((open: boolean) => void) | null }) {
   useEffect(() => {
     if (!enabled || !window.matchMedia('(max-width: 767px)').matches) return
     let start: { x: number; y: number; t: number } | null = null
-    let dragging = false
+    let mode: 'back' | 'members' | 'close' | null = null
     let dx = 0
+    let still = false
+    let fling = { x: 0, t: 0, v: 0 }
+    const root = document.documentElement
     const nav = () => document.querySelector<HTMLElement>('.sidebar')
     const page = () => document.querySelector<HTMLElement>('main > .chat, .app > .chat, section.chat')
-    const skip = (el: EventTarget | null) => el instanceof Element && Boolean(el.closest('.codeblock, pre, .sheet-layer, .side-panel, input, textarea, .composer, [data-swipe="off"]'))
+    // Anything that scrolls sideways keeps the gesture: code blocks, tables, rails.
+    const scrolls = (el: Element | null) => {
+      for (; el && el !== document.body; el = el.parentElement) if (el.scrollWidth > el.clientWidth + 1 && /auto|scroll/.test(getComputedStyle(el).overflowX)) return true
+      return false
+    }
+    const skip = (el: EventTarget | null) => !(el instanceof Element) || Boolean(el.closest('.codeblock, pre, .sheet-layer, .lightbox, input, textarea, .composer, [data-swipe="off"]')) || scrolls(el)
+    const panel = (el: EventTarget | null) => (el instanceof Element ? el.closest('.side-panel') : null)
+    const setPull = (open: number) => {
+      const w = window.innerWidth
+      root.style.setProperty('--pull', `${Math.round((1 - open) * w)}px`)
+      root.style.setProperty('--pull-open', String(open))
+    }
     const down = (e: TouchEvent) => {
-      if (e.touches.length !== 1 || skip(e.target)) return
+      const side = panel(e.target)
+      if (e.touches.length !== 1 || skip(e.target) || (side && !side.matches('.members-panel'))) return void (start = null)
       start = { x: e.touches[0]!.clientX, y: e.touches[0]!.clientY, t: Date.now() }
-      dragging = false
+      fling = { x: start.x, t: start.t, v: 0 }
+      mode = side ? 'close' : null
       dx = 0
     }
     const move = (e: TouchEvent) => {
       if (!start) return
-      const x = e.touches[0]!.clientX - start.x
+      const cx = e.touches[0]!.clientX
+      const x = cx - start.x
       const y = e.touches[0]!.clientY - start.y
-      if (!dragging) {
+      const now = Date.now()
+      if (now > fling.t) fling = { x: cx, t: now, v: (cx - fling.x) / (now - fling.t) }
+      if (!mode || (mode === 'close' && !dx)) {
         if (Math.abs(y) > 10 && Math.abs(y) > Math.abs(x)) return void (start = null)
-        if (x < 12 || Math.abs(x) < Math.abs(y) * 1.5) return
-        dragging = true
+        if (Math.abs(x) < 12 || Math.abs(x) < Math.abs(y) * 1.5) return
+        if (mode === 'close' ? x < 0 : x < 0 && !pull.current) return void (start = null)
+        mode ??= x > 0 ? 'back' : 'members'
+        still = motion() === 'auto'
+        if (mode !== 'back' && !still) {
+          root.dataset['pull'] = ''
+          setPull(mode === 'close' ? 1 : 0)
+          if (mode === 'members') pull.current!(true)
+        }
       }
-      dx = Math.max(0, x)
+      dx = mode === 'back' || mode === 'close' ? Math.max(1, x) : Math.min(-1, x)
+      e.preventDefault()
+      if (still) return
+      if (mode !== 'back') return setPull(mode === 'close' ? Math.max(0, 1 - dx / window.innerWidth) : Math.min(1, -dx / window.innerWidth))
       const el = nav()
       const top = page()
       if (el && top) {
@@ -386,14 +423,32 @@ function useSwipeBack(enabled: boolean, onOpen: () => void) {
         top.style.transform = `translateX(${dx}px)`
         top.classList.add('swiping')
       }
-      e.preventDefault()
     }
     const up = () => {
+      const was = mode
+      const speed = Date.now() - fling.t < 100 ? fling.v : 0
+      mode = null
+      start = null
+      if (!was || !dx) return
+      if (was === 'members' || was === 'close') {
+        // The list settles open past half its width or on a fling, as Discord's.
+        const open = was === 'members' ? -dx > window.innerWidth / 2 || speed < -0.5 : !(dx > window.innerWidth / 2 || speed > 0.5)
+        if (still) return void (open !== (was === 'close') && pull.current?.(open))
+        root.dataset['pull'] = 'settle'
+        setPull(open ? 1 : 0)
+        window.setTimeout(() => {
+          delete root.dataset['pull']
+          root.style.removeProperty('--pull')
+          root.style.removeProperty('--pull-open')
+          if (!open) pull.current?.(false)
+        }, 240)
+        return
+      }
+      const done = dx > window.innerWidth * 0.3 || speed > 0.5
+      if (still) return done ? onOpen() : undefined
       const el = nav()
       const top = page()
-      if (dragging && el && top) {
-        const speed = dx / Math.max(1, Date.now() - start!.t)
-        const done = dx > window.innerWidth * 0.3 || speed > 0.5
+      if (el && top) {
         top.style.transition = 'transform var(--move) var(--ease-out)'
         top.style.transform = done ? 'translateX(100%)' : ''
         el.style.transition = ''
@@ -404,8 +459,6 @@ function useSwipeBack(enabled: boolean, onOpen: () => void) {
           if (done) onOpen()
         }, done ? 220 : 240)
       }
-      start = null
-      dragging = false
     }
     document.addEventListener('touchstart', down, { passive: true })
     document.addEventListener('touchmove', move, { passive: false })
@@ -417,7 +470,7 @@ function useSwipeBack(enabled: boolean, onOpen: () => void) {
       document.removeEventListener('touchend', up)
       document.removeEventListener('touchcancel', up)
     }
-  }, [enabled, onOpen])
+  }, [enabled, onOpen, pull])
 }
 
 function WorkingAge({ session }: { session: SessionSummary }) {
@@ -1235,7 +1288,8 @@ function Main() {
     localStorage.setItem('lastByGuild', JSON.stringify({ ...JSON.parse(localStorage.getItem('lastByGuild') ?? '{}'), [openGuild]: current }))
   }, [current, openGuild])
   const openDrawer = useCallback(() => setDrawer(true), [])
-  useSwipeBack(!drawer && !linkSheet && !modal, openDrawer)
+  const membersSwipe = useRef<((open: boolean) => void) | null>(null)
+  usePhoneSwipes(!drawer && !linkSheet && !modal, openDrawer, membersSwipe)
   // Wide screens: an Activity column beside every conversation from 2400px, and from 3200px a
   // session's Workspace beside it as well, until closed.
   const wide = useMediaQuery('(min-width: 2400px)')
@@ -1311,6 +1365,34 @@ function Main() {
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
   const [switcher, setSwitcher] = useState<'switcher' | 'shortcuts' | null>(null)
+  // Opened by the service worker after another app shared to Vocorum (Web Share Target).
+  const [shared, setShared] = useState<Shared | null>(null)
+  // The hub's answer when a share arrived without the service worker: nothing was kept.
+  const [shareAgain, setShareAgain] = useState(false)
+  useEffect(() => {
+    if (!shareAgain) return
+    const timer = window.setTimeout(() => setShareAgain(false), 8000)
+    return () => window.clearTimeout(timer)
+  }, [shareAgain])
+  useEffect(() => {
+    const onHash = () => {
+      if (location.hash === '#/share-again') {
+        history.replaceState(null, '', location.pathname + location.search)
+        setShareAgain(true)
+        return
+      }
+      if (location.hash !== '#/share') return
+      history.replaceState(null, '', location.pathname + location.search)
+      void readShare().then((s) => s && setShared(s)).catch(() => {})
+    }
+    onHash()
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+  const endShare = () => {
+    setShared(null)
+    void discardShare().catch(() => {})
+  }
   useEffect(() => {
     if (current && current !== 'overview' && current !== 'inbox') rememberVisit(current)
   }, [current])
@@ -1523,6 +1605,8 @@ function Main() {
     setCurrent(id)
     setDrawer(false)
   }
+  const chatId = channel && ![2, 4, 15].includes(channel.type) ? channel.id : null
+  membersSwipe.current = chatId && (!panel || (panel.kind === 'members' && panel.channelId === chatId)) ? (on) => setPanel(on ? { kind: 'members', channelId: chatId } : null) : null
 
   useAppBadge()
 
@@ -1537,6 +1621,12 @@ function Main() {
   return (
     <div className={`app${wide ? ' wide-screen' : ''}`}>
       <OfflineNotice />
+      {shareAgain && (
+        <div className="offline-notice share-again" role="status">
+          <Icon name="share" size={16} />
+          That share didn't arrive. Please share it again.
+        </div>
+      )}
       {/* Discord's first Tab stop: straight to the conversation. */}
       <button className="skip-link" onClick={() => (document.querySelector<HTMLElement>('.composer textarea') ?? document.querySelector<HTMLElement>('.messages'))?.focus()}>
         Skip to the conversation
@@ -1674,6 +1764,7 @@ function Main() {
       {wide && !overview && !page && (!panel || (wider && panel.kind === 'workspace')) && <ActivityPane onOpen={open} />}
       {switcher === 'switcher' && <QuickSwitcher current={channel?.id ?? null} onOpen={open} onGuild={pickGuild} onClose={() => setSwitcher(null)} />}
       {switcher === 'shortcuts' && <ShortcutSheet onClose={() => setSwitcher(null)} />}
+      {shared && <ShareDialog shared={shared} onClose={endShare} onSent={(id) => { endShare(); open(id) }} />}
       {modal && modal.channelId === channel?.id && (
         <ModalDialog
           modal={modal}

@@ -12,6 +12,7 @@ import { ChannelType, MessageFlags, MessageType } from 'discord-api-types/v10'
 import type { APIAttachment, APIMessage } from 'discord-api-types/v10'
 import { generateSnowflake, withThreads, type DigitalDiscordModalComponent } from 'discord-digital-twin/src'
 import { channelToAPI, messageToAPI, roleToAPI, userToAPI } from 'discord-digital-twin/src/serializers'
+import { messageSnapshot } from 'discord-digital-twin/src/server'
 import { toOggOpus } from './attachments.ts'
 import { HttpError } from './auth.ts'
 import { sendDownload } from './app-releases.ts'
@@ -145,6 +146,7 @@ export class ClientApi {
       if (method === 'GET') return send(200, await this.messages(v, params['id']!, new URL(req.url ?? '/', 'http://x').searchParams))
       if (method === 'POST') return send(200, await this.postMessage(v, params['id']!, await readJson(req)))
     }
+    if (method === 'POST' && (params = match('/client/channels/:id/messages/:mid/threads', pathname))) return send(200, await this.startThread(v, params['id']!, params['mid']!, await readJson(req)))
     if (method === 'POST' && (params = match('/client/channels/:id/messages/bulk-delete', pathname))) {
       return send(200, await this.deleteSelectedMessages(v, params['id']!, selectedIds(await readJson(req))))
     }
@@ -388,6 +390,8 @@ export class ClientApi {
       output: await this.hub.store.outputViews(v.userId),
       machines: machines.map((m) => m.name).filter((name) => this.hub.access.isHubOwner(v.userId) || categoryMachines.has(name.toLowerCase())),
       privacy: await this.hub.settings.privacy(v.userId),
+      // The status this person chose and their custom status (Discord's user settings).
+      user_status: this.hub.presence.settingsOf(v.userId),
       // Per machine: hashes of its bot avatar and Discord server icon; images at
       // /client/machine-icons/:machine/avatar|guild_icon?v=<hash>.
       machine_icons: await this.machineIconsFor(v),
@@ -509,7 +513,8 @@ export class ClientApi {
         summary.set(reaction.emoji, entry)
       }
       const api = messageToAPI(row, author, guildOf(row.channelId))
-      if (api.mentions.length === 0) api.mentions = mentioned(row).flatMap((id) => (authors.has(id) ? [userToAPI(authors.get(id)!)] : []))
+      const listed = new Set(api.mentions.map((u) => u.id))
+      api.mentions = [...api.mentions, ...mentioned(row).flatMap((id) => (authors.has(id) && !listed.has(id) ? [userToAPI(authors.get(id)!)] : []))]
       return { ...api, ...(summary.size > 0 && { reactions_summary: [...summary.values()] }), ...origins.get(row.id) }
     }))
   }
@@ -568,19 +573,38 @@ export class ClientApi {
     const closed = this.hub.dms.closedNote(channelId)
     if (closed) throw new HttpError(409, closed)
     if (!(await this.hub.access.can(v.userId, channelId, thread ? P.SEND_MESSAGES_IN_THREADS : P.SEND_MESSAGES))) throw new HttpError(403, 'You cannot send messages here')
+    // A forward (Discord's message_reference type 1): a snapshot of a message the viewer can read, and nothing else.
+    const reference = body['message_reference'] as Body | undefined
+    if (reference?.['type'] === 1) {
+      const source = await this.messageIn(v, str(reference['channel_id'], 'message_reference.channel_id'), str(reference['message_id'], 'message_reference.message_id'), P.READ_MESSAGE_HISTORY)
+      if (body['content'] || (Array.isArray(body['attachmentIds']) && body['attachmentIds'].length)) throw new HttpError(400, 'A forward carries only the forwarded message')
+      const from = await this.prisma.channel.findUnique({ where: { id: source.channelId } })
+      return this.hub.twin.simulateUserMessage({
+        channelId,
+        userId: v.userId,
+        content: '',
+        messageReference: { type: 1, message_id: source.id, channel_id: source.channelId, ...(from?.guildId && { guild_id: from.guildId }) },
+        extra: { message_snapshots: [messageSnapshot(source)] },
+      })
+    }
     if (Array.isArray(body['attachmentIds']) && body['attachmentIds'].length && !(await this.hub.access.can(v.userId, channelId, P.ATTACH_FILES))) throw new HttpError(403, 'You cannot attach files here')
     const content = typeof body['content'] === 'string' ? body['content'].slice(0, 4000) : ''
     const attachments = await this.attachmentsFor(v, body['attachmentIds'], body['descriptions'])
     if (!content.trim() && attachments.length === 0) throw new HttpError(400, 'Empty message')
     const voice = body['voice'] === true && attachments.length === 1 && attachments[0]!.content_type?.startsWith('audio/')
-    const replyTo = typeof body['replyTo'] === 'string' ? body['replyTo'] : null
-    if (replyTo) await this.messageIn(v, channelId, replyTo)
+    // Discord's message_reference and allowed_mentions.replied_user (pings by default, off when
+    // allowed_mentions leaves it out); replyTo is the older field.
+    const replyTo = typeof reference?.['message_id'] === 'string' ? reference['message_id'] : typeof body['replyTo'] === 'string' ? body['replyTo'] : null
+    const allowed = body['allowed_mentions'] as { replied_user?: unknown } | undefined
+    const replied = replyTo ? await this.messageIn(v, channelId, replyTo) : null
+    const pinged = replied && replied.authorId !== v.userId && (allowed ? allowed.replied_user === true : true) ? await this.prisma.user.findUnique({ where: { id: replied.authorId } }) : null
     const message = await this.hub.twin.simulateUserMessage({
       channelId,
       userId: v.userId,
       content: voice ? '' : content,
       attachments,
       flags: (voice ? MessageFlags.IsVoiceMessage : 0) | (Number(body['flags']) & MessageFlags.SuppressNotifications),
+      ...(pinged && { mentions: [userToAPI(pinged)] }),
       ...(replyTo && { type: MessageType.Reply, messageReference: { message_id: replyTo, channel_id: channelId, guild_id: channel.guildId ?? undefined } }),
     })
     return message
@@ -651,6 +675,21 @@ export class ClientApi {
     })
     this.hub.twin.notifyLocalMessageDeletes(channelId, guildId, ids)
     return { deleted_ids: ids }
+  }
+
+  // Discord's POST /channels/:id/messages/:id/threads: the message starts a thread named by the person.
+  async startThread(v: Viewer, channelId: string, messageId: string, body: Body) {
+    const channel = await this.channel(v, channelId, P.READ_MESSAGE_HISTORY)
+    if (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement) throw new HttpError(400, 'Threads start from messages in text channels')
+    if (!(await this.hub.access.can(v.userId, channelId, P.CREATE_PUBLIC_THREADS))) throw new HttpError(403, 'You cannot create threads here')
+    const message = await this.prisma.message.findUnique({ where: { id: messageId } })
+    if (!message || message.channelId !== channelId) throw new HttpError(404, 'Unknown message')
+    const name = typeof body['name'] === 'string' ? body['name'].trim().slice(0, 100) : ''
+    if (!name) throw new HttpError(400, 'A thread needs a name')
+    if (await this.prisma.channel.findFirst({ where: { starterMessageId: messageId } })) throw new HttpError(400, 'A thread has already been created for this message')
+    const thread = await this.hub.twin.simulateUserThreadFromMessage({ channelId, messageId, userId: v.userId, name, type: channel.type === ChannelType.GuildAnnouncement ? ChannelType.AnnouncementThread : ChannelType.PublicThread })
+    this.hub.access.invalidate()
+    return thread
   }
 
   // The thread's starter, or anyone with Manage Threads.

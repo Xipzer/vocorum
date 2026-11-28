@@ -1,5 +1,7 @@
 // App shell cache only. API, events and attachments always go to the network.
-const CACHE = 'vocorum-shell-v6'
+const CACHE = 'vocorum-shell-v7'
+// What another app shared (Web Share Target), kept on this device until the app sends or drops it.
+const SHARE = 'vocorum-share'
 const SHELL = ['/', '/theme.js', '/manifest.webmanifest', '/icon.svg', '/icon-192.png', '/fonts/inter-latin-wght.woff2']
 
 self.addEventListener('install', (event) => {
@@ -8,12 +10,35 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key)))).then(() => self.clients.claim()),
+    caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE && key !== SHARE).map((key) => caches.delete(key)))).then(() => self.clients.claim()),
   )
 })
 
+// The share sheet POSTs here (see share_target in the manifest). The hub never sees it:
+// the files stay in Cache Storage and the app opens on its "Share to…" screen.
+async function stashShare(request) {
+  const form = await request.formData().catch(() => null)
+  await caches.delete(SHARE)
+  if (form) {
+    const cache = await caches.open(SHARE)
+    const files = form.getAll('files').filter((f) => typeof f !== 'string' && (f.size > 0 || f.name))
+    await Promise.all(
+      files.map((file, i) =>
+        cache.put(`/share/file/${i}`, new Response(file, { headers: { 'content-type': file.type || 'application/octet-stream', 'x-name': encodeURIComponent(file.name || `file-${i + 1}`) } })),
+      ),
+    )
+    const field = (name) => String(form.get(name) ?? '')
+    await cache.put('/share/meta', new Response(JSON.stringify({ title: field('title'), text: field('text'), url: field('url'), files: files.length }), { headers: { 'content-type': 'application/json' } }))
+  }
+  return Response.redirect(new URL('/#/share', self.location.origin).href, 303)
+}
+
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url)
+  if (event.request.method === 'POST' && url.origin === self.location.origin && url.pathname === '/share') {
+    event.respondWith(stashShare(event.request))
+    return
+  }
   if (event.request.method !== 'GET' || url.origin !== self.location.origin) return
   if (url.pathname.startsWith('/client/') || url.pathname.startsWith('/attachments/') || url.pathname.startsWith('/api/')) return
   if (event.request.mode === 'navigate') {

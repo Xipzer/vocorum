@@ -7,7 +7,7 @@ import { BOARD_UPDATED } from './board-document.ts'
 import { forgetMissingImages } from './Avatar.tsx'
 import { forgetRunClocks, sampleRun } from './run-clock.ts'
 import { displayName, machineLabel } from './text.ts'
-import { api, type HubRequest, type MachineRoutines, type Reminder, type Schedule, toReminder, type Channel, type HubState, type MachineSummary, type Message, type Command, type Guild, type Service, type SessionLink, type SessionSummary, type User, type Role, type GuildMember, type Overwrite } from './api.ts'
+import { api, type HubRequest, type MachineRoutines, type Reminder, type Schedule, toReminder, type Channel, type HubState, type MachineSummary, type Message, type Command, type Guild, type Service, type SessionLink, type SessionSummary, type User, type Role, type GuildMember, type Overwrite, type ChosenStatus, type CustomStatus } from './api.ts'
 
 // Messages not loaded between two loaded ones: more than a page arrived while this view slept.
 export type Gap = { after: string; before: string }
@@ -176,6 +176,16 @@ class Store {
     await api.setNotification(scopeId, body)
   }
 
+  // Your status and custom status; your own presence follows from the hub.
+  async setUserStatus(body: { status?: ChosenStatus; custom_status?: CustomStatus | null }) {
+    const state = this.data.state
+    const was = state?.user_status ?? { status: 'online' as const, custom_status: null }
+    if (state) this.set({ state: { ...state, user_status: { ...was, ...body } } })
+    const me = await api.patchMe(body)
+    const now = this.data.state
+    if (now && me.user_status) this.set({ state: { ...now, user_status: me.user_status } })
+  }
+
   setPushSubscribed(on: boolean) {
     const state = this.data.state
     if (state?.notifications) this.set({ state: { ...state, notifications: { ...state.notifications, push_subscribed: on } } })
@@ -262,7 +272,7 @@ class Store {
   // HTTP receipt must never overwrite a newer edit or create a second row.
   // The owner's message shows as soon as they press Enter, as on Discord; the hub's copy
   // replaces it when it comes back (the reply to the send or its live event, whichever is first).
-  sendLocal(channelId: string, content: string, replyTo?: string, flags?: number) {
+  sendLocal(channelId: string, content: string, replyTo?: Message, ping = true, flags?: number) {
     const page = this.data.messages[channelId], state = this.data.state
     // The owner's name and picture come from their own last message here, else the user list.
     const me = state && (page?.list.findLast((m) => m.author.id === state.me.id && !m.local)?.author ?? state.users.find((u) => u.id === state.me.id))
@@ -270,7 +280,7 @@ class Store {
     const now = (BigInt(Date.now()) - 1420070400000n) << 22n
     const tail = BigInt(page.list.at(-1)?.id ?? '0') + 1n
     const id = String(now > tail ? now : tail)
-    const m: Message = { id, channel_id: channelId, author: me, content, timestamp: new Date().toISOString(), edited_timestamp: null, type: replyTo ? 19 : 0, attachments: [], embeds: [], ...(flags && { flags }), ...(replyTo && { message_reference: { message_id: replyTo, channel_id: channelId } }), local: true }
+    const m: Message = { id, channel_id: channelId, author: me, content, timestamp: new Date().toISOString(), edited_timestamp: null, type: replyTo ? 19 : 0, attachments: [], embeds: [], mentions: replyTo && ping && replyTo.author.id !== me.id ? [replyTo.author] : [], ...(flags && { flags }), ...(replyTo && { message_reference: { message_id: replyTo.id, channel_id: channelId } }), local: true }
     this.setMessages(channelId, { ...page, list: [...page.list, m], arrival: id })
     return id
   }
@@ -489,7 +499,7 @@ class Store {
         // Only fresh ones: a message older than a minute is history arriving late, not news.
         if (Date.now() - Number((BigInt(message.id) >> 22n) + 1420070400000n) < 60_000) for (const listener of incoming) listener(message)
         const me = this.data.state?.me.id
-        if (me && message.author.id !== me && (message.content ?? '').includes(`<@${me}>`) && snowflakeGt(message.id, this.data.seen[message.channel_id]))
+        if (me && message.author.id !== me && ((message.content ?? '').includes(`<@${me}>`) || message.mentions?.some((u) => u.id === me)) && snowflakeGt(message.id, this.data.seen[message.channel_id]))
           this.set({ mentions: { ...this.data.mentions, [message.channel_id]: (this.data.mentions[message.channel_id] ?? 0) + 1 } })
         this.receiveMessage(message)
         this.bumpLastMessage(message.channel_id, message.id)
@@ -645,6 +655,11 @@ class Store {
         if (state) this.set({ state: { ...state, presence: { ...state.presence, [d.user_id]: d } } })
         break
       }
+      case 'USER_SETTINGS_UPDATE': {
+        const state = this.data.state
+        if (state) this.set({ state: { ...state, user_status: d } })
+        break
+      }
       case 'NOTIFICATION_SETTINGS_UPDATE': {
         const state = this.data.state
         const n = state?.notifications
@@ -765,7 +780,7 @@ export const onIncoming = (listener: (message: Message) => void) => {
   return () => void incoming.delete(listener)
 }
 
-const REPLAYED = new Set(['THREAD_CREATE', 'THREAD_UPDATE', 'THREAD_DELETE', 'CHANNEL_CREATE', 'CHANNEL_UPDATE', 'CHANNEL_DELETE', 'CHANNEL_PERMISSIONS_UPDATE', 'GUILD_UPDATE', 'GUILD_ROLE_CREATE', 'GUILD_ROLE_UPDATE', 'GUILD_ROLE_DELETE', 'GUILD_MEMBER_ADD', 'GUILD_MEMBER_UPDATE', 'GUILD_MEMBER_REMOVE', 'MACHINE_ICONS_UPDATE', 'USER_UPDATE', 'OUTPUT_VIEW', 'SESSION_LINKS', 'NOTIFICATION_SETTINGS_UPDATE', 'PRESENCE_UPDATE', 'VOICE_STATE_UPDATE'])
+const REPLAYED = new Set(['THREAD_CREATE', 'THREAD_UPDATE', 'THREAD_DELETE', 'CHANNEL_CREATE', 'CHANNEL_UPDATE', 'CHANNEL_DELETE', 'CHANNEL_PERMISSIONS_UPDATE', 'GUILD_UPDATE', 'GUILD_ROLE_CREATE', 'GUILD_ROLE_UPDATE', 'GUILD_ROLE_DELETE', 'GUILD_MEMBER_ADD', 'GUILD_MEMBER_UPDATE', 'GUILD_MEMBER_REMOVE', 'MACHINE_ICONS_UPDATE', 'USER_UPDATE', 'OUTPUT_VIEW', 'SESSION_LINKS', 'NOTIFICATION_SETTINGS_UPDATE', 'USER_SETTINGS_UPDATE', 'PRESENCE_UPDATE', 'VOICE_STATE_UPDATE'])
 
 const sortReminders = (list: Reminder[]) => [...list].sort((a, b) => a.at - b.at)
 // A scheduled message still to post, or one that failed and should be seen.

@@ -197,7 +197,10 @@ export type NotificationLevel = 'all' | 'mentions' | 'nothing'
 // null fields inherit from the parent channel, then the category, then the guild.
 export type NotificationSetting = { level: NotificationLevel | null; muted_until: number | null }
 
-export type Profile = { color: number | null; showPresence: boolean; showActivity: boolean; tailscaleLogin: string | null }
+export type ChosenStatus = 'online' | 'idle' | 'dnd' | 'invisible'
+// expiresAt: when the custom status clears (ms), null: kept until cleared.
+export type CustomStatus = { text: string; expiresAt: number | null }
+export type Profile = { color: number | null; showPresence: boolean; showActivity: boolean; tailscaleLogin: string | null; status: ChosenStatus; customStatus: CustomStatus | null }
 export type Overwrite = { id: string; type: 0 | 1; allow: string; deny: string }
 
 export type GuildRow = { id: string; name: string; icon: string | null; position: number }
@@ -258,6 +261,10 @@ export class HubStore {
     await this.addColumn('profiles', 'show_presence', 'INTEGER NOT NULL DEFAULT 1')
     await this.addColumn('profiles', 'show_activity', 'INTEGER NOT NULL DEFAULT 1')
     await this.addColumn('profiles', 'tailscale_login', 'TEXT')
+    // The status a person chose (Discord's online, idle, dnd, invisible) and their custom status.
+    await this.addColumn('profiles', 'status', "TEXT NOT NULL DEFAULT 'online'")
+    await this.addColumn('profiles', 'custom_status', 'TEXT')
+    await this.addColumn('profiles', 'custom_status_expires', 'INTEGER')
     // 'web' (passkey, cookie sessions) or 'app' (device key, bearer sessions).
     await this.addColumn('devices', 'kind', "TEXT NOT NULL DEFAULT 'web'")
     await this.addColumn('sessions', 'kind', "TEXT NOT NULL DEFAULT 'cookie'")
@@ -458,9 +465,16 @@ export class HubStore {
 
   async profiles(): Promise<Record<string, Profile>> {
     return Object.fromEntries(
-      (await this.rows('SELECT user_id, color, show_presence, show_activity, tailscale_login FROM profiles')).map((row) => [
+      (await this.rows('SELECT user_id, color, show_presence, show_activity, tailscale_login, status, custom_status, custom_status_expires FROM profiles')).map((row) => [
         String(row['user_id']),
-        { color: row['color'] == null ? null : Number(row['color']), showPresence: Number(row['show_presence']) !== 0, showActivity: Number(row['show_activity']) !== 0, tailscaleLogin: row['tailscale_login'] == null ? null : String(row['tailscale_login']) },
+        {
+          color: row['color'] == null ? null : Number(row['color']),
+          showPresence: Number(row['show_presence']) !== 0,
+          showActivity: Number(row['show_activity']) !== 0,
+          tailscaleLogin: row['tailscale_login'] == null ? null : String(row['tailscale_login']),
+          status: String(row['status']) as ChosenStatus,
+          customStatus: row['custom_status'] == null ? null : { text: String(row['custom_status']), expiresAt: row['custom_status_expires'] == null ? null : Number(row['custom_status_expires']) },
+        },
       ]),
     )
   }
@@ -472,6 +486,8 @@ export class HubStore {
     if (update.showPresence !== undefined) columns.push(['show_presence', update.showPresence ? 1 : 0])
     if (update.showActivity !== undefined) columns.push(['show_activity', update.showActivity ? 1 : 0])
     if (update.tailscaleLogin !== undefined) columns.push(['tailscale_login', update.tailscaleLogin])
+    if (update.status !== undefined) columns.push(['status', update.status])
+    if (update.customStatus !== undefined) columns.push(['custom_status', update.customStatus?.text ?? null], ['custom_status_expires', update.customStatus?.expiresAt ?? null])
     if (columns.length === 0) return
     await this.db.execute({ sql: `UPDATE profiles SET ${columns.map(([c]) => `${c} = ?`).join(', ')} WHERE user_id = ?`, args: [...columns.map(([, v]) => v), userId] })
   }
