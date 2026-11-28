@@ -11,7 +11,7 @@ export type SheetAction = { label: string; icon?: IconName; run: () => void; red
 /** Where a menu opens: at a point (right-click, long press) or dropped from a control,
  *  8px below it and aligned to its start or end edge, like Discord's. */
 export type SheetAt = { x: number; y: number } | { rect: DOMRect; align: 'start' | 'end' } | { rect: DOMRect; side: 'left' | 'right' }
-export type SheetSpec = { title: string; subtitle?: string; badge?: ReactNode; groups: SheetAction[][]; /** Phones: a heading over each group, by index. */ headings?: Array<string | undefined>; at?: SheetAt; plain?: boolean; /** A question before an action: the title stays on desktop too. */ confirm?: boolean; /** A card (a profile) in place of the title and actions. */ card?: (finish: (run: () => void) => void) => ReactNode }
+export type SheetSpec = { title: string; subtitle?: string; badge?: ReactNode; groups: SheetAction[][]; /** Phones: a heading over each group, by index. */ headings?: Array<string | undefined>; at?: SheetAt; plain?: boolean; /** A question before an action: the title stays on desktop too. */ confirm?: boolean; /** A card (a profile) in place of the title and actions. */ card?: (finish: (run: () => void) => void) => ReactNode; cardClass?: string }
 
 /** A menu that drops from the clicked control. */
 export const below = (el: Element, align: 'start' | 'end' = 'end'): SheetAt => ({ rect: el.getBoundingClientRect(), align })
@@ -173,7 +173,7 @@ export function Sheet({ spec, onClose, picker }: { spec: SheetSpec; onClose: () 
     <div ref={layer} className={`sheet-layer${isPhone ? ' phone' : ''}`} onPointerDown={(e) => e.target === e.currentTarget && close()} onContextMenu={(e) => e.preventDefault()}>
       <div
         ref={panel}
-        className={`sheet${spec.plain && !isPhone ? ' plain' : ''}${spec.confirm ? ' confirm' : ''}${picker ? ' choice-sheet' : ''}${spec.card ? ' profile-sheet' : ''}`}
+        className={`sheet${spec.plain && !isPhone ? ' plain' : ''}${spec.confirm ? ' confirm' : ''}${picker ? ' choice-sheet' : ''}${spec.card ? ` ${spec.cardClass ?? 'profile-sheet'}` : ''}`}
         role={picker || spec.card ? 'dialog' : 'menu'} aria-modal={picker || spec.card ? true : undefined} aria-label={picker || spec.card ? spec.title : undefined} tabIndex={picker || spec.card ? -1 : undefined}
         style={isPhone ? { transform: offset ? `translateY(${offset}px)` : undefined, transition: drag.current ? 'none' : undefined } : (pos ?? { visibility: 'hidden' })}
         onPointerDown={(e) => {

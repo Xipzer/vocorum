@@ -112,3 +112,22 @@ test('private command replies, deferred edits and follow-ups belong only to the 
   await phone.json(`/client/channels/${general.id}/private-replies/${original.id}`, { method: 'DELETE' })
   expect((await phone.json(history)).privateReplies).toHaveLength(1)
 })
+
+test('role and mentionable options carry ids, with the role and the user in resolved; a file from elsewhere is refused', async () => {
+  await bot.application!.commands.create({ name: 'grant', description: 'grant a role', options: [{ type: 8, name: 'role', description: 'role' }, { type: 9, name: 'to', description: 'who' }, { type: 11, name: 'file', description: 'file' }] }, t.config.guildId)
+  const seen = new Promise<{ options: unknown[]; resolved: Record<string, Record<string, unknown>> }>((resolve) => {
+    const listen = (packet: { t: string; d: { data?: { name?: string; options: unknown[]; resolved: Record<string, Record<string, unknown>> } } }) => {
+      if (packet.t === 'INTERACTION_CREATE' && packet.d.data?.name === 'grant') { bot.off('raw', listen); resolve(packet.d.data) }
+    }
+    bot.on('raw', listen)
+  })
+  const options = [{ name: 'role', type: 8, value: t.config.guildId }, { name: 'to', type: 9, value: t.config.ownerUserId }]
+  await phone.json('/client/commands', { method: 'POST', json: { channelId: general.id, name: 'grant', options } })
+  const data = await seen
+  expect(data.options).toEqual(options)
+  expect(Object.keys(data.resolved['roles']!)).toEqual([t.config.guildId])
+  expect(Object.keys(data.resolved['users']!)).toEqual([t.config.ownerUserId])
+  expect(Object.keys(data.resolved['members']!)).toEqual([t.config.ownerUserId])
+  const refused = await phone.fetch('/client/commands', { method: 'POST', json: { channelId: general.id, name: 'grant', options: [{ name: 'file', type: 11, value: '123456789012345678' }] } })
+  expect(refused.status).toBe(400)
+})

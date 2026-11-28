@@ -19,7 +19,7 @@ import { below, Sheet, sessionActions, usePress, type SheetAt, type SheetSpec } 
 import type { MarkdownContext } from './markdown.tsx'
 import { ModalDialog, type OpenModal } from './Modal.tsx'
 import { DM_GUILD, dmName, dmUser, isDm, machineNamed, snowflakeGt, store, THREAD_TYPES, machineName, useMachineName, useStore } from './store.ts'
-import { bellSheet, useFocusReporting, useNotificationClicks } from './notify.ts'
+import { bellSheet, effective, useFocusReporting, useNotificationClicks } from './notify.ts'
 import { native, shareOrigin } from './native.ts'
 import { setPlace } from './TitleBar.tsx'
 import { NativeLogin } from './NativeLogin.tsx'
@@ -306,14 +306,28 @@ function SystemLight() {
   )
 }
 
-// The inbox bell: everything waiting on you across every server, as one count.
-function InboxButton() {
+// Everything waiting on you across every server, as one count.
+function useInboxCount() {
   const mentions = useStore((d) => Object.values(d.mentions).reduce((a, b) => a + b, 0))
   const waiting = useStore((d) => Object.values(d.sessions).filter((s) => s.state === 'waiting' || s.state === 'failed').length)
   const requests = useStore((d) => d.requests.filter((r) => r.status === 'pending' && r.expires_at > Date.now()).length)
   const due = useStore((d) => (d.reminders ?? []).filter((r) => r.due).length)
   const more = extensions.reduce((sum, e) => sum + (e.useInboxCount?.() ?? 0), 0)
-  const count = mentions + waiting + requests + due + more
+  return mentions + waiting + requests + due + more
+}
+
+// The same count on the installed app's icon, where the platform has app badges.
+function useAppBadge() {
+  const count = useInboxCount()
+  useEffect(() => {
+    if (!('setAppBadge' in navigator)) return
+    void (count ? navigator.setAppBadge(count) : navigator.clearAppBadge()).catch(() => {})
+  }, [count])
+}
+
+// The inbox bell.
+function InboxButton() {
+  const count = useInboxCount()
   return (
     <button className={`icon-button inbox-button${count ? ' with-count' : ''}`} onClick={() => sessionActions.inbox?.()} aria-label={count ? `Inbox: ${count}` : 'Inbox'} title="Inbox">
       <Icon name="bell" />
@@ -434,7 +448,7 @@ function threadMark(state: SessionSummary['state'] | undefined, unread: boolean)
 
 // Memoised: a message anywhere replaces the workspace state and redraws the sidebar, and
 // each row should redraw only when its own thread, session, unread or mention count does.
-const ThreadRow = memo(function ThreadRow({ thread, title, current, unread, session, favourite, mentions, onOpen, onSheet }: { thread: Channel; title: string; current: boolean; unread: boolean; session?: SessionSummary; favourite: boolean; mentions: number; onOpen: (id: string) => void; onSheet: (spec: SheetSpec) => void }) {
+const ThreadRow = memo(function ThreadRow({ thread, title, current, unread, muted, session, favourite, mentions, onOpen, onSheet }: { thread: Channel; title: string; current: boolean; unread: boolean; muted: boolean; session?: SessionSummary; favourite: boolean; mentions: number; onOpen: (id: string) => void; onSheet: (spec: SheetSpec) => void }) {
   const state = session?.state
   const mark = threadMark(state, unread)
   const manage = can(P.MANAGE_THREADS, thread) || thread.owner_id === store.data.state?.me.id
@@ -460,7 +474,7 @@ const ThreadRow = memo(function ThreadRow({ thread, title, current, unread, sess
     })
   })
   return (
-    <button data-nav={thread.id} {...mark} title={[title, mark['aria-description']].filter(Boolean).join('\n')} aria-current={current ? 'page' : undefined} className={`channel${current ? ' active' : ''}${unread ? ' unread' : ''}${thread.thread_metadata?.archived ? ' dim' : ''}`} onClick={() => onOpen(thread.id)} {...press}>
+    <button data-nav={thread.id} {...mark} title={[title, mark['aria-description']].filter(Boolean).join('\n')} aria-current={current ? 'page' : undefined} className={`channel${current ? ' active' : ''}${unread ? ' unread' : ''}${muted ? ' muted' : ''}${thread.thread_metadata?.archived ? ' dim' : ''}`} onClick={() => onOpen(thread.id)} {...press}>
       {state === 'busy' && <MarkHalo/>}
       <span className="channel-name"><E>{title}</E></span>
       {state === 'busy' && session?.runStartedAt != null && <WorkingAge session={session} />}
@@ -513,7 +527,7 @@ function LinkedRows({ threadId, title, unread, onOpen, mask }: { mask:number; th
 const STATE_LABEL: Record<string, string> = { waiting: 'waiting for you', failed: 'failed', busy: 'working', done: 'done', idle: 'idle' }
 
 
-function ProjectRow({ channel, current, unread, threads, mentions, onOpen, onSheet }: { channel: Channel; current: boolean; unread: boolean; threads: Channel[]; mentions: number; onOpen: (id: string) => void; onSheet: (spec: SheetSpec) => void }) {
+function ProjectRow({ channel, current, unread, muted, threads, mentions, onOpen, onSheet }: { channel: Channel; current: boolean; unread: boolean; muted: boolean; threads: Channel[]; mentions: number; onOpen: (id: string) => void; onSheet: (spec: SheetSpec) => void }) {
   const press = usePress((at) =>
     onSheet({
       at,
@@ -528,7 +542,7 @@ function ProjectRow({ channel, current, unread, threads, mentions, onOpen, onShe
     }),
   )
   return (
-    <button data-nav={channel.id} data-voice-channel={channel.type === 2 || undefined} className={`channel${current ? ' active' : ''}${unread ? ' unread' : ''}`} onClick={() => onOpen(channel.id)} {...press}>
+    <button data-nav={channel.id} data-voice-channel={channel.type === 2 || undefined} className={`channel${current ? ' active' : ''}${unread ? ' unread' : ''}${muted ? ' muted' : ''}`} onClick={() => onOpen(channel.id)} {...press}>
       <span className="hash">{channel.type === 15 ? <Icon name="threads" size={16} /> : channel.type === 2 ? <Icon name="voiceChannel" size={20} /> : '#'}</span>
       <span className="channel-name"><E>{channel.name}</E></span>
       {mentions > 0 && <span className="badge num" aria-label={`${mentions} mentions`}>{mentions}</span>}
@@ -584,7 +598,7 @@ function GuildRail({ guilds, current, onGuild }: { guilds: Guild[]; current: str
       {[...guilds.filter((g) => g.id !== state.admin_guild_id), ...guilds.filter((g) => g.id === state.admin_guild_id)].map((g) => {
         const admin = g.id === state.admin_guild_id
         const mine = all.filter((c) => (c.guild_id ?? state.guild.id) === g.id)
-        const unread = g.id !== current && mine.some((c) => snowflakeGt(c.last_message_id, seen[c.id]))
+        const unread = g.id !== current && mine.some((c) => snowflakeGt(c.last_message_id, seen[c.id]) && !effective(state, c).mutedUntil)
         const count = mine.reduce((sum, c) => sum + (mentions[c.id] ?? 0), 0)
         return (
           <Fragment key={g.id}>
@@ -844,7 +858,9 @@ function SidebarView({ state, seen, current, open, onOpen: openLatest, ctx, guil
     if (t === undefined) titles.set(c, (t = plain(c.name ?? '', ctx.userName, ctx.channelName) || 'untitled'))
     return t
   }
-  const unread = (c: Channel) => (THREAD_TYPES.has(c.type) || c.id !== current) && snowflakeGt(c.last_message_id, seen[c.id])
+  // Discord greys a muted row and gives it no unread mark; its mentions still count.
+  const muted = (c: Channel) => effective(state, c).mutedUntil !== null
+  const unread = (c: Channel) => (THREAD_TYPES.has(c.type) || c.id !== current) && snowflakeGt(c.last_message_id, seen[c.id]) && !muted(c)
   const passes = (t:Channel) => !filtering || Boolean(mask & markBit(sessions[t.id]?.state,unread(t)))
   const q = query.trim().toLowerCase()
   const hit = (c: Channel) => !q || title(c).toLowerCase().includes(q)
@@ -878,7 +894,7 @@ function SidebarView({ state, seen, current, open, onOpen: openLatest, ctx, guil
   }
   const row = (thread: Channel) => (
     <Fragment key={thread.id}>
-      <ThreadRow thread={thread} title={title(thread)} current={thread.id === current} unread={unread(thread)} session={sessions[thread.id]} favourite={favourites.includes(thread.id)} mentions={thread.id === current ? 0 : (mentionCounts[thread.id] ?? 0)} onOpen={onOpen} onSheet={setSheet} />
+      <ThreadRow thread={thread} title={title(thread)} current={thread.id === current} unread={unread(thread)} muted={muted(thread)} session={sessions[thread.id]} favourite={favourites.includes(thread.id)} mentions={thread.id === current ? 0 : (mentionCounts[thread.id] ?? 0)} onOpen={onOpen} onSheet={setSheet} />
       {thread.id === current && !q && <LinkedRows mask={mask} unread={unread} threadId={thread.id} title={title} onOpen={onOpen} />}
     </Fragment>
   )
@@ -991,7 +1007,7 @@ function SidebarView({ state, seen, current, open, onOpen: openLatest, ctx, guil
             if (hidden && channel.id !== current && !unread(channel) && visible.length === 0) return []
             return [
               <div key={channel.id}>
-                <ProjectRow channel={channel} current={channel.id === current} unread={unread(channel)} threads={threads} mentions={channel.id === current ? 0 : (mentionCounts[channel.id] ?? 0)} onOpen={onOpen} onSheet={setSheet} />
+                <ProjectRow channel={channel} current={channel.id === current} unread={unread(channel)} muted={muted(channel)} threads={threads} mentions={channel.id === current ? 0 : (mentionCounts[channel.id] ?? 0)} onOpen={onOpen} onSheet={setSheet} />
                 {channel.type === 2 && <VoicePeople state={state} channel={channel} />}
                 {(visible.length > 0 || (!hidden && older.length > 0)) && (
                   <Tree>
@@ -1507,6 +1523,8 @@ function Main() {
     setCurrent(id)
     setDrawer(false)
   }
+
+  useAppBadge()
 
   // Where you are, for the desktop app's title bar and the browser tab (Discord's "#general | Server").
   const placeName = overview ? 'Overview' : inbox ? 'Mentions' : page ? (page.title ?? page.id) : activeGuild === DM_GUILD ? 'Direct messages' : (store.guilds().find((g) => g.id === activeGuild)?.name ?? state.guild.name)

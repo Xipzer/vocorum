@@ -202,6 +202,20 @@ test('Web Push: mentions and needs-you reach the device, encrypted; levels, mute
   await general.send(`<@${t.config.ownerUserId}> still reaches you`)
   expect((await expectPush('mention')).payload.body).toBe('@you still reaches you')
 
+  // A deferred reply notifies once, when the answer replaces "is thinking…".
+  await bot.application!.commands.create({ name: 'slow', description: 'deferred' }, t.config.guildId)
+  bot.once('interactionCreate', async (i) => {
+    if (!i.isChatInputCommand()) return
+    await i.deferReply()
+    await new Promise((r) => setTimeout(r, 150))
+    await i.editReply(`<@${t.config.ownerUserId}> the slow answer`)
+  })
+  await new Promise((r) => setTimeout(r, REPEAT_GAP))
+  await phone.json('/client/commands', { method: 'POST', json: { channelId: general.id, name: 'slow' } })
+  expect((await expectPush('mention')).payload.body).toBe('@you the slow answer')
+  await settle()
+  expect(received).toEqual([])
+
   // A session that starts waiting on the owner.
   const thread = await general.threads.create({ name: 'Pick a database' })
   await new Promise((r) => setTimeout(r, REPEAT_GAP))

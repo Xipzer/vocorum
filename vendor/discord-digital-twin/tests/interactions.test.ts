@@ -8,6 +8,7 @@ import {
   GatewayIntentBits,
   ChannelType,
   InteractionType,
+  MessageFlags,
 } from 'discord.js'
 import type {
   ChatInputCommandInteraction,
@@ -202,7 +203,7 @@ describe('interactions', () => {
     expect(replyMsg!.application_id).toBe(discord.botUserId)
   })
 
-  test('interaction.deferReply() + editReply() creates message on edit', async () => {
+  test('interaction.deferReply() posts a thinking message that editReply() fills in', async () => {
     const received = new Promise<ChatInputCommandInteraction>((resolve) => {
       client.once('interactionCreate', (i) => {
         if (i.isChatInputCommand()) {
@@ -225,11 +226,11 @@ describe('interactions', () => {
     const interaction = await received
     await interaction.deferReply()
 
-    // After deferring, interaction is acknowledged but no message yet
+    // After deferring, the original is Discord's "is thinking…" message (LOADING)
     const ch = discord.channel(channelId)
     const afterDefer = await ch.getInteractionResponse(id)
     expect(afterDefer!.acknowledged).toBe(true)
-    expect(afterDefer!.messageId).toBeNull()
+    expect((await ch.getMessages()).find((m) => m.id === afterDefer!.messageId)?.flags).toBe(MessageFlags.Loading)
 
     await interaction.editReply({ content: 'Deferred then edited' })
 
@@ -241,11 +242,12 @@ describe('interactions', () => {
       Deferred then edited"
     `)
     const afterEdit = await ch.getInteractionResponse(id)
-    expect(afterEdit!.messageId).toBeTruthy()
+    expect(afterEdit!.messageId).toBe(afterDefer!.messageId)
 
     const messages = await ch.getMessages()
     const msg = messages.find((m) => m.content === 'Deferred then edited')
-    expect(msg).toBeDefined()
+    expect(msg).toMatchObject({ id: afterDefer!.messageId, edited_timestamp: null })
+    expect(msg!.flags ?? 0).toBe(0)
   })
 
   test('interaction.deleteReply() removes the message', async () => {

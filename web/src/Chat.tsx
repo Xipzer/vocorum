@@ -7,6 +7,7 @@ import { api, type Channel, type Component, type HubState, type InteractionResul
 import { Avatar, DmAvatar, machineIcon } from './Avatar.tsx'
 import { profileSheet } from './Profile.tsx'
 import { EmojiPicker } from './EmojiPicker.tsx'
+import { ReactionTip, reactionsSheet, type ReactionSummary } from './Reactions.tsx'
 import { Components, uniqueGallery, type Interact } from './components.tsx'
 import { Attachments, Embeds, Forwarded, onlyEmbedLink, PollCard, stamp, Stickers } from './Media.tsx'
 import { Composer } from './Composer.tsx'
@@ -40,6 +41,10 @@ const editors = new Map<string, () => void>()
 
 const IS_COMPONENTS_V2 = 1 << 15
 const IS_VOICE = 1 << 13
+const SILENT = 1 << 12
+const LOADING = 1 << 7
+// Discord gives up on a deferred reply when its interaction token expires.
+const DEFER_TTL_MS = 15 * 60_000
 const SPEEDS = [1, 1.5, 2]
 
 function VoiceMessage({ url, duration, waveform }: { url: string; duration?: number; waveform?: string }) {
@@ -336,6 +341,8 @@ const MessageItem = memo(function MessageItem({
   const linked = requestIds.length ? allRequests.filter((r) => requestIds.includes(r.id)) : NO_REQUESTS
   const privateReply = message.private_reply
   const spoken = Boolean((message.flags ?? 0) & IS_VOICE)
+  const silent = Boolean((message.flags ?? 0) & SILENT)
+  const thinking = message.author.bot && Boolean((message.flags ?? 0) & LOADING)
   const recording = spoken ? recordingOf(message) : undefined
   const needs = !ask && !used && !privateReply && current && message.author.bot && (hasOpenComponents(message.components) || (message.content.includes(`<@${me}>`) && !FOOTER.test(message.content)))
   // Kimaki's errors start with a cross: they read red, and an actionable one gets a red band.
@@ -359,6 +366,7 @@ const MessageItem = memo(function MessageItem({
       groups: [
         [
           { label: 'Add reaction', icon: 'smile', run: () => setPicker('rect' in at ? at.rect : new DOMRect(at.x, at.y, 0, 0)) },
+          ...(message.reactions_summary?.length ? [{ label: 'Reactions', icon: 'smile' as const, run: () => showReactions(message.reactions_summary![0]!.emoji) }] : []),
           { label: 'Reply', icon: 'reply', run: () => onReply(message) },
           ...(onSelect ? [{ label: 'Select messages', icon: 'check' as const, run: () => onSelect(message.id) }] : []),
         ],
@@ -383,6 +391,7 @@ const MessageItem = memo(function MessageItem({
       subtitle: plain(message.content, ctx.userName, ctx.channelName).slice(0, 80) || undefined,
       groups: [[{ label: 'Delete', icon: 'trash', red: true, run: () => void api.remove(channelId, message.id).catch((e: Error) => onError(e.message)) }]],
     })
+  const showReactions = (emoji: string) => message.reactions_summary?.length && onSheet(reactionsSheet(channelId, message.id, message.reactions_summary, emoji))
   const press = usePress(openMenu)
   // The author's name or picture opens their profile beside it, as in Discord.
   const author = profile && { user: profile, machine: message.author.bot ? botName : null }
@@ -488,7 +497,7 @@ const MessageItem = memo(function MessageItem({
           </span>
         </div>
       )}
-      {compact && <span className="row-time" title={stamp(message.timestamp)}>{clock(message.timestamp)}</span>}
+      {compact && <span className="row-time" title={stamp(message.timestamp)}>{clock(message.timestamp)}{silent && <SilentMark />}</span>}
       <div className="message-body">
         {!compact && (
           <div className="message-head">
@@ -500,10 +509,11 @@ const MessageItem = memo(function MessageItem({
             </span>
             {message.author.bot && <span className="bot-tag">BOT</span>}
             <span className="message-time" title={receipt && message.edited_timestamp ? `Edited ${stamp(message.edited_timestamp)}` : undefined}>{clock(message.timestamp)}</span>
+            {silent && <SilentMark />}
           </div>
         )}
         {spoken && <div className="voice-note-label"><Icon name="mic" size={16} />Voice note</div>}
-        {editing !== null ? (
+        {thinking ? <Thinking name={name} since={message.timestamp} /> : editing !== null ? (
           <div className="edit-box">
             <textarea
               autoFocus
@@ -545,10 +555,7 @@ const MessageItem = memo(function MessageItem({
         {message.reactions_summary?.length ? (
           <div className="reactions">
             {message.reactions_summary.map((r) => (
-              <button key={r.emoji} className={`reaction${r.me ? ' me' : ''}`} onClick={() => toggle(r.emoji)} aria-pressed={r.me} title={r.me ? (r.count > 1 ? `You and ${r.count - 1} more reacted (click to remove)` : 'You reacted (click to remove)') : `${r.count} reacted (click to add yours)`}>
-                <span className="reaction-emoji">{emojify(r.emoji)}</span>
-                <span className="num">{r.count}</span>
-              </button>
+              <ReactionPill key={r.emoji} reaction={r} channelId={channelId} messageId={message.id} onToggle={() => toggle(r.emoji)} onList={() => showReactions(r.emoji)} />
             ))}
             <button className="reaction add" onClick={(e) => setPicker(e.currentTarget.getBoundingClientRect())} aria-label="Add reaction" title="Add reaction">
               <Icon name="smile" size={20} />
@@ -589,7 +596,46 @@ const MessageItem = memo(function MessageItem({
   )
 })
 
+// A reaction: click to add or remove yours; hover names who reacted, a long press lists them.
+function ReactionPill({ reaction: r, channelId, messageId, onToggle, onList }: { reaction: ReactionSummary; channelId: string; messageId: string; onToggle: () => void; onList: () => void }) {
+  const [tip, setTip] = useState<DOMRect | null>(null)
+  const timer = useRef(0)
+  const touch = useRef(false)
+  const press = usePress(onList)
+  useEffect(() => () => window.clearTimeout(timer.current), [])
+  const hide = () => (window.clearTimeout(timer.current), setTip(null))
+  return (
+    <button
+      className={`reaction${r.me ? ' me' : ''}`}
+      onClick={onToggle}
+      aria-pressed={r.me}
+      aria-label={`${r.emoji}, ${r.count} reaction${r.count === 1 ? '' : 's'}${r.me ? ', including yours' : ''}`}
+      {...press}
+      onPointerDown={(e) => ((touch.current = e.pointerType !== 'mouse'), hide(), press.onPointerDown(e))}
+      // Right click is the message's menu; only a touch's long press lists the reactions.
+      onContextMenu={(e) => touch.current && (e.stopPropagation(), press.onContextMenu(e))}
+      onPointerEnter={(e) => {
+        if (e.pointerType !== 'mouse') return
+        const el = e.currentTarget
+        timer.current = window.setTimeout(() => setTip(el.getBoundingClientRect()), 150)
+      }}
+      onPointerLeave={hide}
+    >
+      <span className="reaction-emoji">{emojify(r.emoji)}</span>
+      <span className="num">{r.count}</span>
+      {tip && <ReactionTip channelId={channelId} messageId={messageId} reaction={r} anchor={tip} />}
+    </button>
+  )
+}
+
 // The message a reply points at. Forwards (reference type 1) carry a snapshot instead.
+// Sent with @silent (SUPPRESS_NOTIFICATIONS): Discord's sleeping bell by the time.
+const SilentMark = () => (
+  <span className="silent-mark" role="img" aria-label="Silent message" title="Silent message">
+    <Icon name="silent" size={16} />
+  </span>
+)
+
 function replyTarget(message: Message) {
   return message.message_reference?.type === 1 ? undefined : message.message_reference?.message_id
 }
@@ -837,6 +883,20 @@ function useWorking(channelId: string) {
 
 // Discord's typing dots, in the busy colour.
 const WorkingDots = () => <span className="working-dots" aria-hidden="true"><i /><i /><i /></span>
+
+// A deferred reply before the bot follows up, and Discord's message once it never does.
+function Thinking({ name, since }: { name: string; since: string }) {
+  const deadline = new Date(since).getTime() + DEFER_TTL_MS
+  const [late, setLate] = useState(() => Date.now() >= deadline)
+  useEffect(() => {
+    if (late) return
+    const timer = window.setTimeout(() => setLate(true), Math.min(deadline - Date.now(), 2 ** 31 - 1))
+    return () => window.clearTimeout(timer)
+  }, [late, deadline])
+  return late
+    ? <div className="thinking failed"><Icon name="warn" size={16} />The application did not respond</div>
+    : <div className="thinking" role="status"><WorkingDots /><em>{name} is thinking…</em></div>
+}
 
 // Under the newest message while an agent works: moving dots and the time since its last
 // message, so a long tool or a long think still reads as alive. Gone once it stops.

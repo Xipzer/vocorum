@@ -21,6 +21,8 @@ import type { CustomEmojiInfo } from './api.ts'
 type Upload = { key: string; file: File; name: string; description: string; spoiler: boolean; preview?: string; attachment?: Attachment; error?: string }
 
 const LIMIT = 2000
+const SILENT_PREFIX = /^@silent\s+/
+const SUPPRESS_NOTIFICATIONS = 1 << 12
 
 const uploadName = (u: Pick<Upload, 'name' | 'spoiler'>) => (u.spoiler ? `SPOILER_${u.name}` : u.name)
 const extension = (name: string) => (/\.([a-z0-9]{1,8})$/i.exec(name)?.[1] ?? '').toUpperCase()
@@ -172,7 +174,10 @@ const FORMATS: Array<{ key: string; label: string; wrap: [string, string]; glyph
   { key: 'p', label: 'Spoiler', wrap: ['||', '||'], glyph: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3l18 18M10.6 5.1A10 10 0 0 1 12 5c6 0 9.5 7 9.5 7a17 17 0 0 1-2.6 3.4M6.6 6.6A17 17 0 0 0 2.5 12S6 19 12 19a9.6 9.6 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2" /></svg> },
 ]
 
-const VALUE_TYPES = new Set([3, 4, 5, 7, 10])
+const VALUE_TYPES = new Set([3, 4, 5, 6, 7, 8, 9, 10, 11])
+// Users, channels, roles and mentionables are picked from the list; typing only filters it.
+const PICKED_TYPES = new Set([6, 7, 8, 9])
+type Choice = { name: string; value: string | number; hint?: string; glyph?: React.ReactNode }
 
 function SlashForm({
   command,
@@ -196,9 +201,29 @@ function SlashForm({
   const [choices, setChoices] = useState<Array<{ name: string; value: string | number }>>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [uploading, setUploading] = useState<Record<string, boolean>>({})
   const timer = useRef<number | undefined>(undefined)
   const submitting = useRef(false)
   const form = useRef<HTMLFormElement>(null)
+  const hub = useStore((d) => d.state)
+  const guildId = hub?.channels.find((c) => c.id === channelId)?.guild_id ?? hub?.threads.find((c) => c.id === channelId)?.guild_id ?? hub?.guild.id ?? ''
+
+  // An attachment option uploads the file as soon as it is picked; its value is the attachment id.
+  const attach = async (option: CommandOption, file: File) => {
+    setUploading((u) => ({ ...u, [option.name]: true }))
+    setValues((v) => { const { [option.name]: _, ...rest } = v; return rest })
+    setLabels((l) => ({ ...l, [option.name]: file.name }))
+    setError(null)
+    try {
+      const attachment = await api.upload(file, file.name)
+      setValues((v) => ({ ...v, [option.name]: attachment.id }))
+    } catch (e) {
+      setLabels((l) => { const { [option.name]: _, ...rest } = l; return rest })
+      setError(`Could not upload ${file.name}: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setUploading((u) => ({ ...u, [option.name]: false }))
+    }
+  }
 
   const typed = (option: CommandOption, raw: string) => (option.type === 4 ? Number.parseInt(raw, 10) : option.type === 10 ? Number(raw) : option.type === 5 ? raw === 'true' : raw)
   const built = (focus?: string) => {
@@ -250,7 +275,18 @@ function SlashForm({
   // Choices for the focused option: static choices, true/false, channels, or the bot's autocomplete.
   const focusedOption = options.find((o) => o.name === focused)
   const typedText = focusedOption ? (labels[focusedOption.name] ?? values[focusedOption.name] ?? '').toLowerCase() : ''
-  const listed: Array<{ name: string; value: string | number }> = !focusedOption
+  const mentionText = typedText.replace(/^@/, '')
+  const members = hub?.members?.[guildId] ? new Set(hub.members[guildId]!.map((m) => m.user_id)) : null
+  const people = (): Choice[] =>
+    (hub?.users ?? [])
+      .filter((u) => (!members || members.has(u.id)) && ((u.global_name ?? '').toLowerCase().includes(mentionText) || u.username.toLowerCase().includes(mentionText)))
+      .slice(0, 10)
+      .map((u) => ({ name: `@${u.global_name ?? u.username}`, value: u.id, hint: u.username, glyph: '@' }))
+  const roles = (): Choice[] =>
+    (hub?.roles?.[guildId] ?? [])
+      .filter((r) => r.name.replace(/^@/, '').toLowerCase().includes(mentionText))
+      .map((r) => ({ name: r.name.startsWith('@') ? r.name : `@${r.name}`, value: r.id, hint: 'Role', glyph: '@' }))
+  const listed: Choice[] = !focusedOption
     ? []
     : focusedOption.choices?.length
       ? focusedOption.choices.filter((c) => c.name.toLowerCase().includes(typedText))
@@ -258,10 +294,16 @@ function SlashForm({
         ? [{ name: 'True', value: 'true' }, { name: 'False', value: 'false' }]
         : focusedOption.type === 7
           ? channels.filter((c) => c.name.toLowerCase().includes(typedText.replace(/^#/, ''))).map((c) => ({ name: `#${c.name}`, value: c.id }))
-          : focusedOption.autocomplete
-            ? choices
-            : []
-  const choose = (option: CommandOption, choice: { name: string; value: string | number }) => {
+          : focusedOption.type === 6
+            ? people()
+            : focusedOption.type === 8
+              ? roles()
+              : focusedOption.type === 9
+                ? [...people(), ...roles()].slice(0, 10)
+                : focusedOption.autocomplete
+                  ? choices
+                  : []
+  const choose = (option: CommandOption, choice: Choice) => {
     setValues({ ...values, [option.name]: String(choice.value) })
     setLabels({ ...labels, [option.name]: choice.name })
     // Move on to the next empty option, as Discord does.
@@ -280,7 +322,9 @@ function SlashForm({
           <div className="palette-head">{focusedOption.name}: {focusedOption.description}</div>
           {listed.map((choice) => (
             <button key={String(choice.value)} className="slash-item" onMouseDown={(e) => e.preventDefault()} onClick={() => choose(focusedOption, choice)}>
-              <span className="slash-name">{choice.name}</span>
+              {choice.glyph && <span className="suggest-glyph">{choice.glyph}</span>}
+              <span className="slash-name">{choice.glyph ? choice.name.replace(/^@/, '') : choice.name}</span>
+              {choice.hint && <span className="muted">{choice.hint}</span>}
             </button>
           ))}
         </div>
@@ -302,6 +346,25 @@ function SlashForm({
               {option.name}
               {option.required ? '' : '?'}:
             </span>
+            {option.type === 11 ? (
+              <>
+                <input type="file" hidden onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ''; if (file) void attach(option, file) }} />
+                <button
+                  type="button"
+                  className="slash-file"
+                  data-option={option.name}
+                  autoFocus={i === 0}
+                  aria-label={labels[option.name] ? `${option.name}: ${labels[option.name]}` : `Upload a file for ${option.name}`}
+                  onFocus={() => setFocused(option.name)}
+                  onBlur={() => setTimeout(() => setFocused((f) => (f === option.name ? null : f)), 150)}
+                  onClick={(e) => e.currentTarget.parentElement?.querySelector<HTMLInputElement>('input[type=file]')?.click()}
+                  onKeyDown={(e) => { if (e.key === 'Backspace' && i === 0 && !values[option.name]) onCancel() }}
+                >
+                  <Icon name="file" size={16} />
+                  <span className={labels[option.name] ? '' : 'muted'}>{uploading[option.name] ? `Uploading ${labels[option.name]}…` : labels[option.name] ?? option.description}</span>
+                </button>
+              </>
+            ) : (
             <input
               data-option={option.name}
               autoFocus={i === 0}
@@ -316,16 +379,18 @@ function SlashForm({
               onBlur={() => setTimeout(() => setFocused((f) => (f === option.name ? null : f)), 150)}
               onChange={(e) => {
                 setLabels({ ...labels, [option.name]: e.target.value })
-                setValues({ ...values, [option.name]: e.target.value })
+                if (PICKED_TYPES.has(option.type)) { const { [option.name]: _, ...rest } = values; setValues(rest) }
+                else setValues({ ...values, [option.name]: e.target.value })
                 lookup(option, e.target.value)
               }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.nativeEvent.isComposing && !e.repeat && focused === option.name && listed.length === 1 && values[option.name] !== String(listed[0]!.value)) {
                   e.preventDefault(); choose(option, listed[0]!)
                 }
-                if (e.key === 'Backspace' && i === 0 && !(values[option.name] ?? '')) onCancel()
+                if (e.key === 'Backspace' && i === 0 && !(labels[option.name] ?? values[option.name] ?? '')) onCancel()
               }}
             />
+            )}
           </label>
         ))}
         <span className="slash-hint muted" role="status">{busy ? `Sending /${command.name}…` : missing.length ? `${missing.length} required` : 'Enter to run'}</span>
@@ -807,7 +872,10 @@ export function Composer({
       return
     }
     const files = uploads
-    if (!text.trim() && files.length === 0) return
+    // Discord's "@silent " prefix: sent without push notifications, and left out of the text.
+    const silent = SILENT_PREFIX.test(text)
+    const body = silent ? text.replace(SILENT_PREFIX, '') : text
+    if (!body.trim() && files.length === 0) return
     if (sending.current) return
     if (files.some((u) => u.error)) return onError('An attachment failed to upload. Retry or remove it first.')
     sending.current = true
@@ -822,15 +890,16 @@ export function Composer({
         ids.push(attachment.id)
         if (u.description.trim()) descriptions[attachment.id] = u.description.trim()
       }
-      const expanded = await expandEmoji(content, guildId)
+      const expanded = await expandEmoji(body, guildId)
+      const flags = silent ? SUPPRESS_NOTIFICATIONS : 0
       // Text alone shows at once and the box clears; files wait for the hub as before.
-      const local = files.length ? undefined : store.sendLocal(channelId, expanded, replyTo?.id)
+      const local = files.length ? undefined : store.sendLocal(channelId, expanded, replyTo?.id, flags)
       if (local) {
         setText((t) => (t === content ? '' : t))
         onCancelReply()
       }
       try {
-        const posted = await api.send(channelId, { content: expanded, attachmentIds: ids, ...(Object.keys(descriptions).length && { descriptions }), ...(replyTo && { replyTo: replyTo.id }) })
+        const posted = await api.send(channelId, { content: expanded, attachmentIds: ids, ...(flags && { flags }), ...(Object.keys(descriptions).length && { descriptions }), ...(replyTo && { replyTo: replyTo.id }) })
         store.confirmSent(posted, local)
         setText((t) => (t === content ? '' : t))
         drop(files)

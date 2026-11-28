@@ -31,6 +31,8 @@ const PATHS = {
   arrowDown: 'M12 5v14M5.5 12.5 12 19l6.5-6.5',
   search: 'M10.5 3.3a7.2 7.2 0 1 0 0 14.4 7.2 7.2 0 0 0 0-14.4ZM15.6 15.6l6.1 6.1',
   bell: 'M5.5 15.8V9.5a6.5 6.5 0 0 1 13 0v6.3l1.5 2.2H4zM9.8 19.8a2.2 2.2 0 0 0 4.4 0',
+  // Discord's silent-message mark: a bell with a small z.
+  silent: 'M3.5 17V11.5a6.5 6.5 0 0 1 9.6-5.7V7.5h1.8l-.9 1A6.5 6.5 0 0 1 16.5 11.5V17l1.5 2H2zM7.8 20.5h4.4a2.2 2.2 0 0 1-4.4 0zM15 1.5h6v1.7l-3.3 3.6H21v1.7h-6V6.8l3.3-3.6H15z',
   copy: 'M8.5 8.5h11v11h-11zM15.5 8.5v-4h-11v11h4',
   warn: 'M12 4 2.5 20h19zM12 10v4.5M12 17.5v.01',
   info: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM12 11v5.5M12 7.5v.01',
@@ -77,7 +79,7 @@ const PATHS = {
 
 export type IconName = keyof typeof PATHS
 
-const FILLED = new Set<IconName>(['play', 'pause', 'more', 'threadCrumb', 'voiceChannel'])
+const FILLED = new Set<IconName>(['play', 'pause', 'more', 'threadCrumb', 'voiceChannel', 'silent'])
 
 export function Icon({ name, size = 20, className }: { name: IconName; size?: number; className?: string }) {
   const filled = FILLED.has(name)

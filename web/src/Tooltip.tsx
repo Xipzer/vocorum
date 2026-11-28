@@ -6,7 +6,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { motion } from './text.ts'
 
-const SCOPE = '.icon-button, .search-field, .rail-item, .message-actions > button, .row-gear, .channel-list .channel[data-nav], .channel-list .linked-row'
+const SCOPE = '.icon-button, .silent-mark, .search-field, .rail-item, .message-actions > button, .row-gear, .channel-list .channel[data-nav], .channel-list .linked-row'
 // Beside the control, as Discord does: server icons and sidebar rows, whose tooltip
 // above would cover the rows over them.
 const BESIDE = '.rail-item, .channel-list .channel'

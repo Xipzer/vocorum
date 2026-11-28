@@ -143,6 +143,14 @@ test('voice notes carry the voice flag, duration and waveform', async () => {
   })
 })
 
+test('a silent message keeps SUPPRESS_NOTIFICATIONS and nothing else the client asks for', async () => {
+  const posted = await phone.json(`/client/channels/${general}/messages`, { method: 'POST', json: { content: 'quiet update', flags: (1 << 12) | (1 << 2) | (1 << 15) } })
+  expect(posted.flags).toBe(1 << 12)
+  const message = await waitFor(() => received.find((m) => m.content === 'quiet update'))
+  expect(message.flags.toArray()).toEqual(['SuppressNotifications'])
+  expect((await phone.json(`/client/channels/${general}/messages`, { method: 'POST', json: { content: 'loud update' } })).flags ?? 0).toBe(0)
+})
+
 test('buttons, selects and modals round-trip through the bot', async () => {
   bot.on('interactionCreate', async (interaction) => {
     if (interaction.isButton() && interaction.customId === 'open') {
@@ -154,7 +162,7 @@ test('buttons, selects and modals round-trip through the bot', async () => {
       )
     }
     if (interaction.isStringSelectMenu()) await interaction.update({ content: `picked ${interaction.values.join(',')}`, components: [] })
-    if (interaction.isModalSubmit()) await interaction.reply({ content: `answer: ${interaction.fields.getTextInputValue('answer')}` })
+    if (interaction.isModalSubmit() && interaction.customId === 'ask') await interaction.reply({ content: `answer: ${interaction.fields.getTextInputValue('answer')}` })
   })
   const channel = (await bot.channels.fetch(general)) as TextChannel
   const prompt = await channel.send({
@@ -175,6 +183,43 @@ test('buttons, selects and modals round-trip through the bot', async () => {
   expect(select.type).toBe(7)
   const { messages } = await phone.json(`/client/channels/${general}/messages`)
   expect(messages.find((m: { id: string }) => m.id === prompt.id).content).toBe('picked b')
+})
+
+test('modal selects, radio groups and checkboxes reach the bot in Discord shape, channel picks limited to visible channels', async () => {
+  const raw = new Promise<Record<string, any>>((resolve) => {
+    const on = (packet: { t?: string; d?: { type?: number; data?: Record<string, any> } }) => {
+      if (packet.t !== 'INTERACTION_CREATE' || packet.d?.type !== 5 || packet.d.data?.['custom_id'] !== 'form') return
+      bot.off('raw', on)
+      resolve(packet.d.data)
+    }
+    bot.on('raw', on)
+  })
+  bot.on('interactionCreate', async (interaction) => {
+    if (interaction.isModalSubmit() && interaction.customId === 'form') await interaction.reply({ content: 'form received' })
+  })
+  const owner = t.config.ownerUserId
+  const components = [
+    { type: 3, customId: 'flavours', id: 11, parentId: 10, values: ['apple', 'cherry'] },
+    { type: 4, customId: 'name', value: 'Bea' },
+    { type: 5, customId: 'who', values: [owner] },
+    { type: 8, customId: 'where', values: [general, '1'] },
+    { type: 21, customId: 'size', value: 'large' },
+    { type: 22, customId: 'extras', values: ['sprinkles'] },
+    { type: 23, customId: 'gift', value: true },
+  ]
+  const submit = await phone.json('/client/interactions', { method: 'POST', json: { type: 'modal', channelId: general, customId: 'form', fields: [], components } })
+  expect(submit.data.content).toBe('form received')
+  const data = await raw
+  expect(data['components']).toEqual([
+    { type: 18, id: 10, component: { type: 3, id: 11, custom_id: 'flavours', values: ['apple', 'cherry'] } },
+    { type: 18, component: { type: 4, custom_id: 'name', value: 'Bea' } },
+    { type: 18, component: { type: 5, custom_id: 'who', values: [owner] } },
+    { type: 18, component: { type: 8, custom_id: 'where', values: [general] } },
+    { type: 18, component: { type: 21, custom_id: 'size', value: 'large' } },
+    { type: 18, component: { type: 22, custom_id: 'extras', values: ['sprinkles'] } },
+    { type: 18, component: { type: 23, custom_id: 'gift', value: true } },
+  ])
+  expect(data['resolved']).toMatchObject({ users: { [owner]: { id: owner } }, members: { [owner]: {} }, channels: { [general]: { id: general } } })
 })
 
 test('slash commands and autocomplete', async () => {

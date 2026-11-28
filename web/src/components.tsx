@@ -60,16 +60,11 @@ function Button({ c, interact, disabled, first }: { c: Component; interact: Inte
   )
 }
 
-type Option = { label: string; value: string; description?: string; default?: boolean; emoji?: { name?: string } }
+export type Option = { label: string; value: string; description?: string; default?: boolean; emoji?: { name?: string } }
 
 function Select({ c, interact, disabled }: { c: Component; interact: Interact; disabled: boolean }) {
   const options: Option[] = c['options'] ?? []
-  const max = c['max_values'] ?? 1
-  const min = c['min_values'] ?? 1
-  const trigger = useRef<HTMLButtonElement>(null)
-  const [at, setAt] = useState<ReturnType<typeof below> | null>(null)
   const [picked, setPicked] = useState<string[]>(options.filter((o) => o.default).map((o) => o.value))
-  const [draft, setDraft] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const submit = async (values: string[]) => {
     setBusy(true)
@@ -77,16 +72,25 @@ function Select({ c, interact, disabled }: { c: Component; interact: Interact; d
       if (await interact({ type: 'select', customId: c['custom_id'], values }) !== false) setPicked(values)
     } finally { setBusy(false) }
   }
-  const title = c['placeholder'] || 'Make a selection'
-  const label = options.filter((o) => picked.includes(o.value)).map((o) => o.label).join(', ')
+  return <SelectMenu options={options} min={c['min_values'] ?? 1} max={c['max_values'] ?? 1} placeholder={c['placeholder']} picked={picked} busy={busy} disabled={disabled || c['disabled']} onPick={(values) => void submit(values)} />
+}
+
+/** A select's trigger and its field-anchored list (a sheet on phones). A modal's optional
+ *  select may be left empty: picking its one value again clears it, and Done takes none. */
+export function SelectMenu({ options, min, max, placeholder, picked, busy = false, disabled, optional = false, label, onPick }: { options: Option[]; min: number; max: number; placeholder?: string; picked: string[]; busy?: boolean; disabled?: boolean; optional?: boolean; label?: string; onPick: (values: string[]) => void }) {
+  const trigger = useRef<HTMLButtonElement>(null)
+  const [at, setAt] = useState<ReturnType<typeof below> | null>(null)
+  const [draft, setDraft] = useState<string[]>([])
+  const title = placeholder || 'Make a selection'
+  const shown = options.filter((o) => picked.includes(o.value)).map((o) => o.label).join(', ')
   return (
     <div className={`select${at ? ' open' : ''}`}>
-      <button ref={trigger} className="select-trigger" aria-haspopup="dialog" aria-expanded={Boolean(at)} aria-busy={busy} disabled={disabled || c['disabled']} onClick={(e) => {
+      <button type="button" ref={trigger} className="select-trigger" aria-haspopup="dialog" aria-expanded={Boolean(at)} aria-busy={busy} aria-label={label && `${label}: ${shown || title}`} disabled={disabled} onClick={(e) => {
         if (busy) return
         setDraft(picked)
         setAt(below(e.currentTarget, 'start'))
       }}>
-        <span className={label ? '' : 'muted'}>{label || title}</span>
+        <span className={shown ? '' : 'muted'}>{shown || title}</span>
         <Icon name="down" size={16} />
       </button>
       {at && trigger.current && createPortal(<Sheet spec={{ title, groups: [], at, plain: true }} onClose={() => setAt(null)} picker={{ trigger: trigger.current, body: (finish, cancel) => <>
@@ -98,7 +102,7 @@ function Select({ c, interact, disabled }: { c: Component; interact: Interact; d
                 key={option.value}
                 className={`sheet-item${option.description ? ' two-line' : ''}`} role="option" aria-selected={on} disabled={!on && max > 1 && draft.length >= max}
                 onClick={() => {
-                  if (max === 1) finish(() => void submit([option.value]))
+                  if (max === 1) finish(() => onPick(on && optional ? [] : [option.value]))
                   else setDraft(on ? draft.filter((v) => v !== option.value) : [...draft, option.value])
                 }}
               >
@@ -112,7 +116,7 @@ function Select({ c, interact, disabled }: { c: Component; interact: Interact; d
           })}
           {!options.length && <span className="choice-empty">No options available</span>}
         </div>
-        {max > 1 && <div className="choice-foot"><span className="num">{draft.length} of {max} selected</span><button className="button choice-cancel" onClick={cancel}>Cancel</button><button className="button primary" disabled={draft.length < min} onClick={() => finish(() => void submit(draft))}>Done</button></div>}
+        {max > 1 && <div className="choice-foot"><span className="num">{draft.length} of {max} selected</span><button className="button choice-cancel" onClick={cancel}>Cancel</button><button className="button primary" disabled={draft.length < min && !(optional && !draft.length)} onClick={() => finish(() => onPick(draft))}>Done</button></div>}
         {max === 1 && !options.length && <button className="button choice-cancel" onClick={cancel}>Close</button>}
       </> }} />, document.body)}
     </div>

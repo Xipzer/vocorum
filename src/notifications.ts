@@ -14,6 +14,7 @@ export const DEFAULT_LEVEL: NotificationLevel = 'mentions'
 const DEFAULT_SUBJECT = 'mailto:hub@vocorum.invalid'
 const REPEAT_MS = 3000
 const SUPPRESS_NOTIFICATIONS = 1 << 12
+const LOADING = 1 << 7
 
 export type PushKind = 'message' | 'mention' | 'needs_you' | 'reminder'
 export type PushPayload = { kind: PushKind; title: string; body: string; tag: string; url: string; channel_id: string; guild_id: string | null; message_id: string | null }
@@ -38,6 +39,8 @@ export class Notifications {
   readonly keys: VapidKeys
   private unobserve: (() => void) | null = null
   private waiting = new Set<string>()
+  // Deferred replies ("is thinking…"): they notify once, when the reply lands.
+  private thinking = new Set<string>()
   private lastPush = new Map<string, { at: number; kind: PushKind }>()
   private queue: Promise<void> = Promise.resolve()
 
@@ -66,7 +69,9 @@ export class Notifications {
   start() {
     for (const s of this.hub.sessions.list()) if (s.state === 'waiting') this.waiting.add(s.id)
     this.unobserve = this.hub.twin.observeDispatches((event, data) => {
-      if (event === 'MESSAGE_CREATE') this.enqueue(() => this.onMessage(data as MessageData))
+      const message = data as MessageData
+      if (event === 'MESSAGE_CREATE' && (message.flags ?? 0) & LOADING) this.thinking.add(message.id)
+      else if (event === 'MESSAGE_CREATE' || (event === 'MESSAGE_UPDATE' && !((message.flags ?? 0) & LOADING) && this.thinking.delete(message.id))) this.enqueue(() => this.onMessage(message))
     })
   }
 

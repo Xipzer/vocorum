@@ -38,7 +38,7 @@ export class PrivateReplies {
   edit(m: APIMessage, body: Body) {
     const r = this.rows.get(m.id)!
     r.message = { ...m, content: body.content ?? m.content, embeds: body.embeds ?? m.embeds, components: body.components ?? m.components,
-      edited_timestamp: new Date().toISOString(), flags: (body.flags ?? m.flags ?? 0) | MessageFlags.Ephemeral } as APIMessage
+      edited_timestamp: (m.flags ?? 0) & MessageFlags.Loading ? null : new Date().toISOString(), flags: ((body.flags ?? m.flags ?? 0) & ~MessageFlags.Loading) | MessageFlags.Ephemeral } as APIMessage
     this.deliver?.(r.user, r.message, false)
     return r.message
   }

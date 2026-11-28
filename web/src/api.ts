@@ -246,13 +246,15 @@ export const api = {
   messagesAfter: (channelId: string, after: string) =>
     call<{ messages: Message[]; hasMore: boolean }>(`/client/channels/${channelId}/messages?limit=100&after=${after}`),
   dismissReply: (channelId: string, id: string) => call(`/client/channels/${channelId}/private-replies/${id}`, { method: 'DELETE' }),
-  send: (channelId: string, body: { content: string; attachmentIds?: string[]; descriptions?: Record<string, string>; replyTo?: string; voice?: boolean }) =>
+  send: (channelId: string, body: { content: string; attachmentIds?: string[]; descriptions?: Record<string, string>; replyTo?: string; voice?: boolean; flags?: number }) =>
     call<Message>(`/client/channels/${channelId}/messages`, { method: 'POST', json: body }),
   edit: (channelId: string, messageId: string, content: string) => call<Message>(`/client/channels/${channelId}/messages/${messageId}`, { method: 'PATCH', json: { content } }),
   remove: (channelId: string, messageId: string) => call(`/client/channels/${channelId}/messages/${messageId}`, { method: 'DELETE' }),
   bulkDelete: (channelId: string, ids: readonly string[]) => call<{ deleted_ids: string[] }>(`/client/channels/${channelId}/messages/bulk-delete`, { method: 'POST', json: { message_ids: ids } }),
   react: (channelId: string, messageId: string, emoji: string, on: boolean) =>
     call(`/client/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`, { method: on ? 'PUT' : 'DELETE' }),
+  reactors: (channelId: string, messageId: string, emoji: string, after?: string, limit = 100) =>
+    call<User[]>(`/client/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}?limit=${limit}${after ? `&after=${after}` : ''}`),
   patchThread: (channelId: string, body: { name?: string; archived?: boolean }) => call<Channel>(`/client/channels/${channelId}`, { method: 'PATCH', json: body }),
   upload: async (file: Blob, filename: string, voice?: { durationSecs: number; waveform: string }) => {
     const form = new FormData()

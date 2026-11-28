@@ -10,6 +10,7 @@ import type { Duplex } from 'node:stream'
 import path from 'node:path'
 import url from 'node:url'
 import {
+  ApplicationCommandOptionType,
   ChannelType,
   GatewayDispatchEvents,
   InteractionType,
@@ -200,6 +201,18 @@ export type DigitalDiscordModalField = {
   customId: string
   value: string
 }
+
+// One answered component of a modal, in the modal's order, with the ids Discord echoes:
+// `id` for the component, `parentId` for its Label (or, with `row`, its legacy action row).
+export type DigitalDiscordModalComponent =
+  | { type: 10; id?: number }
+  | ({ customId: string; id?: number; parentId?: number; row?: boolean } & (
+      | { type: 4; value: string }
+      | { type: 19; attachments: APIAttachment[] }
+      | { type: 3 | 5 | 6 | 7 | 8 | 22; values: string[] }
+      | { type: 21; value: string | null }
+      | { type: 23; value: boolean }
+    ))
 
 export type DigitalDiscordMessagePredicate = (message: APIMessage) => boolean
 export type DigitalDiscordThreadPredicate = (thread: APIChannel) => boolean
@@ -1230,6 +1243,7 @@ export class DigitalDiscord {
     commandId,
     options,
     guildId,
+    attachments = [],
   }: {
     channelId: string
     userId: string
@@ -1237,6 +1251,8 @@ export class DigitalDiscord {
     commandId?: string
     options?: DigitalDiscordCommandOption[]
     guildId?: string
+    // The files behind attachment options (type 11), whose values are their ids.
+    attachments?: APIAttachment[]
   }): Promise<{ id: string; token: string }> {
     // Resolve the registered command ID by name so guild.commands.fetch()
     // works when the bot looks up the command description at runtime.
@@ -1267,6 +1283,22 @@ export class DigitalDiscord {
       return globalCmd?.id ?? generateSnowflake()
     })()
 
+    // Like Discord: user, role, mentionable, channel and attachment options
+    // carry their ids as values and the objects in data.resolved.
+    const ids = (types: number[]) => {
+      const walk = (list: DigitalDiscordCommandOption[]): string[] => list.flatMap((o) => [...(types.includes(o.type) && typeof o.value === 'string' ? [o.value] : []), ...walk(o.options ?? [])])
+      return walk(options ?? [])
+    }
+    const files = new Set(ids([ApplicationCommandOptionType.Attachment]))
+    const picked = attachments.filter((a) => files.has(a.id))
+    const resolved = {
+      ...(await this.resolveIds(
+        { users: ids([ApplicationCommandOptionType.User, ApplicationCommandOptionType.Mentionable]), roles: ids([ApplicationCommandOptionType.Role, ApplicationCommandOptionType.Mentionable]), channels: ids([ApplicationCommandOptionType.Channel]) },
+        guildId ?? (await this.prisma.channel.findUnique({ where: { id: channelId } }))?.guildId ?? this.guildId,
+      )),
+      ...(picked.length && { attachments: Object.fromEntries(picked.map((a) => [a.id, a])) }),
+    }
+
     return this.simulateInteraction({
       type: InteractionType.ApplicationCommand,
       channelId,
@@ -1277,6 +1309,7 @@ export class DigitalDiscord {
         name,
         type: 1,
         ...(options && options.length > 0 ? { options } : {}),
+        ...(Object.keys(resolved).length && { resolved }),
       },
     })
   }
@@ -1423,10 +1456,14 @@ export class DigitalDiscord {
   private async resolveSelectValues(componentType: ComponentType, values: string[], guildId: string | null) {
     const wantUsers = componentType === ComponentType.UserSelect || componentType === ComponentType.MentionableSelect
     const wantRoles = componentType === ComponentType.RoleSelect || componentType === ComponentType.MentionableSelect
-    const users = wantUsers ? await this.prisma.user.findMany({ where: { id: { in: values } } }) : []
-    const members = wantUsers && guildId ? await this.prisma.guildMember.findMany({ where: { guildId, userId: { in: values } }, include: { user: true } }) : []
-    const roles = wantRoles && guildId ? await this.prisma.role.findMany({ where: { guildId, id: { in: values } } }) : []
-    const channels = componentType === ComponentType.ChannelSelect ? await this.prisma.channel.findMany({ where: { id: { in: values } } }) : []
+    return this.resolveIds({ users: wantUsers ? values : [], roles: wantRoles ? values : [], channels: componentType === ComponentType.ChannelSelect ? values : [] }, guildId)
+  }
+
+  private async resolveIds(ids: { users: string[]; roles: string[]; channels: string[] }, guildId: string | null) {
+    const users = ids.users.length ? await this.prisma.user.findMany({ where: { id: { in: ids.users } } }) : []
+    const members = ids.users.length && guildId ? await this.prisma.guildMember.findMany({ where: { guildId, userId: { in: ids.users } }, include: { user: true } }) : []
+    const roles = ids.roles.length && guildId ? await this.prisma.role.findMany({ where: { guildId, id: { in: ids.roles } } }) : []
+    const channels = ids.channels.length ? await this.prisma.channel.findMany({ where: { id: { in: ids.channels } } }) : []
     return {
       ...(users.length && { users: Object.fromEntries(users.map((u) => [u.id, userToAPI(u)])) }),
       ...(members.length && { members: Object.fromEntries(members.map((m) => { const { user: _, ...rest } = memberToAPI(m); return [m.userId, rest] })) }),
@@ -1443,6 +1480,7 @@ export class DigitalDiscord {
     guildId,
     messageId,
     files = [],
+    components: inputs = [],
   }: {
     channelId: string
     userId: string
@@ -1453,6 +1491,7 @@ export class DigitalDiscord {
     // includes that message, so the bot can update it.
     messageId?: string
     files?: Array<{ customId: string; attachments: APIAttachment[] }>
+    components?: DigitalDiscordModalComponent[]
   }): Promise<{ id: string; token: string }> {
     const components: unknown[] = fields.map((field) => {
       return {
@@ -1469,6 +1508,26 @@ export class DigitalDiscord {
     components.push(...files.map((field) => ({ type: ComponentType.Label, component: {
       type: ComponentType.FileUpload, custom_id: field.customId, values: field.attachments.map((attachment) => attachment.id),
     } })))
+    const attachments = files.flatMap((field) => field.attachments)
+    for (const input of inputs) {
+      if (input.type === ComponentType.TextDisplay) {
+        components.push({ type: input.type, ...(input.id !== undefined && { id: input.id }) })
+        continue
+      }
+      const { customId, id, parentId, row, ...answer } = input
+      if (answer.type === ComponentType.FileUpload) attachments.push(...answer.attachments)
+      const component = { ...(answer.type === ComponentType.FileUpload ? { type: answer.type, values: answer.attachments.map((attachment) => attachment.id) } : answer), ...(id !== undefined && { id }), custom_id: customId }
+      const wrapper = parentId !== undefined ? { id: parentId } : {}
+      components.push(row ? { type: ComponentType.ActionRow, ...wrapper, components: [component] } : { type: ComponentType.Label, ...wrapper, component })
+    }
+    // User, role, mentionable and channel selects carry their picks in `resolved`, like Discord.
+    const resolved: Record<string, Record<string, unknown>> = { attachments: Object.fromEntries(attachments.map((attachment) => [attachment.id, attachment])) }
+    let guild: string | null | undefined
+    for (const input of inputs) {
+      if (input.type < ComponentType.UserSelect || input.type > ComponentType.ChannelSelect || !('values' in input)) continue
+      guild ??= guildId ?? (await this.prisma.channel.findUnique({ where: { id: channelId } }))?.guildId ?? this.guildId
+      for (const [key, map] of Object.entries(await this.resolveSelectValues(input.type, input.values, guild))) resolved[key] = { ...resolved[key], ...map }
+    }
 
     return this.simulateInteraction({
       type: InteractionType.ModalSubmit,
@@ -1479,7 +1538,7 @@ export class DigitalDiscord {
       data: {
         custom_id: customId,
         components,
-        resolved: { attachments: Object.fromEntries(files.flatMap((field) => field.attachments.map((attachment) => [attachment.id, attachment]))) },
+        resolved,
       },
     })
   }
@@ -2307,12 +2366,14 @@ export class ScopedUserActor {
     guildId,
     messageId,
     files,
+    components,
   }: {
     customId: string
     fields: DigitalDiscordModalField[]
     guildId?: string
     messageId?: string
     files?: Array<{ customId: string; attachments: APIAttachment[] }>
+    components?: DigitalDiscordModalComponent[]
   }) {
     return this.discord.simulateModalSubmit({
       channelId: this.channelId,
@@ -2322,6 +2383,7 @@ export class ScopedUserActor {
       guildId,
       messageId,
       files,
+      components,
     })
   }
 }

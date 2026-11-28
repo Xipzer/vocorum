@@ -10,7 +10,7 @@ import path from 'node:path'
 import type http from 'node:http'
 import { ChannelType, MessageFlags, MessageType } from 'discord-api-types/v10'
 import type { APIAttachment, APIMessage } from 'discord-api-types/v10'
-import { generateSnowflake, withThreads } from 'discord-digital-twin/src'
+import { generateSnowflake, withThreads, type DigitalDiscordModalComponent } from 'discord-digital-twin/src'
 import { channelToAPI, messageToAPI, roleToAPI, userToAPI } from 'discord-digital-twin/src/serializers'
 import { toOggOpus } from './attachments.ts'
 import { HttpError } from './auth.ts'
@@ -158,6 +158,17 @@ export class ClientApi {
     if ((params = match('/client/channels/:id/messages/:mid', pathname))) {
       if (method === 'PATCH') return send(200, await this.editMessage(v, params['id']!, params['mid']!, await readJson(req)))
       if (method === 'DELETE') return send(204, await this.deleteMessage(v, params['id']!, params['mid']!))
+    }
+    // Who reacted with an emoji, as Discord's GET .../reactions/{emoji}: users by ID, after= and limit= (1-100, default 25).
+    if ((params = match('/client/channels/:id/messages/:mid/reactions/:emoji', pathname)) && method === 'GET') {
+      const message = await this.messageIn(v, params['id']!, params['mid']!, P.READ_MESSAGE_HISTORY)
+      const query = new URL(req.url ?? '/', 'http://x').searchParams
+      const limit = Math.min(Math.max(Number(query.get('limit')) || 25, 1), 100)
+      const after = /^\d{1,20}$/.test(query.get('after') ?? '') ? BigInt(query.get('after')!) : -1n
+      const ids = (await this.prisma.reaction.findMany({ where: { messageId: message.id, emoji: params['emoji']! }, select: { userId: true } }))
+        .map((r) => r.userId).filter((id) => BigInt(id) > after).sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1)).slice(0, limit)
+      const users = new Map((await this.prisma.user.findMany({ where: { id: { in: ids } } })).map((u) => [u.id, u]))
+      return send(200, ids.flatMap((id) => (users.has(id) ? [userToAPI(users.get(id)!)] : [])))
     }
     if ((params = match('/client/channels/:id/messages/:mid/reactions/:emoji', pathname)) && (method === 'PUT' || method === 'DELETE')) {
       await this.messageIn(v, params['id']!, params['mid']!, method === 'PUT' ? P.ADD_REACTIONS : 0n)
@@ -569,7 +580,7 @@ export class ClientApi {
       userId: v.userId,
       content: voice ? '' : content,
       attachments,
-      ...(voice && { flags: MessageFlags.IsVoiceMessage }),
+      flags: (voice ? MessageFlags.IsVoiceMessage : 0) | (Number(body['flags']) & MessageFlags.SuppressNotifications),
       ...(replyTo && { type: MessageType.Reply, messageReference: { message_id: replyTo, channel_id: channelId, guild_id: channel.guildId ?? undefined } }),
     })
     return message
@@ -746,13 +757,42 @@ export class ClientApi {
         for (const field of Array.isArray(body['files']) ? body['files'] : []) {
           if (field && typeof field === 'object' && typeof field.customId === 'string') files.push({ customId: field.customId, attachments: await this.attachmentsFor(v, field.attachmentIds) })
         }
-        started = await this.hub.twin.simulateModalSubmit({ ...base, fields, messageId, files })
+        const components = await this.modalComponents(v, body['components'])
+        started = await this.hub.twin.simulateModalSubmit({ ...base, fields, messageId, files, components })
         break
       }
       default:
         throw new HttpError(400, 'type must be button, select or modal')
     }
     return this.waitForAck(started.id, { channel: channelId, kind: String(body['type']) })
+  }
+
+  // A modal's answers in its order, as the client sends them: [{type, customId, id?, parentId?, row?, value | values | attachmentIds}].
+  private async modalComponents(v: Viewer, raw: unknown) {
+    const strings = (value: unknown) => (Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string').slice(0, 25).map((id) => id.slice(0, 100)) : [])
+    const int = (value: unknown) => (Number.isInteger(value) ? (value as number) : undefined)
+    let visible: Set<string> | undefined
+    const out: DigitalDiscordModalComponent[] = []
+    for (const item of Array.isArray(raw) ? raw.slice(0, 40) : []) {
+      if (!item || typeof item !== 'object') continue
+      const type = item.type
+      if (type === 10) {
+        out.push({ type, id: int(item.id) })
+        continue
+      }
+      if (typeof item.customId !== 'string') continue
+      const base = { customId: item.customId.slice(0, 100), id: int(item.id), parentId: int(item.parentId), row: item.row === true }
+      if (type === 4) out.push({ ...base, type, value: typeof item.value === 'string' ? item.value.slice(0, 4000) : '' })
+      else if (type === 19) out.push({ ...base, type, attachments: await this.attachmentsFor(v, item.attachmentIds) })
+      else if (type === 3 || type === 5 || type === 6 || type === 7 || type === 22) out.push({ ...base, type, values: strings(item.values) })
+      // A channel menu can only pick channels the person can see.
+      else if (type === 8) {
+        visible ??= await this.hub.access.visibleChannels(v.userId)
+        out.push({ ...base, type, values: strings(item.values).filter((id) => visible!.has(id)) })
+      } else if (type === 21) out.push({ ...base, type, value: typeof item.value === 'string' ? item.value.slice(0, 100) : null })
+      else if (type === 23) out.push({ ...base, type, value: item.value === true })
+    }
+    return out
   }
 
   // Discord hides a command from members without its default_member_permissions; so does the hub.
@@ -772,7 +812,11 @@ export class ClientApi {
   async command(v: Viewer, body: Body) {
     const channelId = str(body['channelId'], 'channelId')
     await this.checkCommand(v, channelId, str(body['name'], 'name'))
-    const started = await this.hub.twin.simulateSlashCommand({ channelId, userId: v.userId, name: str(body['name'], 'name'), options: commandOptions(body['options']) })
+    const options = commandOptions(body['options'])
+    // Attachment options carry the id of a file this device uploaded.
+    const fileIds = (list: CommandOption[]): string[] => list.flatMap((o) => [...(o.type === 11 && typeof o.value === 'string' ? [o.value] : []), ...fileIds(o.options ?? [])])
+    const attachments = await this.attachmentsFor(v, fileIds(options))
+    const started = await this.hub.twin.simulateSlashCommand({ channelId, userId: v.userId, name: str(body['name'], 'name'), options, attachments })
     const name = String(body['name'])
     return this.waitForAck(started.id, { channel: channelId, kind: 'command', command: /^[\w-]{1,32}$/.test(name) ? name : '(command)' })
   }

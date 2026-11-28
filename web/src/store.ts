@@ -262,7 +262,7 @@ class Store {
   // HTTP receipt must never overwrite a newer edit or create a second row.
   // The owner's message shows as soon as they press Enter, as on Discord; the hub's copy
   // replaces it when it comes back (the reply to the send or its live event, whichever is first).
-  sendLocal(channelId: string, content: string, replyTo?: string) {
+  sendLocal(channelId: string, content: string, replyTo?: string, flags?: number) {
     const page = this.data.messages[channelId], state = this.data.state
     // The owner's name and picture come from their own last message here, else the user list.
     const me = state && (page?.list.findLast((m) => m.author.id === state.me.id && !m.local)?.author ?? state.users.find((u) => u.id === state.me.id))
@@ -270,7 +270,7 @@ class Store {
     const now = (BigInt(Date.now()) - 1420070400000n) << 22n
     const tail = BigInt(page.list.at(-1)?.id ?? '0') + 1n
     const id = String(now > tail ? now : tail)
-    const m: Message = { id, channel_id: channelId, author: me, content, timestamp: new Date().toISOString(), edited_timestamp: null, type: replyTo ? 19 : 0, attachments: [], embeds: [], ...(replyTo && { message_reference: { message_id: replyTo, channel_id: channelId } }), local: true }
+    const m: Message = { id, channel_id: channelId, author: me, content, timestamp: new Date().toISOString(), edited_timestamp: null, type: replyTo ? 19 : 0, attachments: [], embeds: [], ...(flags && { flags }), ...(replyTo && { message_reference: { message_id: replyTo, channel_id: channelId } }), local: true }
     this.setMessages(channelId, { ...page, list: [...page.list, m], arrival: id })
     return id
   }

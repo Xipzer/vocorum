@@ -399,7 +399,30 @@ export function createServer({
     const author = await prisma.user.findUniqueOrThrow({ where: { id: actor() } })
     return privateReplies.create(meta, userToAPI(author), interaction.channelId, interaction.applicationId, body)
   }
-  const deferredPrivate = (interaction: { type: number; data: string | null; messageId: string | null }) => !interaction.messageId && interaction.type === InteractionResponseType.DeferredChannelMessageWithSource && Boolean((JSON.parse(interaction.data ?? '{}')?.flags ?? 0) & MessageFlags.Ephemeral)
+  // An edit of an interaction's message. The first edit of a deferred reply ends its
+  // "is thinking…" state, which Discord does not mark as an edit.
+  const editInteractionMessage = async (messageId: string, body: RESTPatchAPIChannelMessageJSONBody) => {
+    const existing = await prisma.message.findUnique({ where: { id: messageId } })
+    if (!existing) throw unknownMessage()
+    const loading = Boolean(existing.flags & MessageFlags.Loading)
+    const dbMessage = await prisma.message.update({
+      where: { id: messageId },
+      data: {
+        content: body.content ?? existing.content,
+        ...(loading ? {} : { editedTimestamp: new Date() }),
+        ...(body.embeds ? { embeds: JSON.stringify(body.embeds) } : {}),
+        ...(body.components ? { components: JSON.stringify(body.components) } : {}),
+        ...(body.flags != null || loading ? { flags: channelFlags(body.flags ?? existing.flags) & ~MessageFlags.Loading } : {}),
+      },
+    })
+    const author = await prisma.user.findUniqueOrThrow({ where: { id: dbMessage.authorId } })
+    const channel = await prisma.channel.findUnique({ where: { id: dbMessage.channelId } })
+    const guildId = channel?.guildId ?? undefined
+    const member = guildId ? await prisma.guildMember.findUnique({ where: { guildId_userId: { guildId, userId: dbMessage.authorId } }, include: { user: true } }) : null
+    const apiMessage = messageToAPI(dbMessage, author, guildId, member ?? undefined)
+    gateway.broadcast(GatewayDispatchEvents.MessageUpdate, { ...apiMessage, guild_id: guildId })
+    return apiMessage
+  }
   const interactionMeta = (id: string) => {
     const stored = interactions.get(id)
     return stored ? JSON.stringify(stored) : null
@@ -1872,27 +1895,29 @@ export function createServer({
           'data' in body ? body.data : null
         ) as APIInteractionResponseCallbackData | null
 
-        // Type 4 (CHANNEL_MESSAGE_WITH_SOURCE) creates a message immediately
+        // Type 4 (CHANNEL_MESSAGE_WITH_SOURCE) creates a message immediately. Type 5
+        // creates Discord's "is thinking…" message (LOADING), which the first edit or
+        // follow-up turns into the reply.
         const privateSource = privateReplies.forWebhook(existing, existing.messageId, interactions.get(existing.interactionId)?.user.id)
-        const privateResponse = callbackType === InteractionResponseType.ChannelMessageWithSource && Boolean((data?.flags ?? 0) & MessageFlags.Ephemeral)
+        const deferred = callbackType === InteractionResponseType.DeferredChannelMessageWithSource
+        const privateResponse = (callbackType === InteractionResponseType.ChannelMessageWithSource || deferred) && Boolean((data?.flags ?? 0) & MessageFlags.Ephemeral)
         if (privateResponse) {
-          messageId = (await privateReply(existing, data ?? {})).id
-        } else if (callbackType === InteractionResponseType.DeferredChannelMessageWithSource) {
-          messageId = null
+          messageId = (await privateReply(existing, deferred ? { flags: MessageFlags.Loading } : data ?? {})).id
         } else if (privateSource && callbackType === InteractionResponseType.UpdateMessage) {
           privateReplies.edit(privateSource, data ?? {})
-        } else if (callbackType === InteractionResponseType.ChannelMessageWithSource) {
+        } else if (callbackType === InteractionResponseType.ChannelMessageWithSource || deferred) {
+          const reply: APIInteractionResponseCallbackData | null = deferred ? { flags: MessageFlags.Loading } : data
           messageId = generateSnowflake()
           await prisma.message.create({
             data: {
               id: messageId,
               channelId: existing.channelId,
               authorId: actor(),
-              content: data?.content ?? '',
-              tts: data?.tts ?? false,
-              flags: data?.flags ?? 0,
-              embeds: JSON.stringify(data?.embeds ?? []),
-              components: JSON.stringify(data?.components ?? []),
+              content: reply?.content ?? '',
+              tts: reply?.tts ?? false,
+              flags: reply?.flags ?? 0,
+              embeds: JSON.stringify(reply?.embeds ?? []),
+              components: JSON.stringify(reply?.components ?? []),
               webhookId: existing.applicationId,
               applicationId: existing.applicationId,
               interactionMetadata: interactionMeta(existing.interactionId),
@@ -2026,12 +2051,12 @@ export function createServer({
         // Look up the interaction to find which channel to post in
         const interaction = await interactionByToken(prisma, params.webhook_id, params.webhook_token)
 
-        const firstDeferred = deferredPrivate(interaction)
-        if (firstDeferred || ((body.flags ?? 0) & MessageFlags.Ephemeral)) {
-          const message = await privateReply(interaction, body)
-          if (firstDeferred) await prisma.interactionResponse.update({ where: { interactionId: interaction.interactionId }, data: { messageId: message.id } })
-          return message
-        }
+        // The first follow-up after a deferral replaces the "is thinking…" message.
+        const thinking = interaction.type === InteractionResponseType.DeferredChannelMessageWithSource && interaction.messageId
+        const privateOriginal = thinking ? privateReplies.forWebhook(interaction, thinking, interactions.get(interaction.interactionId)?.user.id) : undefined
+        if (privateOriginal && (privateOriginal.flags ?? 0) & MessageFlags.Loading) return privateReplies.edit(privateOriginal, body)
+        if (thinking && !privateOriginal && ((await prisma.message.findUnique({ where: { id: thinking } }))?.flags ?? 0) & MessageFlags.Loading) return editInteractionMessage(thinking, { ...body, flags: (body.flags ?? 0) & ~MessageFlags.Ephemeral })
+        if ((body.flags ?? 0) & MessageFlags.Ephemeral) return privateReply(interaction, body)
         const messageId = generateSnowflake()
         await prisma.message.create({
           data: {
@@ -2151,128 +2176,10 @@ export function createServer({
         const interaction = await interactionByToken(prisma, params.webhook_id, params.webhook_token)
         const resolvedId = resolveWebhookMessageId(params.message_id)
 
-        // For @original, look up the interaction response's messageId.
-        if (resolvedId === '@original' && !interaction.messageId && (deferredPrivate(interaction) || ((body.flags ?? 0) & MessageFlags.Ephemeral))) {
-          const message = await privateReply(interaction, body)
-          await prisma.interactionResponse.update({ where: { interactionId: interaction.interactionId }, data: { messageId: message.id } })
-          return message
-        }
         const privateMessage = privateReplies.forWebhook(interaction, resolvedId === '@original' ? interaction.messageId : resolvedId, interactions.get(interaction.interactionId)?.user.id)
         if (privateMessage) return privateReplies.edit(privateMessage, body)
-        // If deferred (no messageId yet), create the message on first edit.
-        let wasNewlyCreated = false
-        const messageId = await (async () => {
-          if (resolvedId === '@original') {
-            if (!interaction) {
-              throw new Response(
-                JSON.stringify({
-                  code: 10062,
-                  message: 'Unknown Interaction',
-                  errors: {},
-                }),
-                {
-                  status: 404,
-                  headers: { 'Content-Type': 'application/json' },
-                },
-              )
-            }
-            if (!interaction.messageId) {
-              // Deferred interaction -- create the message on first edit
-              const newId = generateSnowflake()
-              await prisma.message.create({
-                data: {
-                  id: newId,
-                  channelId: interaction.channelId,
-                  authorId: actor(),
-                  content: body.content ?? '',
-                  flags: body.flags ?? 0,
-                  embeds: JSON.stringify(body.embeds ?? []),
-                  components: JSON.stringify(body.components ?? []),
-                  webhookId: interaction.applicationId,
-                  applicationId: interaction.applicationId,
-                  interactionMetadata: interactionMeta(interaction.interactionId),
-                  type: MessageType.Default,
-                },
-              })
-              await prisma.channel.update({
-                where: { id: interaction.channelId },
-                data: {
-                  lastMessageId: newId,
-                  messageCount: { increment: 1 },
-                  totalMessageSent: { increment: 1 },
-                },
-              })
-              await prisma.interactionResponse.update({
-                where: { interactionId: interaction.interactionId },
-                data: { messageId: newId },
-              })
-              wasNewlyCreated = true
-              return newId
-            }
-            return interaction.messageId
-          }
-          return (await interactionMessage(prisma, interaction, resolvedId)).id
-        })()
-
-        const existing = await prisma.message.findUnique({
-          where: { id: messageId },
-        })
-        if (!existing) {
-          throw new Response(
-            JSON.stringify({
-              code: 10008,
-              message: 'Unknown Message',
-              errors: {},
-            }),
-            { status: 404, headers: { 'Content-Type': 'application/json' } },
-          )
-        }
-
-        // Skip the DB update if we just created the message (deferred case)
-        if (!wasNewlyCreated) {
-          await prisma.message.update({
-            where: { id: messageId },
-            data: {
-              content: body.content ?? existing.content,
-              editedTimestamp: new Date(),
-              ...(body.embeds ? { embeds: JSON.stringify(body.embeds) } : {}),
-              ...(body.components
-                ? { components: JSON.stringify(body.components) }
-                : {}),
-              ...(body.flags != null ? { flags: channelFlags(body.flags) } : {}),
-            },
-          })
-        }
-
-        const dbMessage = await prisma.message.findUniqueOrThrow({
-          where: { id: messageId },
-        })
-        const author = await prisma.user.findUniqueOrThrow({
-          where: { id: dbMessage.authorId },
-        })
-        const channel = await prisma.channel.findUnique({
-          where: { id: dbMessage.channelId },
-        })
-        const guildId = channel?.guildId ?? undefined
-        const member = guildId
-          ? await prisma.guildMember.findUnique({
-              where: {
-                guildId_userId: { guildId, userId: dbMessage.authorId },
-              },
-              include: { user: true },
-            })
-          : null
-        const apiMessage = messageToAPI(
-          dbMessage,
-          author,
-          guildId,
-          member ?? undefined,
-        )
-        // editReply after deferReply materialises the first visible message. Clients
-        // have nothing to edit yet; later edits target that same message id.
-        if (wasNewlyCreated) gateway.broadcastMessageCreate(apiMessage, guildId ?? '')
-        else gateway.broadcast(GatewayDispatchEvents.MessageUpdate, { ...apiMessage, guild_id: guildId })
-        return apiMessage
+        if (resolvedId === '@original' && !interaction.messageId) throw unknownMessage()
+        return editInteractionMessage(resolvedId === '@original' ? interaction.messageId! : (await interactionMessage(prisma, interaction, resolvedId)).id, body)
       },
     })
     .route({
