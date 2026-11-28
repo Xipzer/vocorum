@@ -7,7 +7,7 @@ import { BOARD_UPDATED } from './board-document.ts'
 import { forgetMissingImages } from './Avatar.tsx'
 import { forgetRunClocks, sampleRun } from './run-clock.ts'
 import { displayName, machineLabel } from './text.ts'
-import { api, type HubRequest, type MachineRoutines, type Reminder, type Schedule, toReminder, type Channel, type HubState, type MachineSummary, type Message, type Command, type Guild, type Service, type SessionLink, type SessionSummary, type User, type Role, type GuildMember, type Overwrite, type ChosenStatus, type CustomStatus } from './api.ts'
+import { api, type Bookmark, type HubRequest, type MachineRoutines, type Reminder, type Schedule, toReminder, type Channel, type HubState, type MachineSummary, type Message, type Command, type Guild, type Service, type SessionLink, type SessionSummary, type User, type Role, type GuildMember, type Overwrite, type ChosenStatus, type CustomStatus } from './api.ts'
 
 // Messages not loaded between two loaded ones: more than a page arrived while this view slept.
 export type Gap = { after: string; before: string }
@@ -41,6 +41,8 @@ type Data = {
   reminders: Reminder[] | null
   // Messages waiting to be posted (and ones that failed), soonest first.
   scheduled: Schedule[]
+  // This person's bookmarked messages, newest first; null until loaded.
+  bookmarks: Bookmark[] | null
   routines: MachineRoutines[]
   // A short confirmation ("Reminder set for 15:40"), shown for a few seconds.
   notice: string | null
@@ -69,7 +71,7 @@ export function dmName(c: Channel, me: string) {
 }
 
 class Store {
-  data: Data = { state: null, messages: {}, privateReplies: {}, typing: {}, online: false, seen: JSON.parse(localStorage.getItem('seen') ?? '{}'), sessions: {}, machines: [], favourites: [], mentions: {}, links: {}, output: {}, services: null, linked: {}, requests: [], held: {}, reminders: null, scheduled: [], routines: [], notice: null }
+  data: Data = { state: null, messages: {}, privateReplies: {}, typing: {}, online: false, seen: JSON.parse(localStorage.getItem('seen') ?? '{}'), sessions: {}, machines: [], favourites: [], mentions: {}, links: {}, output: {}, services: null, linked: {}, requests: [], held: {}, reminders: null, scheduled: [], bookmarks: null, routines: [], notice: null }
   private unsentRead: Record<string, string> = {}
   private readTimer: number | undefined
   private accessTimer: number | undefined
@@ -106,9 +108,15 @@ class Store {
   // (a DM opened, a role switched during a resync), so they are applied again on top.
   private loading = 0
   private late: Array<[string, any]> = []
+  // New messages during a state load: a snapshot taken before one would lose its unread mark
+  // and mention count, so those are put back when the snapshot is older.
+  private lateMessages: Array<{ channelId: string; id: string; mention: boolean }> = []
 
   async loadState() {
-    if (this.loading++ === 0) this.late = []
+    if (this.loading++ === 0) {
+      this.late = []
+      this.lateMessages = []
+    }
     let state: Awaited<ReturnType<typeof api.state>>
     try {
       state = await api.state()
@@ -129,7 +137,14 @@ class Store {
     }
     localStorage.setItem('seen', JSON.stringify(seen))
     this.set({ state, seen, favourites: state.favourites ?? [], mentions: state.mentions ?? {}, links: state.links ?? {}, output: state.output ?? {} })
-    if (this.loading === 0) for (const [t, d] of this.late.splice(0)) this.apply(t, d)
+    if (this.loading === 0) {
+      for (const [t, d] of this.late.splice(0)) this.apply(t, d)
+      for (const m of this.lateMessages.splice(0)) {
+        if (!snowflakeGt(m.id, this.channel(m.channelId)?.last_message_id)) continue
+        if (m.mention && snowflakeGt(m.id, this.data.seen[m.channelId])) this.set({ mentions: { ...this.data.mentions, [m.channelId]: (this.data.mentions[m.channelId] ?? 0) + 1 } })
+        this.bumpLastMessage(m.channelId, m.id)
+      }
+    }
     void this.loadOverview()
     void api.schedules().then(
       ({ schedules }) =>
@@ -139,6 +154,7 @@ class Store {
         }),
       () => this.set({ reminders: null, scheduled: [] }),
     )
+    void api.bookmarks().then(({ bookmarks }) => this.set({ bookmarks }), () => {})
     void api.routines().then(({ machines }) => this.set({ routines: machines }), () => this.set({ routines: [] }))
     // Services and machine health are the hub owner's alone.
     if (state.hub_owner !== false) {
@@ -434,6 +450,7 @@ class Store {
     const gone = new Set(ids)
     const remove = (list: Message[]) => list.filter((m) => !(m.channel_id === channelId && gone.has(m.id)))
     this.patchMessages(channelId, remove)
+    if (this.data.bookmarks?.some((b) => gone.has(b.message.id))) this.set({ bookmarks: this.data.bookmarks.filter((b) => !gone.has(b.message.id)) })
     // A loaded thread can also show its parent's starter.
     for (const t of this.data.state?.threads ?? []) if (t.parent_id === channelId && this.data.messages[t.id]?.list.some((m) => gone.has(m.id))) this.patchMessages(t.id, remove)
   }
@@ -499,7 +516,9 @@ class Store {
         // Only fresh ones: a message older than a minute is history arriving late, not news.
         if (Date.now() - Number((BigInt(message.id) >> 22n) + 1420070400000n) < 60_000) for (const listener of incoming) listener(message)
         const me = this.data.state?.me.id
-        if (me && message.author.id !== me && ((message.content ?? '').includes(`<@${me}>`) || message.mentions?.some((u) => u.id === me)) && snowflakeGt(message.id, this.data.seen[message.channel_id]))
+        const mention = Boolean(me && message.author.id !== me && ((message.content ?? '').includes(`<@${me}>`) || message.mentions?.some((u) => u.id === me)))
+        if (this.loading) this.lateMessages.push({ channelId: message.channel_id, id: message.id, mention })
+        if (mention && snowflakeGt(message.id, this.data.seen[message.channel_id]))
           this.set({ mentions: { ...this.data.mentions, [message.channel_id]: (this.data.mentions[message.channel_id] ?? 0) + 1 } })
         this.receiveMessage(message)
         this.bumpLastMessage(message.channel_id, message.id)
@@ -516,9 +535,17 @@ class Store {
           // Full replacement: Discord omits empty fields (components: []).
           const replace = (list: Message[]) => list.map((m) => (m.id === d.id ? { ...(d as Message), reactions_summary: m.reactions_summary } : m))
           this.patchMessages(d.channel_id, replace)
+          if (this.data.bookmarks?.some((b) => b.message.id === d.id)) this.set({ bookmarks: this.data.bookmarks.map((b) => (b.message.id === d.id ? { ...b, message: { ...b.message, ...(d as Message) } } : b)) })
           // A thread starter is shown inside its thread too.
           for (const thread of this.data.state?.threads ?? []) if (thread.parent_id === d.channel_id && this.data.messages[thread.id]?.list.some(m => m.id === d.id)) this.patchMessages(thread.id, replace)
         }
+        break
+      // Another of this person's devices bookmarked a message, or one went.
+      case 'SAVED_MESSAGE_CREATE':
+        this.upsertBookmark(d as Bookmark)
+        break
+      case 'SAVED_MESSAGE_DELETE':
+        this.set({ bookmarks: this.data.bookmarks?.filter((b) => b.message.id !== d.message_id) ?? null })
         break
       case 'MESSAGE_DELETE':
         this.removeMessages(d.channel_id, [d.id])
@@ -729,6 +756,28 @@ class Store {
 
   upsertReminder(reminder: Reminder) {
     this.set({ reminders: sortReminders([reminder, ...(this.data.reminders ?? []).filter((r) => r.id !== reminder.id)]) })
+  }
+
+  isBookmarked(messageId: string) {
+    return Boolean(this.data.bookmarks?.some((b) => b.message.id === messageId))
+  }
+
+  upsertBookmark(bookmark: Bookmark) {
+    this.set({ bookmarks: [bookmark, ...(this.data.bookmarks ?? []).filter((b) => b.message.id !== bookmark.message.id)].sort((a, b) => b.saved_at.localeCompare(a.saved_at)) })
+  }
+
+  async toggleBookmark(channelId: string, messageId: string) {
+    if (this.isBookmarked(messageId)) {
+      const before = this.data.bookmarks
+      this.set({ bookmarks: before!.filter((b) => b.message.id !== messageId) })
+      await api.bookmark(channelId, messageId, false).catch((e: Error) => {
+        this.set({ bookmarks: before })
+        throw e
+      })
+    } else {
+      const saved = await api.bookmark(channelId, messageId, true)
+      if (saved) this.upsertBookmark(saved)
+    }
   }
 
   dropReminder(id: string) {

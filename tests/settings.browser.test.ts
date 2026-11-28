@@ -217,6 +217,105 @@ test.skipIf(!ready)('settings: user settings are a centred dialog, server settin
   await dialog(page, 'Server settings').waitFor({ state: 'detached' })
 })
 
+test.skipIf(!ready)('settings: search keeps the sections whose name or settings match, Enter opens the first', async () => {
+  await openSettings(page)
+  const user = dialog(page, 'User settings')
+  const sections = () => user.locator('.settings-nav-item').allTextContents()
+  const search = user.getByRole('searchbox', { name: 'Search settings' })
+  await search.fill('colour')
+  await expect.poll(sections).toEqual(['My account', 'Appearance'])
+  await search.fill('reduced motion')
+  await expect.poll(sections).toEqual(['Appearance'])
+  await search.press('Enter')
+  await user.locator('.settings-head').getByRole('heading', { name: 'Appearance' }).waitFor()
+  await search.fill('qqq')
+  await expect.poll(sections).toEqual([])
+  await user.getByText('No settings match.').waitFor()
+  await search.fill('')
+  await expect.poll(async () => (await sections()).length).toBeGreaterThan(4)
+  await page.keyboard.press('Escape')
+  await user.waitFor({ state: 'detached' })
+})
+
+test.skipIf(!ready)('settings: compact message display puts the name on the text line without an avatar, the group space applies, both kept on this device', async () => {
+  await page.locator('.sidebar .channel', { hasText: 'kimaki' }).first().click()
+  const head = page.locator('section.chat .message:has(.message-head)').first()
+  await head.waitFor()
+  const layout = () =>
+    head.evaluate((m) => {
+      const box = (s: string) => m.querySelector(s)!.getBoundingClientRect()
+      return {
+        inline: Math.abs(box('.author').top - box('.markdown').top) < 2,
+        avatar: getComputedStyle(m.querySelector('.author-avatar')!).display !== 'none',
+        gap: parseFloat(getComputedStyle(m).marginTop),
+      }
+    })
+  await expect.poll(layout).toEqual({ inline: false, avatar: true, gap: 17 })
+
+  await openSettings(page)
+  await dialog(page).getByRole('button', { name: 'Accessibility', exact: true }).click()
+  await dialog(page).getByRole('radiogroup', { name: 'Chat message display' }).getByText('Compact').click()
+  const space = dialog(page).getByRole('slider', { name: 'Space between message groups' })
+  await space.focus()
+  await page.keyboard.press('ArrowLeft')
+  await expect.poll(() => space.getAttribute('aria-valuetext')).toBe('8px')
+  await page.keyboard.press('Escape')
+  await dialog(page).waitFor({ state: 'detached' })
+  await expect.poll(layout).toEqual({ inline: true, avatar: false, gap: 8 })
+
+  await page.reload()
+  await head.waitFor()
+  await expect.poll(layout).toEqual({ inline: true, avatar: false, gap: 8 })
+
+  await openSettings(page)
+  await dialog(page).getByRole('button', { name: 'Accessibility', exact: true }).click()
+  await dialog(page).getByRole('radiogroup', { name: 'Chat message display' }).getByText('Default').click()
+  await space.focus()
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('Escape')
+  await dialog(page).waitFor({ state: 'detached' })
+  await expect.poll(layout).toEqual({ inline: false, avatar: true, gap: 17 })
+})
+
+test.skipIf(!ready)('settings: text size in chat scales message text and its line height, kept on this device', async () => {
+  await page.locator('.sidebar .channel', { hasText: 'kimaki' }).first().click()
+  const text = page.locator('section.chat .message .markdown').first()
+  await text.waitFor()
+  const size = () => text.evaluate((e) => [getComputedStyle(e).fontSize, getComputedStyle(e).lineHeight])
+  await expect.poll(size).toEqual(['16px', '22px'])
+
+  await openSettings(page)
+  await dialog(page).getByRole('button', { name: 'Accessibility', exact: true }).click()
+  const font = dialog(page).getByRole('slider', { name: 'Text size in chat' })
+  await font.focus()
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('ArrowRight')
+  await expect.poll(() => font.getAttribute('aria-valuetext')).toBe('20px')
+  // The preview follows at once.
+  expect(await dialog(page).locator('.settings-preview .markdown').first().evaluate((e) => getComputedStyle(e).fontSize)).toBe('20px')
+  await page.keyboard.press('Escape')
+  await dialog(page).waitFor({ state: 'detached' })
+  await expect.poll(size).toEqual(['20px', '27.5px'])
+  // The rest of the app keeps its size.
+  expect(await page.locator('.sidebar .channel').first().evaluate((e) => getComputedStyle(e).fontSize)).not.toBe('20px')
+
+  await page.reload()
+  await text.waitFor()
+  await expect.poll(size).toEqual(['20px', '27.5px'])
+
+  await openSettings(page)
+  await dialog(page).getByRole('button', { name: 'Accessibility', exact: true }).click()
+  await font.focus()
+  await page.keyboard.press('Home')
+  await expect.poll(() => font.getAttribute('aria-valuetext')).toBe('12px')
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('Escape')
+  await dialog(page).waitFor({ state: 'detached' })
+  await expect.poll(size).toEqual(['16px', '22px'])
+})
+
 // Verify persisted state in the same signed-in context. Only the application's reloads
 // should pass through the 800 ms delay above; test assertions should not create stale reloads.
 const state = async (p: Page) => {

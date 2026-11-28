@@ -8,7 +8,7 @@ import { below, Sheet, type SheetSpec } from './Sheet.tsx'
 import { profileSheet, type ProfileOf } from './Profile.tsx'
 import { liveCustom, ownStatus, STATUS_TEXT } from './Status.tsx'
 import { startAuthentication } from '@simplewebauthn/browser'
-import { api, call, type Channel, type HubRequest, type Reminder, type FoundChannel, type LinkKind, type Mention, type Message, type SearchResult, type Service, type ServiceEvent, type SessionSummary } from './api.ts'
+import { api, call, type Bookmark, type Channel, type HubRequest, type Reminder, type FoundChannel, type LinkKind, type Mention, type Message, type SearchResult, type Service, type ServiceEvent, type SessionSummary } from './api.ts'
 import { Avatar, machineIcon } from './Avatar.tsx'
 import { Icon, type IconName } from './icons.tsx'
 import { E } from './emoji.tsx'
@@ -435,6 +435,7 @@ export function InboxPanel({ onClose, onJump, onOpen }: { onClose: () => void; o
   const due = reminders.filter(isDue).reverse()
   const upcoming = reminders.filter((r) => !isDue(r))
   const more = extensions.reduce((sum, e) => sum + (e.useInboxCount?.() ?? 0), 0)
+  const bookmarks = useStore((d) => d.bookmarks) ?? []
   return (
     <Panel
       title="Inbox"
@@ -493,9 +494,46 @@ export function InboxPanel({ onClose, onJump, onOpen }: { onClose: () => void; o
           </div>
         )}
         {list?.map((m) => <MentionRow key={m.message.id} m={m} unread={unread(m)} onJump={onJump} showServer />)}
-        {reminders.length === 0 && requests.length === 0 && needs.length === 0 && more === 0 && list?.length === 0 && <Empty icon="bell" title="You're all caught up">Mentions and sessions waiting on you, from every server, show here.</Empty>}
+        {bookmarks.length > 0 && (
+          <div className="panel-section">
+            Bookmarks <span className="num">{bookmarks.length}</span>
+          </div>
+        )}
+        {bookmarks.map((b) => (
+          <BookmarkRow key={b.message.id} bookmark={b} onJump={onJump} />
+        ))}
+        {reminders.length === 0 && requests.length === 0 && needs.length === 0 && more === 0 && list?.length === 0 && bookmarks.length === 0 && <Empty icon="bell" title="You're all caught up">Mentions and sessions waiting on you, from every server, show here.</Empty>}
       </div>
     </Panel>
+  )
+}
+
+// A bookmarked message: who said what, when and where; the cross removes it on every device.
+function BookmarkRow({ bookmark: b, onJump }: { bookmark: Bookmark; onJump: Jump }) {
+  const where = useWhere()
+  const [error, setError] = useState<string | null>(null)
+  const text = plain(b.message.content) || 'Attachment or components'
+  const state = useStore((d) => d.state)
+  // A bot is named as the chat names it: by its machine.
+  const machine = b.message.author.bot && state ? machineOf(state, store.channel(b.channel.id) ?? ({ ...b.channel, name: b.channel.name ?? undefined } as Channel)) : null
+  return (
+    <div className="reminder-row bookmark-row">
+      <button className="reminder-main" onClick={() => onJump(b.channel.id, b.message.id)}>
+        <span className="reminder-text">
+          <b>{machine ? agentName(state!.machine_bots, machine) : displayName(b.message.author)}: </b>
+          {text.slice(0, 140)}
+        </span>
+        <span className="reminder-when num">
+          <Icon name="bookmark" size={14} />
+          <time dateTime={b.message.timestamp}>{when(b.message.timestamp)}</time>
+          <span className="reminder-where">{isDm(b.channel) ? `@${dmName(store.channel(b.channel.id) ?? (b.channel as Channel), store.data.state?.me.id ?? '')}` : where(b.channel)}</span>
+        </span>
+        {error && <span className="reminder-error">{error}</span>}
+      </button>
+      <button className="icon-button reminder-cancel" onClick={() => void store.toggleBookmark(b.channel.id, b.message.id).catch((e: Error) => setError(e.message))} aria-label="Remove bookmark" title="Remove bookmark">
+        <Icon name="close" size={16} />
+      </button>
+    </div>
   )
 }
 

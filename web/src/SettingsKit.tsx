@@ -1,7 +1,7 @@
 // Building blocks for the settings layers: pages, groups, rows, fields, switches,
 // radios and confirms, in one look.
 
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import type { HubState } from './api.ts'
 import { Icon } from './icons.tsx'
 import { store } from './store.ts'
@@ -116,6 +116,37 @@ export function Radios<T extends string>({ name, label, value, options, onChange
           </span>
         </label>
       ))}
+    </div>
+  )
+}
+
+// Discord's marked slider: it stops only on the marks, each labelled above its tick.
+export function Slider({ label, value, stops, unit = 'px', onChange }: { label: string; value: number; stops: readonly number[]; unit?: string; onChange: (value: number) => void }) {
+  const min = stops[0]!
+  const max = stops[stops.length - 1]!
+  // The thumb's centre runs 8px in from each end, so marks sit on the same line.
+  const at = (v: number) => `calc(8px + (100% - 16px) * ${(v - min) / (max - min)})`
+  const nearest = (raw: number) => stops.reduce((a, b) => (Math.abs(b - raw) < Math.abs(a - raw) ? b : a))
+  // Arrow keys move one mark; a click or drag lands on the nearest.
+  const onKey = (e: React.KeyboardEvent) => {
+    const i = stops.indexOf(value)
+    const to = ({ ArrowLeft: i - 1, ArrowDown: i - 1, ArrowRight: i + 1, ArrowUp: i + 1, Home: 0, End: stops.length - 1 } as Record<string, number>)[e.key]
+    if (to === undefined) return
+    e.preventDefault()
+    const next = stops[Math.max(0, Math.min(stops.length - 1, to))]!
+    if (next !== value) onChange(next)
+  }
+  return (
+    <div className="settings-slider" style={{ '--fill': (value - min) / (max - min) } as CSSProperties}>
+      {stops.map((s) => (
+        <span key={s} className={`settings-slider-mark${s === value ? ' on' : ''}`} style={{ left: at(s) }} aria-hidden="true">
+          <span>
+            {s}
+            {unit}
+          </span>
+        </span>
+      ))}
+      <input type="range" min={min} max={max} step={1} value={value} aria-label={label} aria-valuetext={`${value}${unit}`} onKeyDown={onKey} onChange={(e) => onChange(nearest(Number(e.target.value)))} />
     </div>
   )
 }

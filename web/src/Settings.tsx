@@ -10,13 +10,15 @@ import { createPortal } from 'react-dom'
 import { api, signedIn, type Channel, type DeviceInfo, type HubState, type NotifyLevel, type User } from './api.ts'
 import { applyAccent, applyTheme, savedTheme, type Theme } from './App.tsx'
 import { resetColumns, useColumns } from './columns.ts'
+import { Avatar } from './Avatar.tsx'
+import { CHAT_FONTS, GROUP_SPACES, saveDisplay, savedDisplay, type Display } from './display.ts'
 import { Icon, type IconName } from './icons.tsx'
 import { disablePush, effective, enablePush, pushSupported } from './notify.ts'
 import { desktopUpdates, UpdatesPage } from './UpdateCheck.tsx'
 import { sessionActions } from './Sheet.tsx'
 import { store, THREAD_TYPES, useStore } from './store.ts'
-import { leave, plain } from './text.ts'
-import { ago, Confirm, currentGuild, Feedback, Group, hex, ImagePicker, Item, message, mutedText, Page, Pending, Radios, Switch, TextSetting, useFeedback } from './SettingsKit.tsx'
+import { clock, leave, plain } from './text.ts'
+import { ago, Confirm, currentGuild, Feedback, Group, hex, ImagePicker, Item, message, mutedText, Page, Pending, Radios, Slider, Switch, TextSetting, useFeedback } from './SettingsKit.tsx'
 import { ChannelPermissionsPage, MembersPage, PairDevice, RolesPage, ServerPermissionsPage } from './SettingsPeople.tsx'
 import { can, P } from './perms.ts'
 import './settings.css'
@@ -37,7 +39,7 @@ const CHANNEL_TYPES: Array<{ id: 0 | 2 | 5 | 15; label: string }> = [
   { id: 15, label: 'Forum' },
 ]
 
-type NavItem = { id: string; label: string; icon?: IconName; red?: boolean; run?: () => void }
+type NavItem = { id: string; label: string; icon?: IconName; red?: boolean; run?: () => void; keywords?: string }
 type NavGroup = { heading?: string; items: NavItem[] }
 
 const PHONE = '(max-width: 767px)'
@@ -106,6 +108,27 @@ function Shell({ label, groups, section, onSection, title, onClose, dialog, chil
 
   const items = groups.flatMap((g) => g.items)
   const pick = (item: NavItem) => (item.run ? item.run() : onSection(item.id))
+  // Discord's settings search: the nav keeps the sections whose name or settings match.
+  const [query, setQuery] = useState('')
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean)
+  const shown = words.length ? groups.map((g) => ({ ...g, items: g.items.filter((i) => !i.run && words.every((w) => `${i.label} ${i.keywords ?? ''}`.toLowerCase().includes(w))) })).filter((g) => g.items.length) : groups
+  const search = (
+    <label className="settings-search">
+      <Icon name="search" size={16} />
+      <input
+        type="search"
+        value={query}
+        placeholder="Search"
+        aria-label="Search settings"
+        onChange={(e) => setQuery(e.target.value)}
+        onKeyDown={(e) => {
+          const first = shown[0]?.items[0]
+          if (e.key === 'Enter' && first) pick(first)
+        }}
+      />
+    </label>
+  )
+  const empty = <p className="settings-search-empty">No settings match.</p>
 
   if (phone)
     return createPortal(
@@ -120,7 +143,9 @@ function Shell({ label, groups, section, onSection, title, onClose, dialog, chil
               <span />
             </header>
             <div className="settings-phone-list">
-              {groups.map((group, i) => (
+              {search}
+              {shown.length === 0 && empty}
+              {shown.map((group, i) => (
                 <section key={i}>
                   {group.heading && <h2 className="settings-phone-heading">{group.heading}</h2>}
                   <div className="settings-phone-group">
@@ -154,7 +179,9 @@ function Shell({ label, groups, section, onSection, title, onClose, dialog, chil
   const side = (
     <div className="settings-side">
       <nav className="settings-nav" aria-label={`${label} sections`}>
-        {groups.map((group, i) => (
+        {search}
+        {shown.length === 0 && empty}
+        {shown.map((group, i) => (
           <div key={i} className="settings-nav-group">
             {group.heading && <div className="settings-nav-head">{group.heading}</div>}
             {group.items.map((item) => (
@@ -536,6 +563,82 @@ function AppearancePage() {
   )
 }
 
+// Discord's preview: two groups from you, drawn with the chat's own rows, so the choices
+// below show as they will look.
+function Preview({ state }: { state: HubState }) {
+  const me = state.users.find((u) => u.id === state.me.id)
+  const name = me?.global_name ?? me?.username ?? 'You'
+  const time = clock(new Date().toISOString())
+  const text = (t: string) => (
+    <div className="markdown">
+      <div className="paragraph">{t}</div>
+    </div>
+  )
+  const first = (t: string) => (
+    <div className="message">
+      <div className="message-body">
+        <div className="message-head">
+          <span className="author-avatar">
+            <Avatar id={state.me.id} name={name} size="inline" version={me?.avatar} />
+          </span>
+          <span className="author" style={me?.color != null ? { color: hex(me.color) } : undefined}>
+            {name}
+          </span>
+          <span className="message-time">{time}</span>
+        </div>
+        {text(t)}
+      </div>
+    </div>
+  )
+  return (
+    <div className="settings-preview" aria-label="Preview">
+      {first('This is how messages look on this device.')}
+      <div className="message compact">
+        <span className="row-time">{time}</span>
+        <div className="message-body">{text('A second message joins the same group.')}</div>
+      </div>
+      {first('A new group starts after the space you choose.')}
+    </div>
+  )
+}
+
+function AccessibilityPage({ state }: { state: HubState }) {
+  const [display, setDisplay] = useState(savedDisplay)
+  const set = (next: Partial<Display>) => {
+    const value = { ...display, ...next }
+    setDisplay(value)
+    saveDisplay(value)
+  }
+  return (
+    <Page title="Accessibility">
+      <div className="settings-preview-label">Preview</div>
+      <Preview state={state} />
+      <Group title="Text readability" note="Saved on this device.">
+        <Item stack label="Text size in chat" note="Adjust the size of the chat font.">
+          <Slider label="Text size in chat" value={display.chatFont} stops={CHAT_FONTS} onChange={(chatFont) => set({ chatFont })} />
+        </Item>
+      </Group>
+      <Group title="Visual density" note="Saved on this device.">
+        <Item stack label="Chat message display" note="Change the appearance of chat messages. Compact puts the time and name on the line of the text and hides avatars.">
+          <Radios
+            name="message-display"
+            label="Chat message display"
+            value={display.messages}
+            onChange={(messages) => set({ messages })}
+            options={[
+              { id: 'default', label: 'Default' },
+              { id: 'compact', label: 'Compact' },
+            ]}
+          />
+        </Item>
+        <Item stack label="Space between message groups" note="Adjust the spacing between message groups.">
+          <Slider label="Space between message groups" value={display.groupSpace} stops={GROUP_SPACES} onChange={(groupSpace) => set({ groupSpace })} />
+        </Item>
+      </Group>
+    </Page>
+  )
+}
+
 function PrivacyPage({ state, server }: { state: HubState; server?: string }) {
   const privacy = state.privacy ?? { show_presence: true, show_activity: true }
   const feedback = useFeedback()
@@ -771,21 +874,22 @@ function MuteControl({ scopeId, muted, label }: { scopeId: string; muted: string
 }
 
 const USER_SECTIONS: NavItem[] = [
-  { id: 'account', label: 'My account', icon: 'user' },
-  { id: 'devices', label: 'Devices', icon: 'phone' },
-  { id: 'notifications', label: 'Notifications', icon: 'bell' },
-  { id: 'appearance', label: 'Appearance', icon: 'palette' },
-  { id: 'updates', label: 'Updates', icon: 'download' },
-  { id: 'privacy', label: 'Privacy', icon: 'eye' },
+  { id: 'account', label: 'My account', icon: 'user', keywords: 'profile display name username avatar picture name colour color device name' },
+  { id: 'devices', label: 'Devices', icon: 'phone', keywords: 'sessions sign out rename pair pairing code qr new device' },
+  { id: 'notifications', label: 'Notifications', icon: 'bell', keywords: 'server default all messages only mentions nothing push test custom mute' },
+  { id: 'appearance', label: 'Appearance', icon: 'palette', keywords: 'theme vocorum og dark accent colour color cyan pink layout column widths reduced motion' },
+  { id: 'accessibility', label: 'Accessibility', icon: 'accessibility', keywords: 'text readability text size in chat font scaling visual density chat message display default compact cozy avatars space between message groups spacing preview' },
+  { id: 'updates', label: 'Updates', icon: 'download', keywords: 'check for updates update automatically version' },
+  { id: 'privacy', label: 'Privacy', icon: 'eye', keywords: 'show my status online offline show where i am activity presence' },
 ]
 const SERVER_SECTIONS: NavItem[] = [
-  { id: 'server', label: 'Overview', icon: 'server' },
-  { id: 'channels', label: 'Channels', icon: 'hash' },
-  { id: 'server-notifications', label: 'Notification settings', icon: 'bell' },
-  { id: 'server-privacy', label: 'Privacy settings', icon: 'eye' },
-  { id: 'roles', label: 'Roles', icon: 'shield' },
-  { id: 'members', label: 'Members', icon: 'members' },
-  { id: 'permissions', label: 'Permissions', icon: 'key' },
+  { id: 'server', label: 'Overview', icon: 'server', keywords: 'server name server icon' },
+  { id: 'channels', label: 'Channels', icon: 'hash', keywords: 'create channel category topic voice forum announcement' },
+  { id: 'server-notifications', label: 'Notification settings', icon: 'bell', keywords: 'server default all messages only mentions nothing mute server custom' },
+  { id: 'server-privacy', label: 'Privacy settings', icon: 'eye', keywords: 'show my status show where i am activity presence' },
+  { id: 'roles', label: 'Roles', icon: 'shield', keywords: 'role name role colour color everyone mention members separately' },
+  { id: 'members', label: 'Members', icon: 'members', keywords: 'invite a person people kick' },
+  { id: 'permissions', label: 'Permissions', icon: 'key', keywords: 'everyone manage channels roles send messages administrator' },
 ]
 const ALIASES: Record<string, string> = { overview: 'server', profile: 'account', 'my-account': 'account' }
 const toSection = (id?: string) => {
@@ -816,6 +920,7 @@ export function Settings({ initial, onClose }: { initial?: string; onClose: () =
     : section === 'devices' ? <DevicesPage />
     : section === 'notifications' ? <NotificationsPage state={state} />
     : section === 'appearance' ? <AppearancePage />
+    : section === 'accessibility' ? <AccessibilityPage state={state} />
     : section === 'updates' ? <UpdatesPage />
     : section === 'privacy' ? <PrivacyPage state={state} />
     : section === 'server' ? <ServerPage state={state} />

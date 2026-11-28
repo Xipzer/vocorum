@@ -335,7 +335,10 @@ test.skipIf(!ready)('links: a hub thread link and a session ID show as named chi
   await page.goto(`${origin}/#/c/${demo.thread.id}`)
   await page.reload()
   const chips = page.locator('.message', { hasText: 'See ' }).last().locator('.channel-chip')
-  await expect.poll(() => chips.allTextContents()).toEqual(['Chip target', 'Fix footer on short turns'])
+  // After a reload the history and the hub's thread names arrive on the page's time, not within a second.
+  await chips.filter({ hasText: 'Chip target' }).waitFor()
+  await chips.filter({ hasText: 'Fix footer on short turns' }).waitFor()
+  expect(await chips.allTextContents()).toEqual(['Chip target', 'Fix footer on short turns'])
   await chips.first().click({ button: 'right' })
   await page.locator('.sheet').getByRole('menuitem', { name: 'Copy link' }).waitFor()
   await page.locator('.sheet').getByRole('menuitem', { name: 'Go to channel' }).click()

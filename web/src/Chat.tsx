@@ -322,6 +322,9 @@ const MessageItem = memo(function MessageItem({
   const canManage = can(P.MANAGE_MESSAGES, channelId)
   const mine = message.author.id === me
   const pinOk = can(P.PIN_MESSAGES, channelId) || can(P.MANAGE_MESSAGES, channelId)
+  const bookmarks = useStore((d) => d.bookmarks !== null)
+  const bookmarked = useStore((d) => Boolean(d.bookmarks?.some((b) => b.message.id === message.id)))
+  const toggleBookmark = () => void store.toggleBookmark(channelId, message.id).catch((e: Error) => onError(e.message))
   const profile = users.find((u) => u.id === message.author.id)
   const name = (message.author.bot && botName && agentName(bots, botName)) || (message.author.global_name ?? message.author.username)
   const v2 = ((message.flags ?? 0) & IS_COMPONENTS_V2) !== 0
@@ -381,6 +384,7 @@ const MessageItem = memo(function MessageItem({
           { label: 'Copy message link', icon: 'link', run: () => void navigator.clipboard?.writeText(`${shareOrigin()}/#/c/${channelId}/${message.id}`) },
           { label: 'Copy message ID', icon: 'hash', run: () => void navigator.clipboard?.writeText(message.id) },
           ...(pinOk ? [{ label: message.pinned ? 'Unpin' : 'Pin', icon: 'pin' as const, run: () => void api.pin(channelId, message.id, !message.pinned).catch((e: Error) => onError(e.message)) }] : []),
+          ...(bookmarks && !message.local ? [{ label: bookmarked ? 'Remove bookmark' : 'Bookmark', icon: bookmarked ? ('bookmarked' as const) : ('bookmark' as const), run: toggleBookmark }] : []),
         ],
         mine && message.content ? [{ label: 'Edit', icon: 'pencil', run: () => setEditing(message.content) }] : [],
         mine || canManage ? [{ label: 'Delete', icon: 'trash', red: true, run: () => confirmDelete(at) }] : [],
@@ -594,6 +598,11 @@ const MessageItem = memo(function MessageItem({
         {pinOk && (
           <button onClick={() => void api.pin(channelId, message.id, !message.pinned).catch((e: Error) => onError(e.message))} aria-label={message.pinned ? 'Unpin' : 'Pin'} title={message.pinned ? 'Unpin' : 'Pin'}>
             <Icon name="pin" size={20} />
+          </button>
+        )}
+        {bookmarked && (
+          <button onClick={toggleBookmark} aria-label="Remove bookmark" title="Remove bookmark">
+            <Icon name="bookmarked" size={20} />
           </button>
         )}
         <button onClick={(e) => openMenu(below(e.currentTarget))} aria-label="More" title="More">

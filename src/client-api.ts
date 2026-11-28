@@ -244,6 +244,20 @@ export class ClientApi {
       await this.hub.twin.simulateUserPin({ channelId: message.channelId, messageId: message.id, userId: v.userId, pinned: method === 'PUT' })
       return send(204, undefined)
     }
+    // Bookmarks (Discord's saved messages): private, on every device of this person.
+    if (method === 'GET' && pathname === '/client/bookmarks') return send(200, { bookmarks: await this.bookmarks(v) })
+    if ((params = match('/client/bookmarks/:id/:mid', pathname)) && (method === 'PUT' || method === 'DELETE')) {
+      if (method === 'DELETE') {
+        if (await this.hub.store.setBookmark(v.userId, params['id']!, params['mid']!, false)) this.hub.events.send('SAVED_MESSAGE_DELETE', { channel_id: params['id'], message_id: params['mid'] }, { userId: v.userId })
+        return send(204, undefined)
+      }
+      const message = await this.messageIn(v, params['id']!, params['mid']!, P.READ_MESSAGE_HISTORY)
+      const added = await this.hub.store.setBookmark(v.userId, message.channelId, message.id, true)
+      const [entry] = await this.bookmarks(v, message.id)
+      if (!entry) throw new HttpError(404, 'Unknown message')
+      if (added) this.hub.events.send('SAVED_MESSAGE_CREATE', entry, { userId: v.userId })
+      return send(200, entry)
+    }
     if (method === 'POST' && pathname === '/client/uploads') return send(200, await this.upload(req, device))
     if (method === 'POST' && pathname === '/client/interactions') return send(200, await this.interaction(v, await readJson(req)))
     if (method === 'POST' && pathname === '/client/commands') return send(200, await this.command(v, await readJson(req)))
@@ -484,6 +498,26 @@ export class ClientApi {
     const found = await this.withChannels(v, mentions.map((m) => m.messageId))
     const final = await this.hub.access.view(v.userId)
     return { mentions: found.filter(e => channels.has(e.channel.id) && ((final.channels.get(e.channel.id) ?? 0n) & P.READ_MESSAGE_HISTORY) !== 0n).map((entry) => ({ ...entry, read: !newer(entry.message.id, read[entry.channel.id]) })) }
+  }
+
+  // Newest first. A bookmark whose message is gone, or that the person can no longer read, is dropped.
+  async bookmarks(v: Viewer, only?: string) {
+    const saved = (await this.hub.store.bookmarks(v.userId)).filter((b) => !only || b.messageId === only)
+    const view = await this.hub.access.view(v.userId)
+    const readable = (channelId: string) => ((view.channels.get(channelId) ?? 0n) & P.READ_MESSAGE_HISTORY) !== 0n
+    const found = new Map((await this.withChannels(v, saved.filter((b) => readable(b.channelId)).map((b) => b.messageId))).map((e) => [e.message.id, e]))
+    const out = []
+    for (const b of saved) {
+      const entry = found.get(b.messageId)
+      if (entry && readable(entry.channel.id)) out.push({ ...entry, saved_at: new Date(b.savedAt).toISOString() })
+      else if (this.hub.access.isCurrent(view) && (await this.hub.store.setBookmark(v.userId, b.channelId, b.messageId, false))) this.hub.events.send('SAVED_MESSAGE_DELETE', { channel_id: b.channelId, message_id: b.messageId }, { userId: v.userId })
+    }
+    return out
+  }
+
+  // Deleted messages and channels take their bookmarks with them, on every device.
+  async bookmarksGone(by: { messageIds: string[] } | { channelId: string }) {
+    for (const b of await this.hub.store.dropBookmarks(by)) this.hub.events.send('SAVED_MESSAGE_DELETE', { channel_id: b.channelId, message_id: b.messageId }, { userId: b.userId })
   }
 
   async pins(v: Viewer, channelId: string) {

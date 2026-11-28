@@ -57,7 +57,7 @@ export type Audience = {
   shape?: (recipientUserId: string) => unknown | null | Promise<unknown | null>
 }
 
-type Data = { id?: string; channel_id?: string; parent_id?: string; guild_id?: string; user?: { id?: string } }
+type Data = { id?: string; ids?: string[]; channel_id?: string; parent_id?: string; guild_id?: string; user?: { id?: string } }
 
 export class ClientEvents {
   private wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 })
@@ -162,6 +162,9 @@ export class ClientEvents {
     if (STRUCTURE.has(event) && !REMOVALS.has(event)) this.hub.access.invalidate()
     if (event === 'MESSAGE_DELETE' && data.channel_id && data.id) await this.hub.boards.removed(data.channel_id, data.id)
     if (event === 'THREAD_DELETE' && data.id) await this.hub.boards.removed(data.id)
+    if (event === 'MESSAGE_DELETE' && data.id) await this.hub.api.bookmarksGone({ messageIds: [data.id] })
+    if (event === 'MESSAGE_DELETE_BULK' && Array.isArray(data.ids)) await this.hub.api.bookmarksGone({ messageIds: data.ids })
+    if (REMOVALS.has(event) && data.id) await this.hub.api.bookmarksGone({ channelId: data.id })
     if (!CLIENT_EVENTS.has(event) || this.sockets.size === 0) {
       if (event === 'MESSAGE_CREATE' || event === 'MESSAGE_UPDATE') this.traceMessage(data, 0, false, event === 'MESSAGE_UPDATE')
       if (REMOVALS.has(event)) this.hub.access.invalidate()

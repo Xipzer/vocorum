@@ -128,7 +128,11 @@ test.skipIf(!ready)('a mirrored voice message plays its own local bytes after re
   await hub.mirror.message(null, { ...msg, id: silent, flags: 8192 })
   const context = await browser.newContext({ extraHTTPHeaders: { 'tailscale-user-login': LOGIN }, serviceWorkers: 'block' })
   try {
-    const p = await context.newPage(); await pair(p); await p.goto(`${origin}/#/c/${msg.channel_id}`); await p.reload()
+    const p = await context.newPage(); await pair(p)
+    // The app may still be choosing its landing page (Overview when a session waits) after pairing;
+    // reload only once the channel is open, or the reload can bring that landing page back.
+    const opened = () => p.locator('.chat-title', { hasText: 'website' }).waitFor()
+    await p.goto(`${origin}/#/c/${msg.channel_id}`); await opened(); await p.reload(); await opened()
     for (const id of [typed, spoken, silent]) {
       const row = p.locator(`#m-${id}`); await row.getByText(words, { exact: true }).waitFor()
       expect(await row.locator('.voice-note-label').count()).toBe(id === typed ? 0 : 1)

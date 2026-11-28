@@ -47,6 +47,8 @@ const PATHS = {
   stop: 'M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17ZM9.5 9.5h5v5h-5z',
   // Diagonal like Discord's, so it fills the grid as the other toolbar glyphs do.
   pin: 'M14.82 2.25 21.75 9.18M16.12 3.55l-5.2 5.2-6.94.87 10.4 10.4.87-6.94 5.2-5.2M9.18 14.82 2.25 21.75',
+  bookmark: 'M6.5 3.5h11v17L12 16.5l-5.5 4z',
+  bookmarked: 'M6.5 3.5h11v17L12 16.5l-5.5 4z',
   at: 'M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0Zm0 0v1.5a2.5 2.5 0 0 0 5 0V12a9 9 0 1 0-3.5 7.1',
   feed: 'M5 6h14M5 12h14M5 18h9',
   chat: 'M5 5h14v10H9l-4 4V5Z',
@@ -54,6 +56,7 @@ const PATHS = {
   share: 'M12 15V4M8 8l4-4 4 4M6 12v7h12v-7',
   sidebar: 'M4.5 5.5h15v13h-15zM9.5 5.5v13',
   user: 'M12 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM3.75 21c.5-4.6 3.8-7.5 8.25-7.5s7.75 2.9 8.25 7.5z',
+  accessibility: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM12 7.4h.01M7.5 9.6l4.5 1 4.5-1M12 10.6v3M9.6 17.6l2.4-4 2.4 4',
   palette: 'M12 3.5a8.5 8.5 0 0 0 0 17c1.1 0 1.9-.8 1.9-1.8 0-.5-.2-.9-.5-1.2-.3-.4-.5-.8-.5-1.3 0-1 .8-1.8 1.8-1.8H17a4.5 4.5 0 0 0 4.5-4.5C21.5 6.4 17.2 3.5 12 3.5ZM7.6 11.6h.01M9.2 7.6h.01M14 6.9h.01M17.4 10h.01',
   more: 'M5 10.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3ZM12 10.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3ZM19 10.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3Z',
   members: 'M9.5 10.65a3.9 3.9 0 1 0 0-7.8 3.9 3.9 0 0 0 0 7.8ZM2.85 21.15c.6-4 3.2-6.4 6.65-6.4s6.05 2.4 6.65 6.4M16.6 3.2a3.9 3.9 0 0 1 0 7.2M18.6 14.9c1.6.7 2.4 2.6 2.55 6.25',
@@ -79,7 +82,7 @@ const PATHS = {
 
 export type IconName = keyof typeof PATHS
 
-const FILLED = new Set<IconName>(['play', 'pause', 'more', 'threadCrumb', 'voiceChannel', 'silent'])
+const FILLED = new Set<IconName>(['play', 'pause', 'more', 'threadCrumb', 'voiceChannel', 'silent', 'bookmarked'])
 
 export function Icon({ name, size = 20, className }: { name: IconName; size?: number; className?: string }) {
   const filled = FILLED.has(name)

@@ -56,6 +56,16 @@ const SCHEMA = [
     output INTEGER NOT NULL,
     PRIMARY KEY (user_id, channel_id)
   )`,
+  // Saved messages (Discord's bookmarks), private to each person.
+  `CREATE TABLE IF NOT EXISTS user_bookmarks (
+    user_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, message_id)
+  )`,
+  'CREATE INDEX IF NOT EXISTS user_bookmarks_message ON user_bookmarks (message_id)',
+  'CREATE INDEX IF NOT EXISTS user_bookmarks_channel ON user_bookmarks (channel_id)',
   // Channel permission overwrites, Discord's shape (type 0 role, 1 member).
   `CREATE TABLE IF NOT EXISTS channel_overwrites (
     channel_id TEXT NOT NULL,
@@ -374,6 +384,29 @@ export class HubStore {
   async setOutputView(userId: string, channelId: string, output: boolean | null) {
     if (output === null) await this.db.execute({ sql: 'DELETE FROM user_output_views WHERE user_id = ? AND channel_id = ?', args: [userId, channelId] })
     else await this.db.execute({ sql: 'INSERT INTO user_output_views (user_id, channel_id, output) VALUES (?, ?, ?) ON CONFLICT(user_id, channel_id) DO UPDATE SET output = excluded.output', args: [userId, channelId, output ? 1 : 0] })
+  }
+
+  // --- bookmarks (newest first)
+
+  async bookmarks(userId: string): Promise<Array<{ messageId: string; channelId: string; savedAt: number }>> {
+    return (await this.rows('SELECT message_id, channel_id, created_at FROM user_bookmarks WHERE user_id = ? ORDER BY created_at DESC, rowid DESC', [userId])).map((row) => ({ messageId: String(row['message_id']), channelId: String(row['channel_id']), savedAt: Number(row['created_at']) }))
+  }
+
+  // True when it changed.
+  async setBookmark(userId: string, channelId: string, messageId: string, on: boolean, savedAt = Date.now()) {
+    const result = on
+      ? await this.db.execute({ sql: 'INSERT OR IGNORE INTO user_bookmarks (user_id, message_id, channel_id, created_at) VALUES (?, ?, ?, ?)', args: [userId, messageId, channelId, savedAt] })
+      : await this.db.execute({ sql: 'DELETE FROM user_bookmarks WHERE user_id = ? AND message_id = ?', args: [userId, messageId] })
+    return result.rowsAffected > 0
+  }
+
+  // Drops the bookmarks of deleted messages, or of every message in a deleted channel. Returns who lost which.
+  async dropBookmarks(by: { messageIds: string[] } | { channelId: string }): Promise<Array<{ userId: string; messageId: string; channelId: string }>> {
+    const [where, args] = 'channelId' in by ? ['channel_id = ?', [by.channelId]] : [`message_id IN (${by.messageIds.map(() => '?').join(', ')})`, by.messageIds]
+    if (args.length === 0) return []
+    const rows = (await this.rows(`SELECT user_id, message_id, channel_id FROM user_bookmarks WHERE ${where}`, args)).map((row) => ({ userId: String(row['user_id']), messageId: String(row['message_id']), channelId: String(row['channel_id']) }))
+    if (rows.length) await this.db.execute({ sql: `DELETE FROM user_bookmarks WHERE ${where}`, args })
+    return rows
   }
 
   // --- channel permission overwrites
