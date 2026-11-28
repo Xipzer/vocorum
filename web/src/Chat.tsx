@@ -1701,7 +1701,7 @@ export function Chat({
               channelId={channel.id}
               placeholder={adminHere && !isThread ? 'Ask your admin agent' : `Message ${dm ? `@${title}` : isThread ? clip(title, window.matchMedia('(max-width: 767px)').matches ? 22 : 36) : `#${channel.name ?? ''}`}`}
               commands={store.commandsFor(channel.id)}
-              channels={state.channels.filter((c) => c.type === 0 && (c.guild_id ?? state.guild.id) === (channel.guild_id ?? state.guild.id)).map((c) => ({ id: c.id, name: c.name ?? '' }))}
+              channels={state.channels.filter((c) => c.type === 0 && (c.guild_id ?? state.guild.id) === (channel.guild_id ?? state.guild.id) && can(P.VIEW_CHANNEL, c)).map((c) => ({ id: c.id, name: c.name ?? '' }))}
               replyTo={replyTo}
               onCancelReply={() => setReplyTo(null)}
               onResult={(result, name) => {

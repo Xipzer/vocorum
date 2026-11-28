@@ -15,6 +15,8 @@ const DEFAULT_SUBJECT = 'mailto:hub@vocorum.invalid'
 const REPEAT_MS = 3000
 const SUPPRESS_NOTIFICATIONS = 1 << 12
 const LOADING = 1 << 7
+// Discord's interaction tokens last 15 minutes: a deferral still thinking by then is never answered.
+const THINKING_TTL_MS = 15 * 60_000
 
 export type PushKind = 'message' | 'mention' | 'needs_you' | 'reminder'
 export type PushPayload = { kind: PushKind; title: string; body: string; tag: string; url: string; channel_id: string; guild_id: string | null; message_id: string | null }
@@ -39,15 +41,16 @@ export class Notifications {
   readonly keys: VapidKeys
   private unobserve: (() => void) | null = null
   private waiting = new Set<string>()
-  // Deferred replies ("is thinking…"): they notify once, when the reply lands.
-  private thinking = new Set<string>()
+  // Deferred replies ("is thinking…"): they notify once, when the reply lands, and are
+  // forgotten when deleted or when their interaction token expires unanswered.
+  private thinking = new Map<string, NodeJS.Timeout>()
   private lastPush = new Map<string, { at: number; kind: PushKind }>()
   private queue: Promise<void> = Promise.resolve()
 
   constructor(
     private readonly hub: Hub,
     vapidFile: string,
-    private readonly options: { subject?: string; allowEndpoint?: (url: URL) => boolean } = {},
+    private readonly options: { subject?: string; allowEndpoint?: (url: URL) => boolean; thinkingTtlMs?: number } = {},
   ) {
     this.keys = loadVapidKeys(vapidFile)
   }
@@ -70,13 +73,28 @@ export class Notifications {
     for (const s of this.hub.sessions.list()) if (s.state === 'waiting') this.waiting.add(s.id)
     this.unobserve = this.hub.twin.observeDispatches((event, data) => {
       const message = data as MessageData
-      if (event === 'MESSAGE_CREATE' && (message.flags ?? 0) & LOADING) this.thinking.add(message.id)
-      else if (event === 'MESSAGE_CREATE' || (event === 'MESSAGE_UPDATE' && !((message.flags ?? 0) & LOADING) && this.thinking.delete(message.id))) this.enqueue(() => this.onMessage(message))
+      if (event === 'MESSAGE_CREATE' && (message.flags ?? 0) & LOADING) {
+        const ttl = this.options.thinkingTtlMs ?? THINKING_TTL_MS
+        this.thinking.set(message.id, setTimeout(() => this.thinking.delete(message.id), ttl).unref())
+      } else if (event === 'MESSAGE_DELETE') this.answered(message.id)
+      else if (event === 'MESSAGE_CREATE' || (event === 'MESSAGE_UPDATE' && !((message.flags ?? 0) & LOADING) && this.answered(message.id))) this.enqueue(() => this.onMessage(message))
     })
   }
 
   stop() {
     this.unobserve?.()
+    for (const timer of this.thinking.values()) clearTimeout(timer)
+    this.thinking.clear()
+  }
+
+  // Deferred replies still waiting for their answer (tests).
+  get unanswered() {
+    return this.thinking.size
+  }
+
+  private answered(id: string) {
+    clearTimeout(this.thinking.get(id))
+    return this.thinking.delete(id)
   }
 
   // Resolves when queued pushes have been sent (tests).

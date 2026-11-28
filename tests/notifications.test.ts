@@ -6,8 +6,8 @@ import http from 'node:http'
 import type net from 'node:net'
 import { afterAll, beforeAll, expect, test } from 'vitest'
 import WebSocket from 'ws'
-import { Client, GatewayIntentBits, MessageFlags, type TextChannel } from 'discord.js'
-import { effectiveSetting, shouldNotify, type PushPayload } from '../src/notifications.ts'
+import { Client, GatewayIntentBits, MessageFlags, type ChatInputCommandInteraction, type TextChannel } from 'discord.js'
+import { Notifications, effectiveSetting, shouldNotify, type PushPayload } from '../src/notifications.ts'
 import { encryptPayload, isPushEndpoint, vapidAuthorization } from '../src/push.ts'
 import { LOGIN, pairedDevice, startTestHub, waitFor, type TestDevice } from './helpers.ts'
 
@@ -251,6 +251,34 @@ test('Web Push: mentions and needs-you reach the device, encrypted; levels, mute
   await waitFor(async () => !(await phone.json('/client/notifications')).push_subscribed)
   gone = false
 }, 30_000)
+
+test('a deferral is forgotten when its reply is deleted or its token expires unanswered', async () => {
+  const notes = new Notifications(t.hub, `${t.paths.vapid}.ttl`, { thinkingTtlMs: 1500 })
+  notes.start()
+  const deferred: ChatInputCommandInteraction[] = []
+  const listen = async (i: unknown) => {
+    const command = i as ChatInputCommandInteraction
+    if (!command.isChatInputCommand?.() || command.commandName !== 'stuck') return
+    await command.deferReply()
+    deferred.push(command)
+  }
+  bot.on('interactionCreate', listen)
+  try {
+    await bot.application!.commands.create({ name: 'stuck', description: 'never answers' }, t.config.guildId)
+    await phone.json('/client/commands', { method: 'POST', json: { channelId: general.id, name: 'stuck' } })
+    await waitFor(() => notes.unanswered === 1)
+    // Never answered: gone once the interaction token would have expired.
+    await waitFor(() => notes.unanswered === 0, { timeout: 5000 })
+    await phone.json('/client/commands', { method: 'POST', json: { channelId: general.id, name: 'stuck' } })
+    await waitFor(() => notes.unanswered === 1)
+    await waitFor(() => deferred.length === 2)
+    await deferred[1]!.deleteReply()
+    await waitFor(() => notes.unanswered === 0, { timeout: 300 })
+  } finally {
+    bot.off('interactionCreate', listen)
+    notes.stop()
+  }
+})
 
 test('revoking a device removes its push subscription', async () => {
   const laptop = await pairedDevice(t.hub, 'laptop')

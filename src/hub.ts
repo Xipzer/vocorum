@@ -66,7 +66,7 @@ export type HubOptions = {
   // Built-in extensions (src/extensions.ts by default; tests pass their own).
   extensions?: HubExtensionFactory[]
   // Web Push: VAPID contact and which endpoints may be called (tests use a local one).
-  push?: { subject?: string; allowEndpoint?: (url: URL) => boolean }
+  push?: { subject?: string; allowEndpoint?: (url: URL) => boolean; thinkingTtlMs?: number }
 }
 
 export class Hub {

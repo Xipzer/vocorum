@@ -812,7 +812,7 @@ export class ClientApi {
   async command(v: Viewer, body: Body) {
     const channelId = str(body['channelId'], 'channelId')
     await this.checkCommand(v, channelId, str(body['name'], 'name'))
-    const options = commandOptions(body['options'])
+    const options = await this.visibleOptions(v, commandOptions(body['options']))
     // Attachment options carry the id of a file this device uploaded.
     const fileIds = (list: CommandOption[]): string[] => list.flatMap((o) => [...(o.type === 11 && typeof o.value === 'string' ? [o.value] : []), ...fileIds(o.options ?? [])])
     const attachments = await this.attachmentsFor(v, fileIds(options))
@@ -821,11 +821,28 @@ export class ClientApi {
     return this.waitForAck(started.id, { channel: channelId, kind: 'command', command: /^[\w-]{1,32}$/.test(name) ? name : '(command)' })
   }
 
+  // A channel option can only name a channel the person can see, as a channel menu.
+  private async visibleOptions(v: Viewer, options: CommandOption[]) {
+    let visible: Set<string> | undefined
+    const keep = async (list: CommandOption[]): Promise<CommandOption[]> => {
+      const out: CommandOption[] = []
+      for (const o of list) {
+        if (o.type === 7) {
+          visible ??= await this.hub.access.visibleChannels(v.userId)
+          if (typeof o.value !== 'string' || !visible.has(o.value)) continue
+        }
+        out.push(o.options ? { ...o, options: await keep(o.options) } : o)
+      }
+      return out
+    }
+    return keep(options)
+  }
+
   async autocomplete(v: Viewer, body: Body) {
     const channelId = str(body['channelId'], 'channelId')
     await this.checkCommand(v, channelId, str(body['name'], 'name'))
     const choices = await this.hub.twin
-      .simulateAutocomplete({ channelId, userId: v.userId, name: str(body['name'], 'name'), options: commandOptions(body['options']), focused: str(body['focused'], 'focused'), timeout: INTERACTION_WAIT_MS })
+      .simulateAutocomplete({ channelId, userId: v.userId, name: str(body['name'], 'name'), options: await this.visibleOptions(v, commandOptions(body['options'])), focused: str(body['focused'], 'focused'), timeout: INTERACTION_WAIT_MS })
       .catch(() => [])
     return { choices }
   }

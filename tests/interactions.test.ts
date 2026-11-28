@@ -131,3 +131,43 @@ test('role and mentionable options carry ids, with the role and the user in reso
   const refused = await phone.fetch('/client/commands', { method: 'POST', json: { channelId: general.id, name: 'grant', options: [{ name: 'file', type: 11, value: '123456789012345678' }] } })
   expect(refused.status).toBe(400)
 })
+
+test('a channel option names only channels the caller can see, in commands and autocomplete', async () => {
+  const secret = (await phone.json(`/client/guilds/${t.config.guildId}/channels`, { method: 'POST', json: { name: 'owners-only', permission_overwrites: [{ id: t.config.guildId, type: 0, allow: '0', deny: String(1n << 10n) }] } })).id
+  const invite = await phone.json(`/client/guilds/${t.config.guildId}/invites`, { method: 'POST', json: { username: 'robin' } })
+  await t.hub.store.setProfile(invite.user.id, { tailscaleLogin: 'robin@example.test' })
+  await t.hub.reload()
+  const member = new TestDevice(t.hub, { 'tailscale-user-login': 'robin@example.test' })
+  await member.pair(invite.code)
+  await bot.application!.commands.create({ name: 'goto', description: 'go to a channel', options: [{ type: 7, name: 'where', description: 'where' }, { type: 3, name: 'note', description: 'note', autocomplete: true }] }, t.config.guildId)
+  const packets: Array<{ type: number; data: { name?: string; options?: unknown[]; resolved?: Record<string, Record<string, unknown>> } }> = []
+  const listen = (packet: { t: string; d: (typeof packets)[number] }) => {
+    if (packet.t === 'INTERACTION_CREATE' && packet.d.data?.name === 'goto') packets.push(packet.d)
+  }
+  bot.on('raw', listen)
+  // The command itself is answered by the file's handler; autocomplete here.
+  const answer = async (i: unknown) => {
+    const command = i as { isAutocomplete(): boolean; commandName: string; respond(c: unknown[]): Promise<void> }
+    if (command.isAutocomplete() && command.commandName === 'goto') await command.respond([{ name: 'ok', value: 'ok' }])
+  }
+  bot.on('interactionCreate', answer)
+  try {
+    const options = (where: string) => [{ name: 'where', type: 7, value: where }, { name: 'note', type: 3, value: 'hi' }]
+    await member.json('/client/commands', { method: 'POST', json: { channelId: general.id, name: 'goto', options: options(secret) } })
+    await member.json('/client/autocomplete', { method: 'POST', json: { channelId: general.id, name: 'goto', focused: 'note', options: options(secret) } })
+    await member.json('/client/commands', { method: 'POST', json: { channelId: general.id, name: 'goto', options: options(general.id) } })
+    await phone.json('/client/commands', { method: 'POST', json: { channelId: general.id, name: 'goto', options: options(secret) } })
+    await waitFor(() => packets.length === 4)
+    const [hidden, auto, shown, owner] = packets
+    expect(hidden!.data.options).toEqual([{ name: 'note', type: 3, value: 'hi' }])
+    expect(hidden!.data.resolved?.['channels']).toBeUndefined()
+    expect(auto!.type).toBe(4)
+    expect((auto!.data.options as Array<{ name: string }>).map((o) => o.name)).toEqual(['note'])
+    expect(shown!.data.options).toEqual(options(general.id))
+    expect(Object.keys(shown!.data.resolved!['channels']!)).toEqual([general.id])
+    expect(owner!.data.options).toEqual(options(secret))
+  } finally {
+    bot.off('raw', listen)
+    bot.off('interactionCreate', answer)
+  }
+})
