@@ -145,6 +145,7 @@ const SCHEMA = [
   )`,
   // Files a forward carries in message_snapshots, recorded when it was made while its source
   // held them, with the source's guild ('' for a DM): they stay visible if the source goes.
+  // hub_made (added later): the hub's Forward made it for someone who could read the source.
   `CREATE TABLE IF NOT EXISTS forwarded_files (
     message_id TEXT NOT NULL,
     attachment_id TEXT NOT NULL,
@@ -280,6 +281,8 @@ export class HubStore {
     await this.addColumn('app_keys', 'approval_key', 'BLOB')
     // The row open access signs this computer's browsers in as. Before the mark it was found
     // by its name; a paired browser always has a passkey, so a passkey-less one is that row.
+    // Older records were not hub-made: they keep the same-guild limit.
+    await this.addColumn('forwarded_files', 'hub_made', 'INTEGER NOT NULL DEFAULT 0')
     if (await this.addColumn('devices', 'local', 'INTEGER NOT NULL DEFAULT 0'))
       await this.db.execute("UPDATE devices SET local = 1 WHERE name = 'This computer' AND kind = 'web' AND revoked_at IS NULL AND id NOT IN (SELECT device_id FROM credentials)")
   }
@@ -341,14 +344,18 @@ export class HubStore {
     )
   }
 
-  async recordForwardedFiles(messageId: string, attachmentIds: readonly string[], guildId: string | null) {
-    for (const id of attachmentIds) await this.db.execute({ sql: 'INSERT OR IGNORE INTO forwarded_files (message_id, attachment_id, guild_id) VALUES (?, ?, ?)', args: [messageId, id, guildId ?? ''] })
+  // A hub-made record marks an existing one hub-made too (the forward's own dispatch may have recorded it first).
+  async recordForwardedFiles(messageId: string, attachmentIds: readonly string[], guildId: string | null, hubMade = false) {
+    const sql = hubMade
+      ? 'INSERT INTO forwarded_files (message_id, attachment_id, guild_id, hub_made) VALUES (?, ?, ?, 1) ON CONFLICT (message_id, attachment_id) DO UPDATE SET hub_made = 1'
+      : 'INSERT OR IGNORE INTO forwarded_files (message_id, attachment_id, guild_id) VALUES (?, ?, ?)'
+    for (const id of attachmentIds) await this.db.execute({ sql, args: [messageId, id, guildId ?? ''] })
   }
 
-  // The source guild a forward's file was recorded with, or null.
-  async forwardedFileGuild(messageId: string, attachmentId: string): Promise<string | null> {
-    const [row] = await this.rows('SELECT guild_id FROM forwarded_files WHERE message_id = ? AND attachment_id = ?', [messageId, attachmentId])
-    return row ? String(row['guild_id']) : null
+  // How a forward's file was recorded (the source's guild, and whether the hub made it), or null.
+  async forwardedFile(messageId: string, attachmentId: string): Promise<{ guildId: string; hubMade: boolean } | null> {
+    const [row] = await this.rows('SELECT guild_id, hub_made FROM forwarded_files WHERE message_id = ? AND attachment_id = ?', [messageId, attachmentId])
+    return row ? { guildId: String(row['guild_id']), hubMade: Number(row['hub_made']) === 1 } : null
   }
 
   async favourites(userId: string): Promise<string[]> {

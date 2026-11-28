@@ -586,9 +586,9 @@ export class ClientApi {
         messageReference: { type: 1, message_id: source.id, channel_id: source.channelId, ...(from?.guildId && { guild_id: from.guildId }) },
         extra: { message_snapshots: [messageSnapshot(source)] },
       })
-      // The forwarder could read the source: its files go with the forward, even to another server.
+      // The forwarder could read the source: its files go with the forward, even to another server, and stay after the source is deleted.
       const files = (JSON.parse(source.attachments) as Array<{ id?: unknown }>).flatMap((a) => (typeof a.id === 'string' ? [a.id] : []))
-      await this.hub.store.recordForwardedFiles(forwarded.id, files, from?.guildId ?? null)
+      await this.hub.store.recordForwardedFiles(forwarded.id, files, from?.guildId ?? null, true)
       return forwarded
     }
     if (Array.isArray(body['attachmentIds']) && body['attachmentIds'].length && !(await this.hub.access.can(v.userId, channelId, P.ATTACH_FILES))) throw new HttpError(403, 'You cannot attach files here')

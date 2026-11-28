@@ -504,13 +504,14 @@ export class Hub {
   // A snapshot names any file id it likes (bots and the mirror write them), so it counts only
   // when tied to its source: the referenced message holds the file in its own attachments and
   // is in the forward's guild (or the hub made the forward for someone who could read it). If
-  // the source is gone, only a file recorded when the forward was made, from the same guild.
+  // the source is gone, only a file recorded when the forward was made: in any guild if the hub
+  // made it (Discord keeps forwarded files), otherwise from the same guild.
   private async forwardCarries(m: { id: string; messageReference: string | null; channel: { guildId: string | null } }, attachmentId: string) {
     const sourceId = parseJson<{ type?: number; message_id?: unknown }>(m.messageReference)?.message_id
-    const recorded = await this.store.forwardedFileGuild(m.id, attachmentId)
+    const recorded = await this.store.forwardedFile(m.id, attachmentId)
     const source = typeof sourceId === 'string' ? await this.twin.prisma.message.findUnique({ where: { id: sourceId }, select: { attachments: true, channel: { select: { guildId: true } } } }) : null
     if (source) return attachmentIdsOf(source.attachments).includes(attachmentId) && ((source.channel.guildId ?? '') === (m.channel.guildId ?? '') || recorded !== null)
-    return recorded !== null && recorded === (m.channel.guildId ?? '')
+    return recorded !== null && (recorded.hubMade || recorded.guildId === (m.channel.guildId ?? ''))
   }
 
   // A new forward whose source holds its files in the same guild: recorded, so the files stay

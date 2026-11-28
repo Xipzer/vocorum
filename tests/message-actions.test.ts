@@ -145,7 +145,7 @@ test('forwarded files load for whoever can read the forward, and nothing else of
   expect((await load(other)).status).toBe(404)
 })
 
-test('a snapshot file counts only when its source holds it: forged claims stay hidden, a deleted source keeps same-server forwards', async () => {
+test('a snapshot file counts only when its source holds it: forged claims stay hidden, a deleted source keeps real forwards', async () => {
   const other = (await t.hub.store.addGuild('Elsewhere')).id
   await t.hub.reload()
   await owner.json(`/client/guilds/${other}/invites`, { method: 'POST', json: { user_id: memberId } })
@@ -194,11 +194,19 @@ test('a snapshot file counts only when its source holds it: forged claims stay h
   expect((await remove(from, source)).ok).toBe(true)
   expect(await load(kept)).toBe(200)
 
-  // A forward to another server loads while its source is there, not after.
+  // A real forward to another server keeps its file after the source is deleted, as Discord does.
   const away = await upload('away.txt')
   const awaySource = await postFile(from, away)
   expect((await forward(owner, elsewhere, from, awaySource)).status).toBe(200)
   expect(await load(away)).toBe(200)
   expect((await remove(from, awaySource)).ok).toBe(true)
-  expect(await load(away)).toBe(404)
+  expect(await load(away)).toBe(200)
+
+  // A bot or mirror claim in another server from a real source stays hidden, before and after it is deleted.
+  const claimed = await upload('claimed.txt')
+  const claimedSource = await postFile(from, claimed)
+  await claim(elsewhere, { channel: from, message: claimedSource }, claimed)
+  expect(await load(claimed)).toBe(404)
+  expect((await remove(from, claimedSource)).ok).toBe(true)
+  expect(await load(claimed)).toBe(404)
 })
