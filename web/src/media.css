@@ -314,6 +314,18 @@
   overflow-x: auto;
   color: var(--text);
 }
+.text-file-markdown {
+  max-height: 200px;
+  overflow: hidden;
+  font: inherit;
+  white-space: normal;
+}
+.text-file-markdown.clipped {
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 32px), transparent);
+}
+.text-file.markdown-file {
+  width: min(100%, var(--measure));
+}
 .text-file.open .text-file-body {
   max-height: 480px;
   overflow-y: auto;

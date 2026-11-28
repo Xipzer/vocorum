@@ -91,17 +91,47 @@ test('another person cannot read, remove or learn of your bookmarks', async () =
   expect(phoneEvents.filter((e) => e.t === 'SAVED_MESSAGE_CREATE' && e.d.message.id === note.id)).toHaveLength(1)
 })
 
-test('losing access to a channel drops its bookmarks; a hidden channel cannot be bookmarked', async () => {
+test('losing access hides a bookmark and restoring it brings it back; a deleted message drops it for good', async () => {
   const kept = await demo.kimaki.send('Kimaki release notes.')
   await member.json(`/client/bookmarks/${demo.kimaki.id}/${kept.id}`, { method: 'PUT' })
   expect(await ids(member)).toContain(kept.id)
-  await laptop.json(`/client/channels/${demo.kimaki.id}/permissions/${memberId}`, { method: 'PUT', json: { type: 1, allow: '0', deny: String(P.VIEW_CHANNEL) } })
+  const overwrite = `/client/channels/${demo.kimaki.id}/permissions/${memberId}`
+  await laptop.json(overwrite, { method: 'PUT', json: { type: 1, allow: '0', deny: String(P.VIEW_CHANNEL) } })
+  // Hidden, not lost: a role edit or a re-permissioned channel can give it back.
   expect(await ids(member)).not.toContain(kept.id)
-  expect((await t.hub.store.bookmarks(memberId)).map((b) => b.messageId)).not.toContain(kept.id)
+  expect((await t.hub.store.bookmarks(memberId)).map((b) => b.messageId)).toContain(kept.id)
   expect((await member.fetch(`/client/bookmarks/${demo.kimaki.id}/${kept.id}`, { method: 'PUT' })).status).toBe(404)
-  // The owner's bookmark of a message elsewhere stays.
+  // Nothing about a hidden bookmark reaches their devices, even when its message changes.
+  const before = memberEvents.length
+  await kept.edit('Kimaki release notes, revised.')
+  await waitFor(() => phoneEvents.find((e) => e.t === 'MESSAGE_UPDATE' && e.d.id === kept.id))
+  expect(memberEvents.slice(before).filter((e) => e.t.startsWith('SAVED_MESSAGE') || JSON.stringify(e.d ?? {}).includes(kept.id))).toEqual([])
+  await laptop.fetch(overwrite, { method: 'DELETE' })
+  expect(await ids(member)).toContain(kept.id)
+  // The owner's bookmark of the same message is separate.
   await laptop.json(`/client/bookmarks/${demo.kimaki.id}/${kept.id}`, { method: 'PUT' })
   expect(await ids(laptop)).toContain(kept.id)
+  // Deleted while hidden: gone for good, and the person hears nothing of it.
+  await laptop.json(overwrite, { method: 'PUT', json: { type: 1, allow: '0', deny: String(P.VIEW_CHANNEL) } })
+  expect(await ids(member)).not.toContain(kept.id)
+  const hiddenBefore = memberEvents.length
+  await kept.delete()
+  await waitFor(() => phoneEvents.find((e) => e.t === 'SAVED_MESSAGE_DELETE' && e.d.message_id === kept.id))
+  expect((await t.hub.store.bookmarks(memberId)).map((b) => b.messageId)).not.toContain(kept.id)
+  expect(memberEvents.slice(hiddenBefore).some((e) => e.t === 'SAVED_MESSAGE_DELETE')).toBe(false)
+  await laptop.fetch(overwrite, { method: 'DELETE' })
+  expect(await ids(member)).not.toContain(kept.id)
+})
+
+test('a bookmark whose message went while the hub was not watching is dropped when the list loads', async () => {
+  const note = await demo.website.send('Gone behind the hub\'s back.')
+  await member.json(`/client/bookmarks/${demo.website.id}/${note.id}`, { method: 'PUT' })
+  // As if deleted by an older build, without the hub's cleanup.
+  await t.hub.twin.prisma.message.delete({ where: { id: note.id } })
+  expect((await t.hub.store.bookmarks(memberId)).map((b) => b.messageId)).toContain(note.id)
+  expect(await ids(member)).not.toContain(note.id)
+  expect((await t.hub.store.bookmarks(memberId)).map((b) => b.messageId)).not.toContain(note.id)
+  await waitFor(() => memberEvents.find((e) => e.t === 'SAVED_MESSAGE_DELETE' && e.d.message_id === note.id))
 })
 
 test('a hub database from before bookmarks gains the table and keeps everything else; migrating again changes nothing', async () => {

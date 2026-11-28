@@ -55,6 +55,7 @@ import {
   channelToAPI,
   messageToAPI,
   isoTimestamp,
+  threadMemberToAPI,
 } from './serializers.js'
 
 const MAX_VITEST_WAIT_TIMEOUT_MS = 10_000
@@ -792,6 +793,24 @@ export class DigitalDiscord {
     const apiChannel = channelToAPI(updated)
     this.server.gateway.broadcast(GatewayDispatchEvents.ThreadUpdate, apiChannel)
     return apiChannel
+  }
+
+  // A user joins or leaves a thread in the Discord UI: THREAD_MEMBERS_UPDATE as Discord sends it.
+  // False when they already were (or were not) a member.
+  async simulateThreadMember({ channelId, userId, joined }: { channelId: string; userId: string; joined: boolean }): Promise<boolean> {
+    if (!this.server) throw new Error('Server not started')
+    const key = { channelId_userId: { channelId, userId } }
+    const existing = await this.prisma.threadMember.findUnique({ where: key })
+    if (Boolean(existing) === joined) return false
+    const member = joined ? await this.prisma.threadMember.create({ data: { channelId, userId } }) : (await this.prisma.threadMember.delete({ where: key }), null)
+    const thread = await this.prisma.channel.update({ where: { id: channelId }, data: { memberCount: joined ? { increment: 1 } : { decrement: 1 } } })
+    this.server.gateway.broadcast(GatewayDispatchEvents.ThreadMembersUpdate, {
+      id: channelId,
+      guild_id: thread.guildId,
+      member_count: Math.max(0, thread.memberCount),
+      ...(member ? { added_members: [threadMemberToAPI(member)] } : { removed_member_ids: [userId] }),
+    })
+    return true
   }
 
   // --- Scoped accessors ---

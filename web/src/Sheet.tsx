@@ -6,8 +6,8 @@ import { Icon, type IconName } from './icons.tsx'
 import { leave } from './text.ts'
 import { Switch } from './Switch.tsx'
 
-/** `toggle`: an on/off row, a switch on phones. */
-export type SheetAction = { label: string; icon?: IconName; run: () => void; red?: boolean; radio?: boolean; toggle?: boolean; checked?: boolean; sub?: string }
+/** `toggle`: an on/off row, a switch on phones. `check`: an on/off row with a checkbox, as Discord's. */
+export type SheetAction = { label: string; icon?: IconName; run: () => void; red?: boolean; radio?: boolean; toggle?: boolean; check?: boolean; checked?: boolean; sub?: string }
 /** Where a menu opens: at a point (right-click, long press) or dropped from a control,
  *  8px below it and aligned to its start or end edge, like Discord's. */
 export type SheetAt = { x: number; y: number } | { rect: DOMRect; align: 'start' | 'end' } | { rect: DOMRect; side: 'left' | 'right' }
@@ -214,7 +214,7 @@ export function Sheet({ spec, onClose, picker }: { spec: SheetSpec; onClose: () 
             heading && <div key={`h${i}`} className="sheet-heading" role="presentation">{heading}</div>,
             <div key={i} className="sheet-group" role={heading ? 'group' : undefined} aria-label={heading}>
               {group.map((action) => {
-                const toggle = Boolean(action.toggle && isPhone)
+                const toggle = Boolean((action.toggle && isPhone) || action.check)
                 return (
                 <button key={action.label} className={`sheet-item${action.red ? ' red' : ''}${action.sub ? ' two-line' : ''}`} role={action.radio ? 'menuitemradio' : toggle ? 'menuitemcheckbox' : 'menuitem'} aria-checked={action.radio || toggle ? Boolean(action.checked) : undefined} onClick={() => finish(action.run)}>
                   {action.icon && <Icon name={action.icon} size={isPhone ? 22 : 18} />}
@@ -223,7 +223,8 @@ export function Sheet({ spec, onClose, picker }: { spec: SheetSpec; onClose: () 
                     {action.sub && <span className="sheet-sub-label">{action.sub}</span>}
                   </span>
                   {action.radio && <i className={`sheet-radio${action.checked ? ' on' : ''}`} />}
-                  {toggle && <Switch label={action.label} checked={Boolean(action.checked)} decorative />}
+                  {action.check && <i className={`sheet-check${action.checked ? ' on' : ''}`}>{action.checked && <svg viewBox="0 0 16 16" width="14" height="14"><path d="m3 8 3 3 7-7" fill="none" stroke="currentColor" strokeWidth="2" /></svg>}</i>}
+                  {toggle && !action.check && <Switch label={action.label} checked={Boolean(action.checked)} decorative />}
                 </button>
                 )
               })}

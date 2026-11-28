@@ -20,7 +20,7 @@ import { below, Sheet, sessionActions, usePress, type SheetAt, type SheetSpec } 
 import type { MarkdownContext } from './markdown.tsx'
 import { ModalDialog, type OpenModal } from './Modal.tsx'
 import { DM_GUILD, dmName, dmUser, isDm, machineNamed, snowflakeGt, store, THREAD_TYPES, machineName, useMachineName, useStore } from './store.ts'
-import { bellSheet, effective, useFocusReporting, useNotificationClicks } from './notify.ts'
+import { bellSheet, effective, threadActions, useFocusReporting, useNotificationClicks } from './notify.ts'
 import { native, shareOrigin } from './native.ts'
 import { setPlace } from './TitleBar.tsx'
 import { NativeLogin } from './NativeLogin.tsx'
@@ -506,6 +506,7 @@ const ThreadRow = memo(function ThreadRow({ thread, title, current, unread, mute
   const mark = threadMark(state, unread)
   const manage = can(P.MANAGE_THREADS, thread) || thread.owner_id === store.data.state?.me.id
   const press = usePress((at) => {
+    const [alerts, membership] = store.data.state ? threadActions(store.data.state, thread, at, onSheet, () => {}) : []
     onSheet({
       at,
       title,
@@ -513,8 +514,9 @@ const ThreadRow = memo(function ThreadRow({ thread, title, current, unread, mute
       badge: <i className={`st ${state ?? 'idle'}`} />,
       groups: [
         [{ label: 'Mark as read', icon: 'eye', run: () => store.markSeen(thread.id) }],
-        [{ label: favourite ? 'Remove from favourites' : 'Add to favourites', icon: 'star', run: () => void store.toggleFavourite(thread.id) }],
+        [{ label: favourite ? 'Remove from Favorites' : 'Add to Favorites', icon: 'star', run: () => void store.toggleFavourite(thread.id) }],
         [store.isOutput(thread) ? { label: 'Show as conversation', icon: 'chat', run: () => void store.setOutput(thread, false) } : { label: 'Show as output feed', icon: 'feed', run: () => void store.setOutput(thread, true) }],
+        alerts ?? [],
         [
           ...(manage ? [{ label: 'Rename', icon: 'pencil' as const, run: () => sessionActions.rename?.(thread.id) }] : []),
           { label: 'Copy link', icon: 'link', run: () => void navigator.clipboard?.writeText(`${shareOrigin()}/#/c/${thread.id}`) },
@@ -522,6 +524,7 @@ const ThreadRow = memo(function ThreadRow({ thread, title, current, unread, mute
           { label: 'Copy ID', icon: 'hash', run: () => void navigator.clipboard?.writeText(thread.id) },
           ...(manage ? [{ label: thread.thread_metadata?.archived ? 'Unarchive' : 'Archive', icon: (thread.thread_metadata?.archived ? 'unarchive' : 'archive') as 'archive', run: () => void api.patchThread(thread.id, { archived: !thread.thread_metadata?.archived }) }] : []),
         ],
+        membership ?? [],
         state === 'busy' && store.commandsFor(thread.id).some((c) => c.name === 'abort') ? [{ label: 'Stop the run', icon: 'stop', red: true, run: () => void api.command(thread.id, 'abort', []) }] : [],
       ],
     })
@@ -580,7 +583,7 @@ function LinkedRows({ threadId, title, unread, onOpen, mask }: { mask:number; th
 const STATE_LABEL: Record<string, string> = { waiting: 'waiting for you', failed: 'failed', busy: 'working', done: 'done', idle: 'idle' }
 
 
-function ProjectRow({ channel, current, unread, muted, threads, mentions, onOpen, onSheet }: { channel: Channel; current: boolean; unread: boolean; muted: boolean; threads: Channel[]; mentions: number; onOpen: (id: string) => void; onSheet: (spec: SheetSpec) => void }) {
+function ProjectRow({ channel, current, unread, muted, threads, mentions, favourite, drag, onOpen, onSheet }: { channel: Channel; current: boolean; unread: boolean; muted: boolean; threads: Channel[]; mentions: number; favourite: boolean; drag?: React.HTMLAttributes<HTMLElement>; onOpen: (id: string) => void; onSheet: (spec: SheetSpec) => void }) {
   const press = usePress((at) =>
     onSheet({
       at,
@@ -588,6 +591,7 @@ function ProjectRow({ channel, current, unread, muted, threads, mentions, onOpen
       subtitle: channel.topic ?? undefined,
       groups: [
         [{ label: 'Mark all as read', icon: 'eye', run: () => store.markAllSeen([channel.id, ...threads.map((t) => t.id)]) }],
+        [{ label: favourite ? 'Remove from Favorites' : 'Add to Favorites', icon: 'star', run: () => void store.toggleFavourite(channel.id) }],
         [store.isOutput(channel) ? { label: 'Show as conversation', icon: 'chat', run: () => void store.setOutput(channel, false) } : { label: 'Show as output feed', icon: 'feed', run: () => void store.setOutput(channel, true) }],
         [{ label: 'Edit channel', icon: 'gear', run: () => sessionActions.channelSettings?.(channel.id) }],
         [{ label: 'Copy ID', icon: 'hash', run: () => void navigator.clipboard?.writeText(channel.id) }],
@@ -595,7 +599,7 @@ function ProjectRow({ channel, current, unread, muted, threads, mentions, onOpen
     }),
   )
   return (
-    <button data-nav={channel.id} data-voice-channel={channel.type === 2 || undefined} className={`channel${current ? ' active' : ''}${unread ? ' unread' : ''}${muted ? ' muted' : ''}`} onClick={() => onOpen(channel.id)} {...press}>
+    <button data-nav={channel.id} data-voice-channel={channel.type === 2 || undefined} className={`channel${current ? ' active' : ''}${unread ? ' unread' : ''}${muted ? ' muted' : ''}`} onClick={() => onOpen(channel.id)} {...press} {...drag}>
       <span className="hash">{channel.type === 15 ? <Icon name="threads" size={16} /> : channel.type === 2 ? <Icon name="voiceChannel" size={20} /> : '#'}</span>
       <span className="channel-name"><E>{channel.name}</E></span>
       {mentions > 0 && <span className="badge num" aria-label={`${mentions} mentions`}>{mentions}</span>}
@@ -914,6 +918,11 @@ function SidebarView({ state, seen, current, open, onOpen: openLatest, ctx, guil
   // Discord greys a muted row and gives it no unread mark; its mentions still count.
   const muted = (c: Channel) => effective(state, c).mutedUntil !== null
   const unread = (c: Channel) => (THREAD_TYPES.has(c.type) || c.id !== current) && snowflakeGt(c.last_message_id, seen[c.id]) && !muted(c)
+  // Hide Muted Channels, as Discord's: a muted channel or thread leaves the list unless it is open or
+  // mentions you. A thread you left leaves it the same way.
+  const hideMuted = Boolean(state.notifications?.hide_muted?.includes(guild))
+  const left = useMemo(() => new Set(state.left_threads), [state.left_threads])
+  const kept = (c: Channel) => c.id === current || (mentionCounts[c.id] ?? 0) > 0 || (!left.has(c.id) && (!hideMuted || !muted(c)))
   const passes = (t:Channel) => !filtering || Boolean(mask & markBit(sessions[t.id]?.state,unread(t)))
   const q = query.trim().toLowerCase()
   const hit = (c: Channel) => !q || title(c).toLowerCase().includes(q)
@@ -951,7 +960,60 @@ function SidebarView({ state, seen, current, open, onOpen: openLatest, ctx, guil
       {thread.id === current && !q && <LinkedRows mask={mask} unread={unread} threadId={thread.id} title={title} onOpen={onOpen} />}
     </Fragment>
   )
-  const favouriteThreads = favourites.map((id) => state.threads.find((t) => t.id === id)).filter((t): t is Channel => Boolean(t && hit(t) && passes(t)))
+  // Discord's Favorites category: this server's favourite channels and threads, in the order added.
+  const favouriteRows = favourites.flatMap((id) => {
+    const thread = state.threads.find((t) => t.id === id)
+    if (thread) return inGuild(thread) && hit(thread) && passes(thread) ? [row(thread)] : []
+    const channel = text.find((c) => c.id === id)
+    if (!channel || (q && !hit(channel)) || filtering) return []
+    return [<ProjectRow key={channel.id} channel={channel} current={channel.id === current} unread={unread(channel)} muted={muted(channel)} threads={threadList.byParent.get(channel.id) ?? []} mentions={channel.id === current ? 0 : (mentionCounts[channel.id] ?? 0)} favourite onOpen={onOpen} onSheet={setSheet} />]
+  })
+  const favouritesHidden = Boolean(collapsed['favourites'] && !q && !filtering)
+
+  // Drag to reorder, as Discord, for people who can manage channels; not on phones.
+  const phone = useMediaQuery('(max-width: 767px)')
+  const arrange = !phone && !q && !filtering && can(P.MANAGE_CHANNELS, null, guild)
+  const [drag, setDrag] = useState<{ id: string; category: boolean } | null>(null)
+  const [drop, setDrop] = useState<{ id: string; after: boolean } | null>(null)
+  const ended = () => (setDrag(null), setDrop(null))
+  const source = (c: Channel): React.HTMLAttributes<HTMLElement> => arrange ? {
+    draggable: true,
+    onDragStart: (e) => {
+      e.stopPropagation()
+      e.dataTransfer.effectAllowed = 'move'
+      e.dataTransfer.setData('text/plain', c.id)
+      setDrag({ id: c.id, category: c.type === 4 })
+    },
+    onDragEnd: ended,
+  } : {}
+  const over = (e: React.DragEvent<HTMLElement>, id: string, box: Element, into = false) => {
+    e.preventDefault()
+    e.stopPropagation()
+    e.dataTransfer.dropEffect = 'move'
+    const r = box.getBoundingClientRect()
+    const after = into || e.clientY > r.top + r.height / 2
+    if (drop?.id !== id || drop.after !== after) setDrop({ id, after })
+  }
+  const parentOf = (c: Channel) => (c.parent_id && categories.some((k) => k.id === c.parent_id) ? c.parent_id : null)
+  const place = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const moving = drag, target = drop && state.channels.find((c) => c.id === drop.id)
+    const dragged = moving && state.channels.find((c) => c.id === moving.id)
+    ended()
+    if (!moving || !drop || !target || !dragged || target.id === dragged.id) return
+    const parent = moving.category ? undefined : target.type === 4 ? target.id : parentOf(target)
+    const list = moving.category
+      ? categories.filter((c) => c.id !== dragged.id)
+      : state.channels.filter((c) => c.id !== dragged.id && c.type !== 4 && !THREAD_TYPES.has(c.type) && !isDm(c) && inGuild(c) && parentOf(c) === parent).sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+    list.splice(target.type === 4 && !moving.category ? 0 : list.findIndex((c) => c.id === target.id) + (drop.after ? 1 : 0), 0, dragged)
+    const moves = list.flatMap((c, position) => {
+      const reparent = c.id === dragged.id && parent !== undefined && parentOf(c) !== parent
+      return c.position !== position || reparent ? [{ id: c.id, position, ...(reparent ? { parent_id: parent } : {}) }] : []
+    })
+    if (moves.length) void api.reorderChannels(guild, moves).then(({ channels }) => channels.forEach((c) => store.apply('CHANNEL_UPDATE', c)), (err: Error) => store.notice(err.message))
+  }
+  const line = (id: string) => (drop?.id === id ? (drop.after ? ' drop-after' : ' drop-before') : '')
 
   return (
     <nav className={`sidebar${open ? ' open' : ''}${guilds.length ? ' with-rail' : ''}`}>
@@ -987,6 +1049,7 @@ function SidebarView({ state, seen, current, open, onOpen: openLatest, ctx, guil
                   { label: 'Collapse all categories', icon: 'down', run: () => { const next = Object.fromEntries(categories.map((c) => [c.id, true])); setCollapsed(next); localStorage.setItem('collapsed', JSON.stringify(next)) } },
                   { label: 'Copy server ID', icon: 'copy', run: () => void navigator.clipboard?.writeText(guild) },
                 ],
+                [{ label: 'Hide muted channels', icon: 'eyeOff', check: true, checked: hideMuted, run: () => void store.setHideMuted(guild, !hideMuted) }],
               ],
             })
           }}
@@ -1039,10 +1102,13 @@ function SidebarView({ state, seen, current, open, onOpen: openLatest, ctx, guil
         )}
         {filtering && !state.threads.some(t=>inGuild(t)&&hit(t)&&passes(t)) && <div className="mark-empty" role="status">No matching threads. <button onClick={()=>changeMask(ALL_MARKS)}>Show all statuses</button></div>}
         {!q && extensions.map(e => e.BeforeChannels && <e.BeforeChannels key={e.id} current={current} onOpen={onOpen} />)}
-        {favouriteThreads.length > 0 && (
+        {favouriteRows.length > 0 && (
           <div className="category">
-            <div className="category-name static">Favourites</div>
-            {favouriteThreads.map(row)}
+            <button className={`category-name${favouritesHidden ? ' collapsed' : ''}`} onClick={() => toggle('favourites')} aria-expanded={!favouritesHidden}>
+              <Icon name="down" size={14} />
+              Favorites
+            </button>
+            {!favouritesHidden && favouriteRows}
           </div>
         )}
         {groups.map(({ category, channels }) => {
@@ -1050,7 +1116,7 @@ function SidebarView({ state, seen, current, open, onOpen: openLatest, ctx, guil
           const hidden = Boolean(category && collapsed[category.id] && !q && !filtering)
           const rows = channels.flatMap((channel) => {
             const threads = threadList.byParent.get(channel.id) ?? []
-            const matching = threads.filter(t=>hit(t)&&passes(t))
+            const matching = threads.filter(t=>hit(t)&&passes(t)&&kept(t))
             if (filtering && !matching.length) return []
             if (q && !hit(channel) && matching.length === 0) return []
             const listed = (t: Channel) => t.id === current || threadList.visible.has(t.id) || (filtering && markBit(sessions[t.id]?.state,unread(t)) !== 16)
@@ -1058,9 +1124,10 @@ function SidebarView({ state, seen, current, open, onOpen: openLatest, ctx, guil
             const older = q ? [] : matching.filter((t) => !listed(t))
             const visible = hidden ? live.filter((t) => t.id === current || unread(t)) : showOlder[channel.id] ? matching : live
             if (hidden && channel.id !== current && !unread(channel) && visible.length === 0) return []
+            if (!kept(channel) && visible.length === 0) return []
             return [
-              <div key={channel.id}>
-                <ProjectRow channel={channel} current={channel.id === current} unread={unread(channel)} muted={muted(channel)} threads={threads} mentions={channel.id === current ? 0 : (mentionCounts[channel.id] ?? 0)} onOpen={onOpen} onSheet={setSheet} />
+              <div key={channel.id} className={drag && !drag.category ? `drop-target${line(channel.id)}` : undefined} onDragOver={drag && !drag.category ? (e) => over(e, channel.id, e.currentTarget.firstElementChild!) : undefined} onDrop={drag ? place : undefined}>
+                <ProjectRow channel={channel} current={channel.id === current} unread={unread(channel)} muted={muted(channel)} threads={threads} mentions={channel.id === current ? 0 : (mentionCounts[channel.id] ?? 0)} favourite={favourites.includes(channel.id)} drag={source(channel)} onOpen={onOpen} onSheet={setSheet} />
                 {channel.type === 2 && <VoicePeople state={state} channel={channel} />}
                 {(visible.length > 0 || (!hidden && older.length > 0)) && (
                   <Tree>
@@ -1084,11 +1151,23 @@ function SidebarView({ state, seen, current, open, onOpen: openLatest, ctx, guil
               </div>,
             ]
           })
-          if ((q || filtering) && rows.length === 0) return null
+          if ((q || filtering || (hideMuted && channels.length > 0)) && rows.length === 0) return null
           return (
-            <div key={category?.id ?? 'root'} className="category">
+            <div
+              key={category?.id ?? 'root'}
+              className={`category${category && drag?.category ? ` drop-target${line(category.id)}` : ''}`}
+              onDragOver={category && drag?.category ? (e) => over(e, category.id, e.currentTarget.firstElementChild!) : undefined}
+              onDrop={drag ? place : undefined}
+            >
               {category && (
-                <button className={`category-name${hidden ? ' collapsed' : ''}${machineOf(category)?.online === false ? ' down' : ''}`} onClick={() => toggle(category.id)} aria-expanded={!hidden} title={machineOf(category)?.online === false ? `${category.name}: machine offline` : undefined}>
+                <button
+                  className={`category-name${hidden ? ' collapsed' : ''}${machineOf(category)?.online === false ? ' down' : ''}${drag && !drag.category ? line(category.id) : ''}`}
+                  onClick={() => toggle(category.id)}
+                  aria-expanded={!hidden}
+                  title={machineOf(category)?.online === false ? `${category.name}: machine offline` : undefined}
+                  onDragOver={drag && !drag.category ? (e) => over(e, category.id, e.currentTarget, true) : undefined}
+                  {...source(category)}
+                >
                   <Icon name="down" size={14} />
                   {machineIcon(state.machine_icons, machineOf(category)?.name ?? category.name?.replace(/^kimaki\s+/i, ''), 'guild_icon') && <img className="category-icon" src={machineIcon(state.machine_icons, machineOf(category)?.name ?? category.name?.replace(/^kimaki\s+/i, ''), 'guild_icon')!} alt="" />}
                   {category.name}

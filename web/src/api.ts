@@ -99,7 +99,8 @@ export type PresenceStatus = 'online' | 'idle' | 'dnd' | 'invisible' | 'offline'
 export type Presence = { user_id: string; status: PresenceStatus; custom_status?: CustomStatus; activity?: string | null; devices?: Array<{ id: string; name: string; channel_id: string | null; visible: boolean }>; machines?: Array<{ machine: string; online: boolean; activity?: string | null }> }
 export type NotifyLevel = 'all' | 'mentions' | 'nothing'
 export type NotifySetting = { level: NotifyLevel | null; muted_until: number | null }
-export type NotificationState = { settings: Record<string, NotifySetting>; default_level: NotifyLevel; vapid_public_key: string; push_subscribed: boolean }
+// hide_muted: guilds whose muted channels leave the sidebar (Discord's hide_muted_channels).
+export type NotificationState = { settings: Record<string, NotifySetting>; default_level: NotifyLevel; vapid_public_key: string; push_subscribed: boolean; hide_muted?: string[] }
 export type MachineIcon = { avatar: string | null; guild_icon: string | null }
 // The hub's schedules, per person: a message posted later, or a reminder about a message
 // (or with a note). A reminder that has fired is "done" until it is dismissed.
@@ -136,6 +137,9 @@ export type HubState = {
   links?: Record<string, number>
   sessionThreads?: Record<string, string>
   favourites: string[]
+  // Threads you are a member of, and those you left (out of the sidebar unless open).
+  thread_members?: string[]
+  left_threads?: string[]
   user_aliases?: Record<string, string>
   output?: Record<string, boolean>
   machines: string[]
@@ -301,9 +305,11 @@ export const api = {
   setOutput: (channelId: string, output: boolean | null) => call(`/client/channels/${channelId}/output`, output === null ? { method: 'DELETE' } : { method: 'PUT', json: { output } }),
   notifications: () => call<NotificationState>('/client/notifications'),
   setNotification: (scopeId: string, body: { level?: NotifyLevel | null; muted_until?: number | null }) => call(`/client/notifications/${scopeId}`, { method: 'PUT', json: body }),
+  setGuildSettings: (guildId: string, body: { hide_muted_channels: boolean }) => call(`/client/guilds/${guildId}/settings`, { method: 'PATCH', json: body }),
   pushSubscribe: (subscription: unknown) => call('/client/push', { method: 'PUT', json: subscription }),
   pushUnsubscribe: () => call('/client/push', { method: 'DELETE' }),
   pushTest: () => call<{ sent: number; failed: number }>('/client/push/test', { method: 'POST' }),
+  threadMember: (threadId: string, joined: boolean) => call(`/client/channels/${threadId}/thread-members/@me`, { method: joined ? 'PUT' : 'DELETE' }),
   favourite: (channelId: string, on: boolean) => call(`/client/favourites/${channelId}`, { method: on ? 'PUT' : 'DELETE' }),
   interaction: (body: Record<string, unknown>) => call<InteractionResult>('/client/interactions', { method: 'POST', json: body }),
   command: (channelId: string, name: string, options: unknown[]) => call<InteractionResult>('/client/commands', { method: 'POST', json: { channelId, name, options } }),

@@ -31,7 +31,7 @@ import { RequestCard } from './Panels.tsx'
 import type { HubRequest } from './api.ts'
 
 const NO_REQUESTS: HubRequest[] = []
-import { bellSheet, effective } from './notify.ts'
+import { bellSheet, effective, threadActions } from './notify.ts'
 import { below, beside, Sheet, sessionActions, usePress, type SheetAction, type SheetAt, type SheetSpec } from './Sheet.tsx'
 import { can, isHubOwner, P } from './perms.ts'
 import { rendered } from './perf.ts'
@@ -552,7 +552,7 @@ const MessageItem = memo(function MessageItem({
         {forward && <Forwarded snapshot={forward} ctx={ctx} source={forwardSource} onSource={message.message_reference?.channel_id && ctx.openChannel ? () => ctx.openChannel!(message.message_reference!.channel_id!) : undefined} />}
         <Embeds embeds={embeds} ctx={ctx} />
         {recording && <VoiceMessage key={recording.url} url={recording.url} duration={recording.duration_secs ?? message.voice_note?.duration_secs} waveform={recording.waveform} />}
-        <Attachments attachments={spoken ? message.attachments.filter(a => a.id !== message.voice_note?.attachment_id && !/^(audio\/|application\/ogg)/i.test(a.content_type ?? '') && !/\.(ogg|opus|mp3|m4a|wav|webm)$/i.test(a.filename)) : message.attachments} />
+        <Attachments attachments={spoken ? message.attachments.filter(a => a.id !== message.voice_note?.attachment_id && !/^(audio\/|application\/ogg)/i.test(a.content_type ?? '') && !/\.(ogg|opus|mp3|m4a|wav|webm)$/i.test(a.filename)) : message.attachments} ctx={ctx} />
         {message.sticker_items?.length ? <Stickers items={message.sticker_items} /> : null}
         {message.poll && <PollCard poll={message.poll} />}
         {linked.length > 0 && (
@@ -1047,7 +1047,8 @@ export function Chat({
   const narrow = () => (header.current?.getBoundingClientRect().width ?? window.innerWidth) <= 640
   // Title tap: everything the header holds, as one sheet (the only way in on phones).
   // The More menu (desktop "…", phone title tap): everything that isn't on the toolbar.
-  const threadSheet = (at: SheetAt) =>
+  const threadSheet = (at: SheetAt) => {
+    const [alerts = [], membership = []] = isThread && !dm ? threadActions(state, channel, at, setSheet, setToast) : []
     setSheet({
       at,
       plain: true,
@@ -1071,16 +1072,19 @@ export function Chat({
         ],
         [
           ...(manageThread ? [{ label: 'Rename', icon: 'pencil' as const, run: () => setRenaming(title) }] : []),
-          { label: favourite ? 'Remove from favourites' : 'Add to favourites', icon: 'star', run: () => void store.toggleFavourite(channel.id) },
+          { label: favourite ? 'Remove from Favorites' : 'Add to Favorites', icon: 'star', run: () => void store.toggleFavourite(channel.id) },
           store.isOutput(channel) ? { label: 'Show as conversation', icon: 'chat', run: () => void store.setOutput(channel, false) } : { label: 'Show as output feed', icon: 'feed', run: () => void store.setOutput(channel, true) },
         ],
+        alerts,
         manageThread ? [{ label: channel.thread_metadata?.archived ? 'Unarchive' : 'Archive', icon: channel.thread_metadata?.archived ? 'unarchive' : 'archive', run: () => void api.patchThread(channel.id, { archived: !channel.thread_metadata?.archived }).catch((e: Error) => setToast(e.message)) }] : [],
         [
           { label: isThread ? 'Edit thread' : 'Edit channel', icon: 'gear', run: () => sessionActions.channelSettings?.(channel.id) },
           { label: 'Copy link', icon: 'link', run: () => void navigator.clipboard?.writeText(`${shareOrigin()}/#/c/${channel.id}`) },
         ],
+        membership,
       ].filter((g): g is SheetAction[] => g.length > 0) as SheetAction[][],
     })
+  }
   // Mentions waiting in other channels, on the back button like Discord's.
   const elsewhere = useStore((d) => Object.entries(d.mentions).reduce((sum, [id, n]) => (id === channel.id ? sum : sum + n), 0))
   const output = useStore((d) => d.output[channel.id] ?? Boolean(channel.thread_metadata?.locked))

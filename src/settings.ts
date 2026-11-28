@@ -310,18 +310,21 @@ export class Settings {
     return this.hub.twin.simulateChannelUpdate(update)
   }
 
-  // Discord's bulk move: [{ id, position?, parent_id? }]
+  // Discord's bulk move: [{ id, position?, parent_id? }]. Every entry is checked before any
+  // moves, and only channels that change get a CHANNEL_UPDATE.
   private async reorder(v: Viewer, guildId: string, body: unknown) {
     if (!Array.isArray(body) || body.length > 500) throw new HttpError(400, 'Send a list of { id, position, parent_id }')
-    const updated = []
+    const updates = []
     for (const entry of body as Array<Record<string, unknown>>) {
       const channel = await this.channel(v, String(entry?.['id']), P.MANAGE_CHANNELS)
       if (channel.guildId !== guildId || THREAD_TYPES.has(channel.type)) throw new HttpError(400, 'Only this guild\'s channels and categories can be moved')
       const update: { channelId: string; parentId?: string | null; position?: number } = { channelId: channel.id }
       if (entry['position'] !== undefined) update.position = this.position(entry['position'])
       if (entry['parent_id'] !== undefined && channel.type !== 4) update.parentId = await this.parent(guildId, entry['parent_id'])
-      updated.push(await this.hub.twin.simulateChannelUpdate(update))
+      if ((update.position ?? channel.position) !== channel.position || (update.parentId !== undefined && update.parentId !== channel.parentId)) updates.push(update)
     }
+    const updated = []
+    for (const update of updates) updated.push(await this.hub.twin.simulateChannelUpdate(update))
     return { channels: updated }
   }
 

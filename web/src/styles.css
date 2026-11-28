@@ -429,6 +429,34 @@ html[data-keyboard='open'] .footer {
     color: var(--text-muted);
   }
 }
+/* Where a dragged channel or category lands. */
+.drop-target,
+.category-name.drop-after {
+  position: relative;
+}
+.drop-before::before,
+.drop-after::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  right: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.drop-before::before {
+  top: -1px;
+}
+.drop-after::after {
+  bottom: -1px;
+}
+.category.drop-before::before {
+  top: -9px;
+}
+.category.drop-after::after {
+  bottom: -9px;
+}
 .channel {
   position: relative;
   display: flex;
@@ -5053,6 +5081,23 @@ html[data-side-collapsed='true'][data-rail-collapsed='true'] .chat {
 .sheet-item .sheet-radio.on {
   background: var(--accent);
   box-shadow: inset 0 0 0 6px var(--accent), inset 0 0 0 10px var(--accent-ink);
+}
+/* A checkbox row (Hide muted channels): a 20px rounded square, filled accent with a tick when on. */
+.sheet-item .sheet-check {
+  display: grid;
+  place-items: center;
+  margin-left: auto;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-inline);
+  box-shadow: inset 0 0 0 1px var(--radio-ring, #63636b);
+  background: rgb(0 0 0 / 0.15);
+  color: var(--accent-ink);
+}
+.sheet-item .sheet-check.on {
+  background: var(--accent);
+  box-shadow: none;
 }
 /* Server rail: a 20px pip and a lighter icon on hover; pressed nudges; focus ring on the icon. */
 @media (hover: hover) {

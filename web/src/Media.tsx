@@ -339,11 +339,16 @@ function AudioAttachment({ a }: { a: Attachment }) {
 }
 
 const PREVIEW_LINES = 6
+const NO_CTX: MarkdownContext = { userName: () => null, channelName: () => null }
 
-function TextAttachment({ a }: { a: Attachment }) {
+// Markdown files show rendered (React elements, so HTML in the file stays text), with a switch to the source.
+function TextAttachment({ a, ctx = NO_CTX }: { a: Attachment; ctx?: MarkdownContext }) {
   const [text, setText] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
   const [open, setOpen] = useState(false)
+  const [source, setSource] = useState(false)
+  const [clipped, setClipped] = useState(false)
+  const rendered = useRef<HTMLDivElement>(null)
   useEffect(() => {
     let live = true
     fetch(a.url, { credentials: 'same-origin' })
@@ -354,6 +359,12 @@ function TextAttachment({ a }: { a: Attachment }) {
       live = false
     }
   }, [a.url])
+  const lang = TEXT_LANG[ext(a.filename)] ?? ''
+  const md = lang === 'md' && !source && text !== null
+  useLayoutEffect(() => {
+    const el = rendered.current
+    if (md && !open && el) setClipped(el.scrollHeight > el.clientHeight + 1)
+  }, [md, open, text])
   if (failed)
     return (
       <div className="file-box">
@@ -361,14 +372,19 @@ function TextAttachment({ a }: { a: Attachment }) {
       </div>
     )
   const lines = text === null ? [] : text.split('\n')
-  const more = lines.length > PREVIEW_LINES
+  const more = md ? clipped : lines.length > PREVIEW_LINES
   const shown = open || !more ? lines : lines.slice(0, PREVIEW_LINES)
-  const lang = TEXT_LANG[ext(a.filename)] ?? ''
   return (
-    <div className={`text-file${open ? ' open' : ''}`}>
-      <pre className="text-file-body" style={text === null ? { minHeight: PREVIEW_LINES * 16 + 32 } : undefined}>
-        <code>{text === null ? null : highlight(lang, shown.join('\n'))}</code>
-      </pre>
+    <div className={`text-file${open ? ' open' : ''}${lang === 'md' ? ' markdown-file' : ''}`}>
+      {md ? (
+        <div className={`text-file-body text-file-markdown${more && !open ? ' clipped' : ''}`} ref={rendered}>
+          <Markdown text={text} ctx={ctx} />
+        </div>
+      ) : (
+        <pre className="text-file-body" style={text === null ? { minHeight: PREVIEW_LINES * 16 + 32 } : undefined}>
+          <code>{text === null ? null : highlight(lang, shown.join('\n'))}</code>
+        </pre>
+      )}
       <div className="text-file-foot">
         {more && (
           <button className="icon-button text-file-toggle" onClick={() => setOpen(!open)} aria-expanded={open} aria-label={open ? 'Collapse' : 'Expand'} title={open ? 'Collapse' : `Expand (${lines.length} lines)`}>
@@ -382,6 +398,11 @@ function TextAttachment({ a }: { a: Attachment }) {
             {text !== null && ` · ${lines.length} ${lines.length === 1 ? 'line' : 'lines'}`}
           </span>
         </span>
+        {lang === 'md' && text !== null && (
+          <button className="icon-button text-file-source" onClick={() => setSource(!source)} aria-pressed={source} aria-label={source ? 'View formatted' : 'View source'} title={source ? 'View formatted' : 'View source'}>
+            <Icon name={source ? 'eye' : 'code'} size={24} />
+          </button>
+        )}
         <a className="icon-button" href={a.url} target="_blank" rel="noreferrer noopener" aria-label="View whole file" title="View whole file">
           <Icon name="external" size={24} />
         </a>
@@ -428,7 +449,7 @@ function MissingFile({ a }: { a: Attachment }) {
   )
 }
 
-export function Attachments({ attachments: all, flags, voice: Voice }: { attachments: Attachment[]; flags?: number; voice?: (a: Attachment) => ReactNode }) {
+export function Attachments({ attachments: all, flags, voice: Voice, ctx }: { attachments: Attachment[]; flags?: number; voice?: (a: Attachment) => ReactNode; ctx?: MarkdownContext }) {
   const [view, setView] = useState<{ items: Viewable[]; index: number } | null>(null)
   if (!all.length) return null
   const gone = all.filter((a) => a.missing || !a.url)
@@ -456,7 +477,7 @@ export function Attachments({ attachments: all, flags, voice: Voice }: { attachm
       {attachments.map((a, i) => {
         const kind = kinds[i]
         if (kind === 'audio') return voice && Voice ? <div key={a.id}>{Voice(a)}</div> : <AudioAttachment key={a.id} a={a} />
-        if (kind === 'text') return <TextAttachment key={a.id} a={a} />
+        if (kind === 'text') return <TextAttachment key={a.id} a={a} ctx={ctx} />
         if (kind === 'file')
           return (
             <div key={a.id} className="file-box">
@@ -687,7 +708,7 @@ export function Forwarded({ snapshot, source, onSource, ctx }: { snapshot: Snaps
       <div className="forwarded-body">
         <Markdown text={snapshot.content} ctx={ctx} />
         <Embeds embeds={snapshot.embeds ?? []} ctx={ctx} />
-        <Attachments attachments={snapshot.attachments ?? []} flags={snapshot.flags} />
+        <Attachments attachments={snapshot.attachments ?? []} flags={snapshot.flags} ctx={ctx} />
         {snapshot.sticker_items?.length ? <Stickers items={snapshot.sticker_items} /> : null}
         <div className="forwarded-source">
           {source && (onSource ? <button className="link-button" onClick={onSource}>{source}</button> : <span>{source}</span>)}

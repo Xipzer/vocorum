@@ -151,3 +151,25 @@ export function bellSheet(state: HubState, channel: Channel, at: SheetAt, onDone
     ],
   }
 }
+
+const MUTE_FOR: Array<[string, number]> = [['For 15 minutes', 15 * 60_000], ['For 1 hour', HOUR], ['For 3 hours', 3 * HOUR], ['For 8 hours', 8 * HOUR], ['For 24 hours', 24 * HOUR], ['Until I turn it back on', 100 * 365 * 24 * HOUR]]
+const THREAD_LEVELS: Array<[NotifyLevel, string]> = [['all', 'All messages'], ['mentions', 'Only @mentions'], ['nothing', 'Nothing']]
+
+// A thread's menu items as Discord's: Mute thread (a submenu of how long), Notification
+// settings (a submenu of levels), then Join or Leave thread.
+export function threadActions(state: HubState, thread: Channel, at: SheetAt, open: (spec: SheetSpec) => void, onDone: (text: string) => void): SheetAction[][] {
+  const set = (body: { level?: NotifyLevel | null; muted_until?: number | null }) => void store.setNotification(thread.id, body).catch((e: Error) => onDone(e.message))
+  const mutedUntil = state.notifications?.settings[thread.id]?.muted_until ?? 0
+  const level = effective(state, thread).level
+  const joined = Boolean(state.thread_members?.includes(thread.id))
+  const member = (on: boolean) => void store.setThreadMember(thread.id, on).catch((e: Error) => onDone(e.message))
+  return [
+    [
+      mutedUntil > Date.now()
+        ? { label: 'Unmute thread', icon: 'bell', sub: `Muted ${mutedUntil > Date.now() + 365 * 24 * HOUR ? 'until you turn it back on' : `until ${new Date(mutedUntil).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`}`, run: () => set({ muted_until: null }) }
+        : { label: 'Mute thread', icon: 'silent', run: () => open({ at, plain: true, title: 'Mute thread', groups: [MUTE_FOR.map(([label, ms]) => ({ label, run: () => set({ muted_until: Date.now() + ms }) }))] }) },
+      { label: 'Notification settings', icon: 'bell', run: () => open({ at, plain: true, title: 'Notification settings', groups: [THREAD_LEVELS.map(([l, label]) => ({ label, radio: true, checked: level === l, run: () => set({ level: l }) }))] }) },
+    ],
+    joined ? [{ label: 'Leave thread', icon: 'leave', red: true, run: () => member(false) }] : thread.thread_metadata?.archived ? [] : [{ label: 'Join thread', icon: 'join', run: () => member(true) }],
+  ]
+}

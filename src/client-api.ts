@@ -127,9 +127,14 @@ export class ClientApi {
       this.hub.events.send('OUTPUT_VIEW', { id: params['id'], output }, { userId: v.userId })
       return send(204, undefined)
     }
+    // Join Thread and Leave Thread, Discord's PUT and DELETE /channels/{id}/thread-members/@me.
+    if ((params = match('/client/channels/:id/thread-members/@me', pathname)) && (method === 'PUT' || method === 'DELETE')) return send(204, await this.threadMembership(v, params['id']!, method === 'PUT'))
     if ((params = match('/client/favourites/:id', pathname)) && (method === 'PUT' || method === 'DELETE')) {
       if (method === 'PUT') await this.channel(v, params['id']!)
       await this.hub.store.setFavourite(v.userId, params['id']!, method === 'PUT')
+      // The person's other devices follow, in the order they were added.
+      const visible = await this.hub.access.visibleChannels(v.userId)
+      this.hub.events.send('FAVOURITES_UPDATE', { favourites: (await this.hub.store.favourites(v.userId)).filter((id) => visible.has(id)) }, { userId: v.userId })
       return send(204, undefined)
     }
     // Profile pictures stored with the hub (<hub dir>/media/avatar-<user id>.png), of people the viewer shares a guild with.
@@ -218,6 +223,7 @@ export class ClientApi {
     if (managed !== undefined) return send(200, managed)
     if (method === 'GET' && pathname === '/client/inbox') return send(200, await this.inbox(v, new URL(req.url ?? '/', 'http://x').searchParams))
     if (method === 'GET' && pathname === '/client/notifications') return send(200, await this.notificationState(v))
+    if ((params = match('/client/guilds/:id/settings', pathname)) && method === 'PATCH') return send(200, await this.setGuildSettings(v, params['id']!, await readJson(req)))
     if ((params = match('/client/notifications/:scope', pathname)) && method === 'PUT') return send(200, await this.setNotification(v, params['scope']!, await readJson(req)))
     if (pathname === '/client/push' && method === 'PUT') {
       const body = await readJson(req)
@@ -397,6 +403,9 @@ export class ClientApi {
       links: Object.fromEntries(Object.entries(await this.hub.sessions.links.counts()).filter(([id]) => visible.has(id))),
       sessionThreads: (await this.hub.sessions.links.whenReady(), Object.fromEntries(Object.entries(this.hub.sessions.links.sessionThreads()).filter(([, thread]) => visible.has(thread)))),
       favourites: (await this.hub.store.favourites(v.userId)).filter((id) => visible.has(id)),
+      // Threads this person is a member of, and those they left (hidden from their sidebar).
+      thread_members: (await this.prisma.threadMember.findMany({ where: { userId: v.userId }, select: { channelId: true } })).map((m) => m.channelId).filter((id) => visible.has(id)),
+      left_threads: (await this.hub.store.leftThreads(v.userId)).filter((id) => visible.has(id)),
       presence: await this.hub.presence.snapshotFor(v.userId),
       // Who is in which voice channel (people and bots), where the viewer can see it.
       voice_states: await this.hub.voice.statesFor(v.userId),
@@ -445,7 +454,29 @@ export class ClientApi {
       default_level: DEFAULT_LEVEL,
       vapid_public_key: this.hub.notifications.keys.publicKey,
       push_subscribed: (await this.hub.store.pushSubscriptions()).some((s) => s.deviceId === v.device.id),
+      // Guilds where muted channels leave the sidebar (Discord's hide_muted_channels).
+      hide_muted: await this.hub.store.hideMutedGuilds(v.userId),
     }
+  }
+
+  async threadMembership(v: Viewer, threadId: string, joined: boolean) {
+    const thread = await this.channel(v, threadId)
+    if (!THREAD_TYPES.includes(thread.type)) throw new HttpError(400, 'Not a thread')
+    if (joined && thread.archived) throw new HttpError(400, 'Cannot join a closed thread')
+    await this.hub.twin.simulateThreadMember({ channelId: threadId, userId: v.userId, joined })
+    await this.hub.store.setLeftThread(v.userId, threadId, !joined)
+    this.hub.access.invalidate()
+    this.hub.events.send('THREAD_MEMBER_UPDATE', { id: threadId, guild_id: thread.guildId, user_id: v.userId, joined }, { userId: v.userId })
+  }
+
+  // Discord's PATCH /users/@me/guilds/{guild.id}/settings, the one field the hub keeps there.
+  async setGuildSettings(v: Viewer, guildId: string, body: Record<string, unknown>) {
+    if (!(await this.hub.access.guild(v.userId, guildId))) throw new HttpError(404, 'Unknown guild')
+    if (typeof body['hide_muted_channels'] !== 'boolean') throw new HttpError(400, 'hide_muted_channels must be true or false')
+    await this.hub.store.setHideMuted(v.userId, guildId, body['hide_muted_channels'])
+    const settings = { guild_id: guildId, hide_muted_channels: body['hide_muted_channels'] }
+    this.hub.events.send('USER_GUILD_SETTINGS_UPDATE', settings, { userId: v.userId })
+    return settings
   }
 
   // Body: { level: 'all' | 'mentions' | 'nothing' | null, muted_until: ms | null }; omitted fields keep their value.
@@ -500,24 +531,33 @@ export class ClientApi {
     return { mentions: found.filter(e => channels.has(e.channel.id) && ((final.channels.get(e.channel.id) ?? 0n) & P.READ_MESSAGE_HISTORY) !== 0n).map((entry) => ({ ...entry, read: !newer(entry.message.id, read[entry.channel.id]) })) }
   }
 
-  // Newest first. A bookmark whose message is gone, or that the person can no longer read, is dropped.
+  // Newest first. A bookmark the person cannot read now is left out but kept, so it comes back
+  // with their access; one whose message no longer exists is dropped for good.
   async bookmarks(v: Viewer, only?: string) {
     const saved = (await this.hub.store.bookmarks(v.userId)).filter((b) => !only || b.messageId === only)
     const view = await this.hub.access.view(v.userId)
     const readable = (channelId: string) => ((view.channels.get(channelId) ?? 0n) & P.READ_MESSAGE_HISTORY) !== 0n
     const found = new Map((await this.withChannels(v, saved.filter((b) => readable(b.channelId)).map((b) => b.messageId))).map((e) => [e.message.id, e]))
+    const unseen = saved.filter((b) => !found.has(b.messageId)).map((b) => b.messageId)
+    const exists = new Set(unseen.length ? (await this.prisma.message.findMany({ where: { id: { in: unseen } }, select: { id: true } })).map((m) => m.id) : [])
     const out = []
     for (const b of saved) {
       const entry = found.get(b.messageId)
-      if (entry && readable(entry.channel.id)) out.push({ ...entry, saved_at: new Date(b.savedAt).toISOString() })
-      else if (this.hub.access.isCurrent(view) && (await this.hub.store.setBookmark(v.userId, b.channelId, b.messageId, false))) this.hub.events.send('SAVED_MESSAGE_DELETE', { channel_id: b.channelId, message_id: b.messageId }, { userId: v.userId })
+      if (entry) {
+        if (readable(entry.channel.id)) out.push({ ...entry, saved_at: new Date(b.savedAt).toISOString() })
+      } else if (!exists.has(b.messageId) && (await this.hub.store.setBookmark(v.userId, b.channelId, b.messageId, false)) && readable(b.channelId)) {
+        this.hub.events.send('SAVED_MESSAGE_DELETE', { channel_id: b.channelId, message_id: b.messageId }, { userId: v.userId })
+      }
     }
     return out
   }
 
-  // Deleted messages and channels take their bookmarks with them, on every device.
+  // Deleted messages and channels take their bookmarks with them; only people who could read
+  // them hear of it.
   async bookmarksGone(by: { messageIds: string[] } | { channelId: string }) {
-    for (const b of await this.hub.store.dropBookmarks(by)) this.hub.events.send('SAVED_MESSAGE_DELETE', { channel_id: b.channelId, message_id: b.messageId }, { userId: b.userId })
+    for (const b of await this.hub.store.dropBookmarks(by)) {
+      if (this.hub.access.cachedCan(b.userId, b.channelId)) this.hub.events.send('SAVED_MESSAGE_DELETE', { channel_id: b.channelId, message_id: b.messageId }, { userId: b.userId })
+    }
   }
 
   async pins(v: Viewer, channelId: string) {

@@ -145,6 +145,9 @@ test.skipIf(!ready)('a person in no server sees where they are and what to do, w
   await api.json(`/client/guilds/${t.config.guildId}/members/${invite.user.id}`, { method: 'DELETE' })
   let states = 0
   p.on('request', (r) => void (r.url().endsWith('/client/state') && states++))
+  // Count only the reloaded page's own loads: the page before it may still send one for the
+  // removal while the reload starts (a loaded machine can delay it that long).
+  p.on('framenavigated', (frame) => void (frame === p.mainFrame() && (states = 0)))
   for (const [width, height] of [[1584, 991], [390, 844]] as const) {
     await p.setViewportSize({ width, height })
     states = 0

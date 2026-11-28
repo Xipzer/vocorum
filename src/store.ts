@@ -83,6 +83,20 @@ const SCHEMA = [
     muted_until INTEGER,
     PRIMARY KEY (user_id, scope_id)
   )`,
+  // Per user, per guild: Discord's user guild settings beyond notifications.
+  `CREATE TABLE IF NOT EXISTS user_guild_settings (
+    user_id TEXT NOT NULL,
+    guild_id TEXT NOT NULL,
+    hide_muted_channels INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, guild_id)
+  )`,
+  // Threads a person left (Leave Thread): out of their sidebar until they join again.
+  `CREATE TABLE IF NOT EXISTS user_left_threads (
+    user_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    left_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, thread_id)
+  )`,
   // One Web Push subscription per device (an installed PWA).
   `CREATE TABLE IF NOT EXISTS push_subscriptions (
     device_id TEXT PRIMARY KEY,
@@ -602,6 +616,27 @@ export class HubStore {
             ON CONFLICT(user_id, scope_id) DO UPDATE SET level = excluded.level, muted_until = excluded.muted_until`,
       args: [userId, scopeId, setting.level, setting.muted_until],
     })
+  }
+
+  async hideMutedGuilds(userId: string): Promise<string[]> {
+    return (await this.rows('SELECT guild_id FROM user_guild_settings WHERE user_id = ? AND hide_muted_channels = 1', [userId])).map((row) => String(row['guild_id']))
+  }
+
+  async setHideMuted(userId: string, guildId: string, on: boolean) {
+    await this.db.execute({
+      sql: `INSERT INTO user_guild_settings (user_id, guild_id, hide_muted_channels) VALUES (?, ?, ?)
+            ON CONFLICT(user_id, guild_id) DO UPDATE SET hide_muted_channels = excluded.hide_muted_channels`,
+      args: [userId, guildId, on ? 1 : 0],
+    })
+  }
+
+  async leftThreads(userId: string): Promise<string[]> {
+    return (await this.rows('SELECT thread_id FROM user_left_threads WHERE user_id = ?', [userId])).map((row) => String(row['thread_id']))
+  }
+
+  async setLeftThread(userId: string, threadId: string, left: boolean) {
+    if (left) await this.db.execute({ sql: 'INSERT OR IGNORE INTO user_left_threads (user_id, thread_id, left_at) VALUES (?, ?, ?)', args: [userId, threadId, Date.now()] })
+    else await this.db.execute({ sql: 'DELETE FROM user_left_threads WHERE user_id = ? AND thread_id = ?', args: [userId, threadId] })
   }
 
   async setPushSubscription(deviceId: string, target: { endpoint: string; p256dh: string; auth: string }) {

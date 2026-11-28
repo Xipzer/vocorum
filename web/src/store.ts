@@ -192,6 +192,19 @@ class Store {
     await api.setNotification(scopeId, body)
   }
 
+  async setHideMuted(guildId: string, on: boolean) {
+    this.hideMuted(guildId, on)
+    await api.setGuildSettings(guildId, { hide_muted_channels: on })
+  }
+
+  private hideMuted(guildId: string, on: boolean) {
+    const state = this.data.state
+    const n = state?.notifications
+    if (!state || !n) return
+    const rest = (n.hide_muted ?? []).filter((id) => id !== guildId)
+    this.set({ state: { ...state, notifications: { ...n, hide_muted: on ? [...rest, guildId] : rest } } })
+  }
+
   // Your status and custom status; your own presence follows from the hub.
   async setUserStatus(body: { status?: ChosenStatus; custom_status?: CustomStatus | null }) {
     const state = this.data.state
@@ -211,6 +224,20 @@ class Store {
     const on = !this.data.favourites.includes(channelId)
     this.set({ favourites: on ? [...this.data.favourites, channelId] : this.data.favourites.filter((id) => id !== channelId) })
     await api.favourite(channelId, on)
+  }
+
+  // Join Thread or Leave Thread.
+  async setThreadMember(threadId: string, joined: boolean) {
+    this.threadMember(threadId, joined)
+    await api.threadMember(threadId, joined)
+  }
+
+  private threadMember(threadId: string, joined: boolean) {
+    const state = this.data.state
+    if (!state) return
+    const members = (state.thread_members ?? []).filter((id) => id !== threadId)
+    const left = (state.left_threads ?? []).filter((id) => id !== threadId)
+    this.set({ state: { ...state, thread_members: joined ? [...members, threadId] : members, left_threads: joined ? left : [...left, threadId] } })
   }
 
   setOnline(online: boolean) {
@@ -656,6 +683,9 @@ class Store {
         this.set({ output: output === null ? rest : { ...rest, [id]: output } })
         break
       }
+      case 'FAVOURITES_UPDATE':
+        this.set({ favourites: (d as { favourites: string[] }).favourites })
+        break
       case 'SESSION_LINKS': {
         const counts = d as Record<string, number>
         // Only views that are showing links refetch; the rest read the counts.
@@ -693,6 +723,12 @@ class Store {
         if (state && n) this.set({ state: { ...state, notifications: { ...n, settings: { ...n.settings, [d.scope_id]: { level: d.level, muted_until: d.muted_until } } } } })
         break
       }
+      case 'THREAD_MEMBER_UPDATE':
+        this.threadMember(d.id, d.joined)
+        break
+      case 'USER_GUILD_SETTINGS_UPDATE':
+        this.hideMuted(d.guild_id, d.hide_muted_channels)
+        break
       case 'REQUEST_CREATE':
       case 'REQUEST_UPDATE':
         this.upsertRequest(d as HubRequest)
@@ -829,7 +865,7 @@ export const onIncoming = (listener: (message: Message) => void) => {
   return () => void incoming.delete(listener)
 }
 
-const REPLAYED = new Set(['THREAD_CREATE', 'THREAD_UPDATE', 'THREAD_DELETE', 'CHANNEL_CREATE', 'CHANNEL_UPDATE', 'CHANNEL_DELETE', 'CHANNEL_PERMISSIONS_UPDATE', 'GUILD_UPDATE', 'GUILD_ROLE_CREATE', 'GUILD_ROLE_UPDATE', 'GUILD_ROLE_DELETE', 'GUILD_MEMBER_ADD', 'GUILD_MEMBER_UPDATE', 'GUILD_MEMBER_REMOVE', 'MACHINE_ICONS_UPDATE', 'USER_UPDATE', 'OUTPUT_VIEW', 'SESSION_LINKS', 'NOTIFICATION_SETTINGS_UPDATE', 'USER_SETTINGS_UPDATE', 'PRESENCE_UPDATE', 'VOICE_STATE_UPDATE'])
+const REPLAYED = new Set(['THREAD_CREATE', 'THREAD_UPDATE', 'THREAD_DELETE', 'CHANNEL_CREATE', 'CHANNEL_UPDATE', 'CHANNEL_DELETE', 'CHANNEL_PERMISSIONS_UPDATE', 'GUILD_UPDATE', 'GUILD_ROLE_CREATE', 'GUILD_ROLE_UPDATE', 'GUILD_ROLE_DELETE', 'GUILD_MEMBER_ADD', 'GUILD_MEMBER_UPDATE', 'GUILD_MEMBER_REMOVE', 'MACHINE_ICONS_UPDATE', 'USER_UPDATE', 'OUTPUT_VIEW', 'FAVOURITES_UPDATE', 'SESSION_LINKS', 'NOTIFICATION_SETTINGS_UPDATE', 'USER_SETTINGS_UPDATE', 'PRESENCE_UPDATE', 'VOICE_STATE_UPDATE'])
 
 const sortReminders = (list: Reminder[]) => [...list].sort((a, b) => a.at - b.at)
 // A scheduled message still to post, or one that failed and should be seen.

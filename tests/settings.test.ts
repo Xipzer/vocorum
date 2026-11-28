@@ -100,6 +100,20 @@ test('channels: create, edit, move and delete channels and categories', async ()
   const moved = await phone.json(`/client/guilds/${t.config.guildId}/channels`, { method: 'PATCH', json: [{ id: channel.id, parent_id: category.id, position: 0 }] })
   expect(moved.channels[0]).toMatchObject({ parent_id: category.id, position: 0 })
 
+  // Discord's position semantics: only the channels that move get a CHANNEL_UPDATE.
+  const second = await phone.json(`/client/guilds/${t.config.guildId}/channels`, { method: 'POST', json: { name: 'deploys', parent_id: category.id, position: 1 } })
+  await waitFor(() => guild.channels.cache.get(second.id))
+  const updates: string[] = []
+  const seen = (_: unknown, after: { id: string }) => void updates.push(after.id)
+  bot.on('channelUpdate', seen)
+  const swapped = await phone.json(`/client/guilds/${t.config.guildId}/channels`, { method: 'PATCH', json: [{ id: second.id, position: 0 }, { id: channel.id, position: 1 }, { id: category.id, position: category.position }] })
+  expect(swapped.channels.map((c: { id: string }) => c.id)).toEqual([second.id, channel.id])
+  await waitFor(() => updates.length >= 2)
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  expect(updates.sort()).toEqual([second.id, channel.id].sort())
+  bot.off('channelUpdate', seen)
+  await phone.json(`/client/channels/${second.id}`, { method: 'DELETE' })
+
   // Deleting a category keeps its channels, without a category.
   await phone.json(`/client/channels/${category.id}`, { method: 'DELETE' })
   await waitFor(() => !guild.channels.cache.has(category.id))
