@@ -143,6 +143,14 @@ const SCHEMA = [
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL
   )`,
+  // Files a forward carries in message_snapshots, recorded when it was made while its source
+  // held them, with the source's guild ('' for a DM): they stay visible if the source goes.
+  `CREATE TABLE IF NOT EXISTS forwarded_files (
+    message_id TEXT NOT NULL,
+    attachment_id TEXT NOT NULL,
+    guild_id TEXT NOT NULL,
+    PRIMARY KEY (message_id, attachment_id)
+  )`,
   `CREATE TABLE IF NOT EXISTS attachments (
     id TEXT PRIMARY KEY,
     filename TEXT NOT NULL,
@@ -331,6 +339,16 @@ export class HubStore {
       })),
       'write',
     )
+  }
+
+  async recordForwardedFiles(messageId: string, attachmentIds: readonly string[], guildId: string | null) {
+    for (const id of attachmentIds) await this.db.execute({ sql: 'INSERT OR IGNORE INTO forwarded_files (message_id, attachment_id, guild_id) VALUES (?, ?, ?)', args: [messageId, id, guildId ?? ''] })
+  }
+
+  // The source guild a forward's file was recorded with, or null.
+  async forwardedFileGuild(messageId: string, attachmentId: string): Promise<string | null> {
+    const [row] = await this.rows('SELECT guild_id FROM forwarded_files WHERE message_id = ? AND attachment_id = ?', [messageId, attachmentId])
+    return row ? String(row['guild_id']) : null
   }
 
   async favourites(userId: string): Promise<string[]> {

@@ -40,6 +40,26 @@ import { Routines } from './routines.ts'
 import { extensions, type HubExtension, type HubExtensionFactory } from './extensions.ts'
 
 // Constant time, whatever the lengths.
+function parseJson<T>(raw: string | null | undefined): T | null {
+  try {
+    return raw ? (JSON.parse(raw) as T) : null
+  } catch {
+    return null
+  }
+}
+
+// File ids in a message's attachments column.
+function attachmentIdsOf(raw: string | null | undefined): string[] {
+  const list = parseJson<Array<{ id?: unknown }>>(raw)
+  return Array.isArray(list) ? list.flatMap((a) => (typeof a?.id === 'string' ? [a.id] : [])) : []
+}
+
+// File ids in a forward's message_snapshots (its extra column).
+function snapshotFiles(extra: string | null | undefined): string[] {
+  const snapshots = parseJson<{ message_snapshots?: Array<{ message?: { attachments?: Array<{ id?: unknown }> } }> }>(extra)?.message_snapshots
+  return Array.isArray(snapshots) ? snapshots.flatMap((s) => (Array.isArray(s?.message?.attachments) ? s.message.attachments.flatMap((a) => (typeof a?.id === 'string' ? [a.id] : [])) : [])) : []
+}
+
 function sameSecret(a: string, b: string) {
   return crypto.timingSafeEqual(crypto.createHash('sha256').update(a).digest(), crypto.createHash('sha256').update(b).digest())
 }
@@ -81,6 +101,7 @@ export class Hub {
   readonly sessions: Sessions
   readonly presence: Presence
   readonly notifications: Notifications
+  private unobserveForwards: (() => void) | undefined
   readonly settings: Settings
   readonly access: Access
   readonly members: Members
@@ -305,6 +326,9 @@ export class Hub {
     await timed('search', () => this.search.start())
     await timed('presence', () => this.presence.start())
     this.notifications.start()
+    this.unobserveForwards = this.twin.observeDispatches((event, data) => {
+      if (event === 'MESSAGE_CREATE') void this.noteForward(data as Parameters<Hub['noteForward']>[0]).catch((error) => console.error('[forwards]', error))
+    })
     this.updates.start()
     await timed('private listener', () => this.privateListener?.start())
     await timed('schedules', () => this.schedules.start())
@@ -332,6 +356,7 @@ export class Hub {
     await this.privateListener?.stop()
     this.search.stop()
     this.notifications.stop()
+    this.unobserveForwards?.()
     this.updates.stop()
     this.presence.stop()
     this.sessions.stop()
@@ -462,9 +487,43 @@ export class Hub {
     if (!row) return false
     const uploader = row.uploadedBy.startsWith('device:') ? await this.store.getDevice(row.uploadedBy.slice('device:'.length)) : null
     if (uploader && this.userOf(uploader) === userId) return true
-    const messages = await this.twin.prisma.message.findMany({ where: { attachments: { contains: `"${attachmentId}"` } }, select: { channelId: true }, take: 20 })
-    for (const message of messages) if (await this.access.can(userId, message.channelId, 0n)) return true
+    for (const message of await this.messagesWithAttachment(attachmentId)) if (await this.access.can(userId, message.channelId, 0n)) return true
     return false
+  }
+
+  // Messages that carry a file: in their own attachments, or in a forward's message_snapshots
+  // (Discord shows a forwarded file to whoever can read the forward, not only the source).
+  private async messagesWithAttachment(attachmentId: string) {
+    const own = await this.twin.prisma.message.findMany({ where: { attachments: { contains: `"${attachmentId}"` } }, select: { channelId: true, channel: { select: { guildId: true } } }, take: 20 })
+    const forwards = await this.twin.prisma.message.findMany({ where: { AND: [{ extra: { contains: '"message_snapshots"' } }, { extra: { contains: `"${attachmentId}"` } }] }, select: { id: true, channelId: true, extra: true, messageReference: true, channel: { select: { guildId: true } } }, take: 20 })
+    const carried = []
+    for (const m of forwards) if (snapshotFiles(m.extra).includes(attachmentId) && (await this.forwardCarries(m, attachmentId))) carried.push(m)
+    return [...own, ...carried]
+  }
+
+  // A snapshot names any file id it likes (bots and the mirror write them), so it counts only
+  // when tied to its source: the referenced message holds the file in its own attachments and
+  // is in the forward's guild (or the hub made the forward for someone who could read it). If
+  // the source is gone, only a file recorded when the forward was made, from the same guild.
+  private async forwardCarries(m: { id: string; messageReference: string | null; channel: { guildId: string | null } }, attachmentId: string) {
+    const sourceId = parseJson<{ type?: number; message_id?: unknown }>(m.messageReference)?.message_id
+    const recorded = await this.store.forwardedFileGuild(m.id, attachmentId)
+    const source = typeof sourceId === 'string' ? await this.twin.prisma.message.findUnique({ where: { id: sourceId }, select: { attachments: true, channel: { select: { guildId: true } } } }) : null
+    if (source) return attachmentIdsOf(source.attachments).includes(attachmentId) && ((source.channel.guildId ?? '') === (m.channel.guildId ?? '') || recorded !== null)
+    return recorded !== null && recorded === (m.channel.guildId ?? '')
+  }
+
+  // A new forward whose source holds its files in the same guild: recorded, so the files stay
+  // visible after the source is deleted.
+  private async noteForward(m: { id?: string; channel_id?: string; message_reference?: { type?: number; message_id?: string }; message_snapshots?: unknown }) {
+    if (!m.id || !m.channel_id || m.message_reference?.type !== 1 || !m.message_reference.message_id || !m.message_snapshots) return
+    const files = snapshotFiles(JSON.stringify({ message_snapshots: m.message_snapshots }))
+    if (!files.length) return
+    const source = await this.twin.prisma.message.findUnique({ where: { id: m.message_reference.message_id }, select: { attachments: true, channel: { select: { guildId: true } } } })
+    const forward = await this.twin.prisma.channel.findUnique({ where: { id: m.channel_id }, select: { guildId: true } })
+    if (!source || !forward || source.channel.guildId !== forward.guildId) return
+    const held = attachmentIdsOf(source.attachments)
+    await this.store.recordForwardedFiles(m.id, files.filter((id) => held.includes(id)), source.channel.guildId)
   }
 
   // A machine's bot reads files from messages in its own guilds (and files bots uploaded, before they are posted).
@@ -474,7 +533,7 @@ export class Hub {
     if (!row) return false
     const guilds = (await this.store.botGuilds()).get(machine)?.filter((id) => this.guildIds.has(id))
     const allowed = new Set(guilds?.length ? guilds : [this.options.config.guildId])
-    const messages = await this.twin.prisma.message.findMany({ where: { attachments: { contains: `"${attachmentId}"` } }, select: { channel: { select: { guildId: true } } }, take: 20 })
+    const messages = await this.messagesWithAttachment(attachmentId)
     if (messages.length === 0) return row.uploadedBy === 'bot'
     return messages.some((m) => m.channel.guildId !== null && allowed.has(m.channel.guildId))
   }

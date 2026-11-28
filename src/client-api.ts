@@ -579,13 +579,17 @@ export class ClientApi {
       const source = await this.messageIn(v, str(reference['channel_id'], 'message_reference.channel_id'), str(reference['message_id'], 'message_reference.message_id'), P.READ_MESSAGE_HISTORY)
       if (body['content'] || (Array.isArray(body['attachmentIds']) && body['attachmentIds'].length)) throw new HttpError(400, 'A forward carries only the forwarded message')
       const from = await this.prisma.channel.findUnique({ where: { id: source.channelId } })
-      return this.hub.twin.simulateUserMessage({
+      const forwarded = await this.hub.twin.simulateUserMessage({
         channelId,
         userId: v.userId,
         content: '',
         messageReference: { type: 1, message_id: source.id, channel_id: source.channelId, ...(from?.guildId && { guild_id: from.guildId }) },
         extra: { message_snapshots: [messageSnapshot(source)] },
       })
+      // The forwarder could read the source: its files go with the forward, even to another server.
+      const files = (JSON.parse(source.attachments) as Array<{ id?: unknown }>).flatMap((a) => (typeof a.id === 'string' ? [a.id] : []))
+      await this.hub.store.recordForwardedFiles(forwarded.id, files, from?.guildId ?? null)
+      return forwarded
     }
     if (Array.isArray(body['attachmentIds']) && body['attachmentIds'].length && !(await this.hub.access.can(v.userId, channelId, P.ATTACH_FILES))) throw new HttpError(403, 'You cannot attach files here')
     const content = typeof body['content'] === 'string' ? body['content'].slice(0, 4000) : ''
