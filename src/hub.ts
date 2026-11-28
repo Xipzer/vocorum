@@ -174,7 +174,7 @@ export class Hub {
           : event === 'SESSION_LINKS'
             ? { shape: async (userId) => { const visible = await this.access.visibleChannels(userId); return Object.fromEntries(Object.entries(data as Record<string, number>).filter(([id]) => visible.has(id))) } }
             : { hubOwner: true }
-      this.events.send(event, data, audience)
+      this.events.send(event, event === 'SESSION_STATE' && !state.removed ? { ...state, server_time_ms: Date.now() } : data, audience)
       this.notifications.hubEvent(event, data)
     })
     this.presence = new Presence(this)

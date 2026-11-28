@@ -17,6 +17,7 @@ import {
   GuildMemberFlags,
   GuildSystemChannelFlags,
   Locale,
+  MessageFlags,
   RoleFlags,
   ThreadMemberFlags,
 } from 'discord-api-types/v10'
@@ -226,7 +227,13 @@ export function messageToAPI(
     mention_everyone: message.mentionEveryone,
     mentions: parseMentions(message.mentions),
     mention_roles: JSON.parse(message.mentionRoles) as string[],
-    attachments: JSON.parse(message.attachments),
+    attachments: (message.flags & MessageFlags.IsVoiceMessage) ? (JSON.parse(message.attachments) as Array<Record<string, unknown>>).flatMap((a) => {
+      // The mirror can be waiting for a later local file upload. Only expose a playable
+      // attachment once its bytes exist; its archive lookup key is not part of the API.
+      if (!('mirror_voice_source' in a)) return [a]
+      const { mirror_voice_source: _source, ...file } = a
+      return !file.url || file.missing ? [] : [file]
+    }) : JSON.parse(message.attachments),
     embeds: JSON.parse(message.embeds),
     pinned: message.pinned,
     type: message.type,

@@ -150,8 +150,15 @@ test.skipIf(!ready)('desktop: click the mic, see the timer and level, Enter send
   const before = await voiceNotes(page).count()
   await page.getByRole('button', { name: 'Record a voice message' }).click()
   await page.locator('.recording-label').waitFor()
+  const shown = Date.now()
   await page.waitForTimeout(1500)
-  await expect(page.locator('.recording-label .num').textContent()).resolves.toMatch(/^0:0[1-2]$/)
+  // The timer counts real seconds; a busy machine can stretch the wait, so read it against the time that passed.
+  const label = (await page.locator('.recording-label .num').textContent()) ?? ''
+  const passed = (Date.now() - shown) / 1000
+  expect(label).toMatch(/^0:\d\d$/)
+  const seconds = Number(label.slice(2))
+  expect(seconds).toBeGreaterThanOrEqual(Math.max(1, Math.floor(passed) - 1))
+  expect(seconds).toBeLessThanOrEqual(Math.ceil(passed) + 1)
   await page.screenshot({ path: path.join(shots, 'voice-desktop-recording.png') })
   await page.keyboard.press('Enter')
   await expect.poll(() => voiceNotes(page).count(), { timeout: 10_000 }).toBe(before + 1)

@@ -5,6 +5,8 @@
 
 import { Links } from './links.ts'
 import { Services } from './services.ts'
+import { RunActivity, type ActivitySnapshot } from './run-activity.ts'
+import { P } from './access.ts'
 import type { Hub } from './hub.ts'
 
 export type SessionState = 'waiting' | 'failed' | 'busy' | 'done' | 'idle'
@@ -17,6 +19,8 @@ export type SessionSummary = {
   machine: string | null
   state: SessionState
   since: string
+  // Source epoch milliseconds. `since` dates a display state; it is not a run clock.
+  runStartedAt?: number | null
   lastMessageId: string | null
   ask?: { text: string; messageId: string; choices?: Choice[]; openOnly?: boolean }
   lastStep?: string
@@ -198,6 +202,7 @@ export class Sessions {
   private byGuild = new Map<string, string>()
   readonly links: Links
   readonly services: Services
+  readonly activity: RunActivity
 
   constructor(
     private readonly hub: Hub,
@@ -205,6 +210,31 @@ export class Sessions {
   ) {
     this.links = new Links(hub, (counts) => emit('SESSION_LINKS', counts))
     this.services = new Services(hub, emit, this.links)
+    this.activity = new RunActivity(hub.options.paths.root,
+      (id) => this.summaries.has(id),
+      (id) => { void this.journalChanged(id).catch((error) => console.error('[activity]', error)) })
+  }
+
+  async mayReadActivity(userId: string, id: string) {
+    if (!/^\d{1,20}$/.test(id) || !this.hub.access.isHubOwner(userId) || !(await this.hub.access.can(userId, id, P.READ_MESSAGE_HISTORY))) return false
+    const thread = await this.prisma.channel.findUnique({ where: { id }, select: { type: true, guildId: true } })
+    return !!thread?.guildId && this.hub.guildIds.has(thread.guildId) && THREAD_TYPES.includes(thread.type)
+  }
+
+  private async journalChanged(id: string) {
+    const snapshot = await this.activity.read(id)
+    if (this.stopped) return
+    const summary = this.summaries.get(id)
+    if ((summary?.runStartedAt ?? null) !== this.activeStart(snapshot)) await this.recompute(id)
+  }
+
+  // A silent run need not have recent chat for warm() to find on a cold hub.
+  async focusClock(userId: string, id: string) {
+    if (await this.mayReadActivity(userId, id)) await this.journalChanged(id)
+  }
+
+  private activeStart(snapshot?: ActivitySnapshot) {
+    return snapshot?.run.state === 'running' ? snapshot.run.started_at : null
   }
 
   private get prisma() {
@@ -250,6 +280,7 @@ export class Sessions {
 
   async start() {
     this.stopped = false
+    this.activity.start()
     await this.reloadBots()
     void this.links.start()
     void this.services.start()
@@ -286,6 +317,7 @@ export class Sessions {
 
   stop() {
     this.stopped = true
+    this.activity.stop()
     this.unobserve?.()
     this.links.stop()
     this.services.stop()
@@ -295,6 +327,20 @@ export class Sessions {
 
   list(): SessionSummary[] {
     return [...this.summaries.values()]
+  }
+
+  // A fresh connection can have missed the end of a run. Read the current bound
+  // record before handing it a clock; a cached UI state is not a start event.
+  async forView(visible: Set<string>) {
+    const sessions: SessionSummary[] = []
+    for (const s of this.summaries.values()) {
+      if (!visible.has(s.id)) continue
+      if (s.state === 'busy' || s.runStartedAt != null) {
+        const runStartedAt = this.activeStart(await this.activity.read(s.id))
+        sessions.push({ ...s, runStartedAt })
+      } else sessions.push(s)
+    }
+    return sessions
   }
 
   // Coalesces bursts (a streaming agent edits its message many times a second):
@@ -337,6 +383,14 @@ export class Sessions {
     const parent = thread.parentId ? await this.prisma.channel.findUnique({ where: { id: thread.parentId } }) : null
     const category = parent?.parentId ? await this.prisma.channel.findUnique({ where: { id: parent.parentId } }) : null
     const derived = deriveState(messages, config.ownerUserId, { typingUntil: this.typing.get(channelId) ?? 0 })
+    // Opening a thread, editing a tool line and reconnecting can all change `since`.
+    // None can create a clock. A bound source can also report a run before any text arrives.
+    const snapshot = derived.state === 'busy' || this.activity.cached(channelId) ? await this.activity.read(channelId) : undefined
+    if (this.stopped) return
+    const runStartedAt = this.activeStart(snapshot)
+    if (runStartedAt !== null && (derived.state === 'idle' || derived.state === 'done')) {
+      derived.state = 'busy'
+    }
     const summary: SessionSummary = {
       id: channelId,
       title: plainText(thread.name ?? '') || 'untitled',
@@ -345,6 +399,7 @@ export class Sessions {
       machine: this.machineOfPosts(messages, thread.guildId) ?? (category ? this.machineOf(category.name ?? '') : null),
       lastMessageId: thread.lastMessageId,
       ...derived,
+      runStartedAt,
     }
     const before = this.summaries.get(channelId)
     this.summaries.set(channelId, summary)

@@ -222,8 +222,10 @@ export class ClientEvents {
           }
           if (message?.op !== 'focus' || !message.d) return
           const channelId = message.d.channel_id
+          const previous = connection.channelId
           connection.channelId = typeof channelId === 'string' && /^\d{1,20}$/.test(channelId) ? channelId : null
           connection.visible = message.d.visible !== false
+          if (connection.channelId && previous !== connection.channelId) void this.hub.sessions.focusClock(connection.userId, connection.channelId).catch(() => {})
           this.hub.presence.changed()
         })
         ws.send(JSON.stringify({ t: 'HELLO', d: { deviceId: device.id, userId } }))

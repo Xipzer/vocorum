@@ -79,9 +79,12 @@ const channel = hub.demo.kimaki
 const tag = Date.now().toString(36)
 let run: AppRun | null = null
 
+// Refuses before anything is touched: the cleanup below uninstalls, so a refusal inside
+// the try would remove the person's own app.
+if (win) win.prepareWindows()
+
 try {
   if (win) {
-    win.prepareWindows()
     await check('installs', async () => `version ${win.installWindows(app)}`)
   }
   const link = await hub.pairLink(`e2e ${platform}`)

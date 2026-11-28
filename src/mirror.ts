@@ -11,12 +11,13 @@ import type http from 'node:http'
 import { generateSnowflake } from 'discord-digital-twin/src'
 import { HttpError } from './auth.ts'
 import { match, readBody, readJson, UPLOAD_LIMIT } from './http.ts'
+import { isVoice, projectVoice, voiceSourceFile, type MirrorFile, type MirrorVoiceNote } from './mirror-voice.ts'
 import type { Hub } from './hub.ts'
 
 const THREAD_TYPES = new Set([10, 11, 12])
 
 type DiscordUser = { id: string; username?: string; global_name?: string | null; avatar?: string | null; bot?: boolean }
-type DiscordAttachment = { id: string; filename: string; size?: number; url?: string; proxy_url?: string; content_type?: string; width?: number | null; height?: number | null; duration_secs?: number; waveform?: string; missing?: boolean }
+type DiscordAttachment = MirrorFile
 export type DiscordMessage = {
   id: string
   channel_id: string
@@ -26,6 +27,7 @@ export type DiscordMessage = {
   edited_timestamp?: string | null
   type?: number
   flags?: number
+  voice_note?: MirrorVoiceNote
   embeds?: unknown[]
   components?: unknown[]
   attachments?: DiscordAttachment[]
@@ -60,6 +62,8 @@ const passthrough = (m: DiscordMessage) => Object.fromEntries(PASSTHROUGH.filter
 export type DiscordChannel = { id: string; guild_id?: string; type: number; name?: string | null; topic?: string | null; parent_id?: string | null; position?: number; owner_id?: string | null; last_message_id?: string | null; thread_metadata?: { archived?: boolean; locked?: boolean; auto_archive_duration?: number; archive_timestamp?: string | null } }
 
 export class Mirror {
+  private pending = new Map<string, Promise<unknown>>()
+
   constructor(private readonly hub: Hub) {}
 
   private get prisma() {
@@ -218,7 +222,24 @@ export class Mirror {
 
   // files: attachment id -> bytes (multipart uploads). Without them the hub
   // downloads the file from Discord's CDN while its signed link still works.
-  async message(machine: string | null, message: DiscordMessage, { files = new Map<string, Buffer>(), quiet = false }: { files?: Map<string, Buffer>; quiet?: boolean } = {}) {
+  async message(machine: string | null, message: DiscordMessage, options: { files?: Map<string, Buffer>; quiet?: boolean } = {}) {
+    const result = await this.putOne(machine, message, options)
+    return 'linked' in result ? { linked: result.linked } : { id: message.id, created: result.change === 'created' }
+  }
+
+  // Live delivery, a reconnect and an edit may arrive together for one source ID.
+  // Read the last committed evidence for that ID before merging the next delivery.
+  private putOne(machine: string | null, message: DiscordMessage, options: { files?: Map<string, Buffer>; quiet?: boolean }) {
+    return this.withMessage(message.id, () => this.writeMessage(machine, message, options))
+  }
+
+  private withMessage<T>(id: string, write: () => Promise<T>) {
+    const job = (this.pending.get(id) ?? Promise.resolve()).then(write, write)
+    this.pending.set(id, job)
+    return job.finally(() => { if (this.pending.get(id) === job) this.pending.delete(id) })
+  }
+
+  private async writeMessage(machine: string | null, message: DiscordMessage, { files = new Map<string, Buffer>(), quiet = false }: { files?: Map<string, Buffer>; quiet?: boolean }): Promise<{ linked: string } | { change: 'created' | 'updated' | 'same' }> {
     if (!/^\d{1,20}$/.test(message.id) || !message.author?.id) throw new HttpError(400, 'Bad message')
     const channel = await this.prisma.channel.findUnique({ where: { id: message.channel_id } })
     if (!channel) throw new HttpError(404, 'Unknown channel: mirror it first')
@@ -231,26 +252,32 @@ export class Mirror {
       return { linked: message.echo_of }
     }
     // Unchanged since the last copy (a re-run import, a repeated PUT): nothing to do.
-    const before = await this.prisma.message.findUnique({ where: { id: message.id }, select: { channelId: true, content: true, editedTimestamp: true, pinned: true, attachments: true } })
+    const before = await this.prisma.message.findUnique({ where: { id: message.id }, select: { channelId: true, content: true, timestamp: true, editedTimestamp: true, pinned: true, attachments: true, flags: true, extra: true } })
     // A copy only ever updates its own copy: never a message in another channel
     // (a DM, another server) and never one typed in the hub.
     if (before) {
       const origin = (await this.hub.store.db.execute({ sql: 'SELECT origin FROM message_origins WHERE message_id = ?', args: [message.id] })).rows[0]?.['origin']
       if (before.channelId !== message.channel_id || origin !== 'discord') throw new HttpError(409, 'That message id belongs to another message')
     }
-    const edited = message.edited_timestamp ? new Date(message.edited_timestamp).getTime() : null
-    if (before && before.content === this.rewriteMentions(message.content ?? '') && (before.editedTimestamp?.getTime() ?? null) === edited && before.pinned === (message.pinned ?? false) && files.size === 0) return { id: message.id, created: false }
-    const authorId = await this.user(guildId, message.author)
-    const mentions = []
-    for (const m of message.mentions ?? []) mentions.push({ ...m, id: this.userId(m.id) })
-    const attachments = []
+    const voice = await projectVoice(this.hub, message, before, files)
+    const previousEdit = before?.editedTimestamp?.getTime() ?? null
+    const incomingEdit = message.edited_timestamp ? new Date(message.edited_timestamp).getTime() : null
+    const older = voice && previousEdit !== null && (incomingEdit === null || incomingEdit < previousEdit)
+    const edited = older ? previousEdit : incomingEdit
+    const content = this.rewriteMentions(older ? before!.content : voice?.content ?? message.content ?? '')
+    const flags = voice?.flags ?? message.flags ?? 0
+    const extra = voice ? { ...(before?.extra ? JSON.parse(before.extra) : {}), ...passthrough(message), voice_note: voice.note } : passthrough(message)
+    const pinned = message.pinned ?? (voice ? before?.pinned : false) ?? false
+    const same = before && before.content === content && previousEdit === edited && before.pinned === pinned && before.flags === flags
+    if (!voice && same && !files.size) return { change: 'same' }
+    const attachments: DiscordAttachment[] = voice?.file ? [voice.file] : []
     const copies = new Map(before ? (JSON.parse(before.attachments) as DiscordAttachment[]).filter((a) => a.missing || !isDiscordCdn(a.url)).map((a) => [a.id, a]) : [])
-    for (const a of message.attachments ?? []) {
+    for (const a of voice?.others ?? message.attachments ?? []) {
       if (!files.has(a.id) && copies.has(a.id)) {
         attachments.push(copies.get(a.id)!)
         continue
       }
-      const data = files.get(a.id) ?? (await this.download(a.url))
+      const data = files.get(a.id) ?? (quiet ? null : await this.download(a.url))
       if (!data) {
         attachments.push(a)
         continue
@@ -260,6 +287,10 @@ export class Mirror {
       const saved = await this.hub.attachments.save({ id: free ? a.id : generateSnowflake(), filename: a.filename, contentType: a.content_type ?? 'application/octet-stream', data, uploadedBy: 'mirror', durationSecs: a.duration_secs ?? null, waveform: a.waveform ?? null })
       attachments.push({ ...a, id: saved.id, url: saved.url, proxy_url: saved.url, size: saved.size })
     }
+    if (voice && same && before.attachments === JSON.stringify(attachments) && before.extra === JSON.stringify(extra)) return { change: 'same' }
+    const authorId = await this.user(guildId, message.author)
+    const mentions = []
+    for (const m of message.mentions ?? []) mentions.push({ ...m, id: this.userId(m.id) })
     // Recorded first: everything that reacts to the message can tell where it came from.
     await this.hub.store.db.execute({ sql: "INSERT OR IGNORE INTO message_origins (message_id, origin) VALUES (?, 'discord')", args: [message.id] })
     const created = await this.hub.twin.mirrorMessage(
@@ -267,25 +298,25 @@ export class Mirror {
         id: message.id,
         channelId: message.channel_id,
         authorId,
-        content: this.rewriteMentions(message.content ?? ''),
-        timestamp: message.timestamp ? new Date(message.timestamp) : new Date(),
-        editedTimestamp: message.edited_timestamp ? new Date(message.edited_timestamp) : null,
+        content,
+        timestamp: message.timestamp ? new Date(message.timestamp) : before?.timestamp ?? new Date(),
+        editedTimestamp: edited === null ? null : new Date(edited),
         type: message.type ?? 0,
-        flags: message.flags ?? 0,
+        flags,
         // Mentions inside embeds and components (Kimaki's status lines) too.
         embeds: this.rewriteDeep(message.embeds ?? []),
         components: this.rewriteDeep(message.components ?? []),
         attachments,
         mentions,
         mentionEveryone: message.mention_everyone ?? false,
-        pinned: message.pinned ?? false,
+        pinned,
         messageReference: message.message_reference ?? null,
-        passthrough: passthrough(message),
+        passthrough: extra,
       },
       { quiet, extra: { origin: 'discord' } },
     )
     if (quiet) this.hub.search.queueIndex(message.id)
-    return { id: message.id, created }
+    return { change: created ? 'created' : 'updated' }
   }
 
   async deleteMessage(machine: string | null, id: string) {
@@ -318,7 +349,21 @@ export class Mirror {
     const channelIds = [...new Set(messages.map((m) => m.channel_id))]
     const channels = new Map((await prisma.channel.findMany({ where: { id: { in: channelIds } } })).map((c) => [c.id, c]))
     for (const id of channelIds) if (!channels.has(id)) throw new HttpError(404, `Unknown channel ${id}: mirror it first`)
-    const existing = new Map((await prisma.message.findMany({ where: { id: { in: messages.map((m) => m.id) } }, select: { id: true, content: true, editedTimestamp: true, pinned: true, extra: true, attachments: true } })).map((m) => [m.id, m]))
+    const existing = new Map((await prisma.message.findMany({ where: { id: { in: messages.map((m) => m.id) } }, select: { id: true, flags: true, content: true, editedTimestamp: true, pinned: true, extra: true, attachments: true } })).map((m) => [m.id, m]))
+    const count = messages.length
+    let voiceCreated = 0, voiceUpdated = 0
+    const voiceIds = new Set(messages.filter((m) => isVoice(m.flags) || isVoice(existing.get(m.id)?.flags)).map((m) => m.id))
+    const hasVoice = (m: DiscordMessage) => voiceIds.has(m.id)
+    const voiced = messages.filter(hasVoice)
+    if (voiced.length) {
+      messages = messages.filter((m) => !hasVoice(m))
+      for (const m of voiced) {
+        const result = await this.putOne(null, m, { quiet: true })
+        if ('change' in result && result.change === 'created') voiceCreated++
+        if ('change' in result && result.change === 'updated') voiceUpdated++
+      }
+      await this.hub.search.flush()
+    }
     const authors = new Map<string, string>()
     for (const m of messages) {
       const key = `${channels.get(m.channel_id)!.guildId}:${m.author.id}`
@@ -359,7 +404,7 @@ export class Mirror {
     }
     if (fresh.length) await this.hub.store.db.batch(fresh.map((r) => ({ sql: "INSERT OR IGNORE INTO message_origins (message_id, origin) VALUES (?, 'discord')", args: [r.id] })), 'write')
     await this.hub.search.writeMany([...fresh, ...changed].map((r) => ({ ...r, components: r.components, embeds: r.embeds, attachments: r.attachments })))
-    return { messages: messages.length, created: fresh.length, updated: changed.length }
+    return { messages: count, created: fresh.length + voiceCreated, updated: changed.length + voiceUpdated }
   }
 
   // Origins for the client: 'discord' for mirrored messages; hub messages that have a Discord echo carry its id.
@@ -397,34 +442,34 @@ export class Mirror {
     if (pathname === '/admin/mirror/messages') return this.bulk(await readJson<DiscordMessage[]>(req))
     // Raw bytes of one attachment of an imported message: stored on the hub,
     // and the message's attachment URL points at the hub copy from then on.
-    const attachment = /^\/admin\/mirror\/attachments\/(\d{1,20})\/(\d{1,20})$/.exec(pathname)
+    const attachment = /^\/admin\/mirror\/attachments\/(\d{1,20})\/(\d{1,20})(\/missing)?$/.exec(pathname)
     if (attachment) {
-      const [, messageId, attachmentId] = attachment
-      const message = await this.prisma.message.findUnique({ where: { id: messageId! } })
-      if (!message) throw new HttpError(404, 'Unknown message')
-      const list = JSON.parse(message.attachments) as DiscordAttachment[]
-      const index = list.findIndex((a) => a.id === attachmentId)
-      if (index < 0) throw new HttpError(404, 'Unknown attachment')
-      const data = await readBody(req, UPLOAD_LIMIT * 2)
-      const original = list[index]!
-      const saved = await this.hub.attachments.save({ id: attachmentId!, filename: original.filename, contentType: original.content_type ?? 'application/octet-stream', data, uploadedBy: 'mirror', durationSecs: original.duration_secs ?? null, waveform: original.waveform ?? null })
-      list[index] = { ...original, url: saved.url, proxy_url: saved.url, size: saved.size }
-      await this.prisma.message.update({ where: { id: messageId! }, data: { attachments: JSON.stringify(list) } })
-      return { url: saved.url }
-    }
-    // A file Discord no longer has (its message was deleted): the attachment stays
-    // listed, marked missing, and no longer points at Discord.
-    const missing = /^\/admin\/mirror\/attachments\/(\d{1,20})\/(\d{1,20})\/missing$/.exec(pathname)
-    if (missing) {
-      const [, messageId, attachmentId] = missing
-      const message = await this.prisma.message.findUnique({ where: { id: messageId! } })
-      if (!message) throw new HttpError(404, 'Unknown message')
-      const list = JSON.parse(message.attachments) as DiscordAttachment[]
-      const index = list.findIndex((a) => a.id === attachmentId)
-      if (index < 0) throw new HttpError(404, 'Unknown attachment')
-      list[index] = { ...list[index]!, url: '', proxy_url: '', missing: true }
-      await this.prisma.message.update({ where: { id: messageId! }, data: { attachments: JSON.stringify(list) } })
-      return { missing: true }
+      const id = attachment[1]!, sourceId = attachment[2]!
+      const data = attachment[3] ? null : await readBody(req, UPLOAD_LIMIT * 2)
+      return this.withMessage(id, async () => {
+        const message = await this.prisma.message.findUnique({ where: { id } })
+        if (!message) throw new HttpError(404, 'Unknown message')
+        const list: MirrorFile[] = JSON.parse(message.attachments)
+        const extra = JSON.parse(message.extra ?? '{}')
+        const audio = isVoice(message.flags) ? voiceSourceFile(list, extra.voice_note?.attachment_id) : undefined
+        const index = list.findIndex((a) => a.id === sourceId || (audio === a && a.mirror_voice_source === sourceId))
+        if (index < 0) throw new HttpError(404, 'Unknown attachment')
+        const original = list[index]!
+        if (audio === original) {
+          const input = { id, flags: message.flags, voice_note: { ...extra.voice_note, attachment_id: sourceId }, attachments: [{ ...original, id: sourceId }] }
+          const voice = await projectVoice(this.hub, input, message, data ? new Map([[sourceId, data]]) : new Map())
+          if (!voice?.file) throw new HttpError(400, 'Invalid voice attachment')
+          list[index] = voice.file
+          await this.prisma.message.update({ where: { id }, data: { attachments: JSON.stringify(list), extra: JSON.stringify({ ...extra, voice_note: voice.note }) } })
+          return voice.note.attachment_id ? { url: voice.file.url } : { missing: true }
+        }
+        if (data) {
+          const saved = await this.hub.attachments.save({ id: sourceId, filename: original.filename, contentType: original.content_type ?? 'application/octet-stream', data, uploadedBy: 'mirror', durationSecs: original.duration_secs ?? null, waveform: original.waveform ?? null })
+          list[index] = { ...original, url: saved.url, proxy_url: saved.url, size: saved.size }
+        } else list[index] = { ...original, url: '', proxy_url: '', missing: true }
+        await this.prisma.message.update({ where: { id }, data: { attachments: JSON.stringify(list) } })
+        return data ? { url: list[index]!.url } : { missing: true }
+      })
     }
     const guildIcon = /^\/admin\/mirror\/guilds\/(\d{1,20})\/icon$/.exec(pathname)
     if (guildIcon) return this.hub.settings.setGuildIcon(await this.ownGuild(null, guildIcon[1]), await readBody(req, 4 * 1024 * 1024))

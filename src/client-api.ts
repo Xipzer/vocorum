@@ -403,10 +403,11 @@ export class ClientApi {
   async overview(v: Viewer) {
     const visible = await this.hub.access.visibleChannels(v.userId)
     const machines = await this.hub.sessions.machines()
-    if (this.hub.access.isHubOwner(v.userId)) return { machines, sessions: this.hub.sessions.list() }
-    const sessions = this.hub.sessions.list().filter((s) => visible.has(s.id))
+    const sessions = await this.hub.sessions.forView(visible)
+    const server_time_ms = Date.now()
+    if (this.hub.access.isHubOwner(v.userId)) return { machines, sessions, server_time_ms }
     const names = new Set(sessions.map((s) => s.machine?.toLowerCase()))
-    return { machines: machines.filter((m) => names.has(m.name.toLowerCase())), sessions }
+    return { machines: machines.filter((m) => names.has(m.name.toLowerCase())), sessions, server_time_ms }
   }
 
   async notificationState(v: Viewer) {
